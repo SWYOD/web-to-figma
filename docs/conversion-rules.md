@@ -1,9 +1,11 @@
 # DOM/CSS → Figma Layout: правила конверсии
 
-**Статус: direction document.** Описывает согласованные правила для
-`conversion-engine` (Phase 5-8). Реализация ещё не начата в Phase 1 — этот файл
-существует, чтобы решения были зафиксированы до кода, а не изобретались по
-ходу дела.
+**Статус: частично реализовано.** Описывает согласованные правила для
+`conversion-engine` (Phase 5-8) — решения фиксируются здесь до кода, не
+изобретаются по ходу дела. Phase 5 (done) реализует раздел про
+типизацию Fill/Stroke/Typography/CornerRadius/Effects из computed-style одного
+узла (`packages/conversion-engine/src/convertElement.ts`); разделы Flexbox/
+Grid/Absolute positioning/block-inline ниже — ещё направление, не код (Phase 7-8).
 
 ## Главный принцип
 

@@ -1,6 +1,7 @@
 import { useEffect, useState } from 'react'
 import { MousePointerClick } from 'lucide-react'
 import { Block, BlockHead, IconButton, Panel, PanelHead, PanelHeadActions, PanelTitle } from '@web-to-figma/ui'
+import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { ElementSummary, PickState } from '../../../shared/types'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
@@ -9,11 +10,13 @@ const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 export function InspectorPanel(): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [selection, setSelection] = useState<ElementSummary | null>(null)
+  const [diagnostics, setDiagnostics] = useState<ConversionWarning[]>([])
 
   useEffect(() => {
     const offPick = window.api.onInspectorPickState(setPick)
-    const offSelection = window.api.onInspectorSelection((element) => {
-      setSelection(element)
+    const offSelection = window.api.onInspectorSelection((result) => {
+      setSelection(result.element)
+      setDiagnostics(result.diagnostics)
       setPick(EMPTY_PICK)
     })
     return () => {
@@ -99,6 +102,16 @@ export function InspectorPanel(): JSX.Element {
             <Block>
               <BlockHead>Shadow</BlockHead>
               <PropRow label="Shadow" value={selection.appearance.boxShadow} />
+            </Block>
+          )}
+          {diagnostics.length > 0 && (
+            <Block>
+              <BlockHead>Diagnostics</BlockHead>
+              {diagnostics.map((d, i) => (
+                <div key={i} className={`diagnostic-row ${d.severity}`}>
+                  {d.message}
+                </div>
+              ))}
             </Block>
           )}
         </>

@@ -1,7 +1,9 @@
 import type { WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
+import { convertElement, type DomSnapshotNode } from '@web-to-figma/conversion-engine'
+import type { ConversionWarning, DesignNode } from '@web-to-figma/design-ast'
 import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
-import type { ElementSummary, PickState } from '../shared/types'
+import type { ElementSummary, PickState, SelectionResult } from '../shared/types'
 
 const log = createConsoleLogger('inspector')
 
@@ -50,12 +52,18 @@ const HIGHLIGHT_CONFIG = {
  */
 export class ElementPicker {
   private active = false
+  /** Последний результат convertElement — для Phase 6 (Import as Frame через bridge), пока без потребителя. */
+  private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
 
   constructor(
     private readonly getWebContents: () => WebContents | null,
-    private readonly onSelect: (element: ElementSummary) => void,
+    private readonly onSelect: (result: SelectionResult) => void,
     private readonly onStateChange: (state: PickState) => void
   ) {}
+
+  getLastConversion(): { node: DesignNode; diagnostics: ConversionWarning[] } | null {
+    return this.lastConversion
+  }
 
   isActive(): boolean {
     return this.active
@@ -149,17 +157,31 @@ export class ElementPicker {
       const attrMap = new Map<string, string>()
       for (let i = 0; i < attrs.length; i += 2) attrMap.set(attrs[i] as string, attrs[i + 1] ?? '')
 
+      const tag = describe.node.nodeName.toLowerCase()
+      const id = attrMap.get('id') || null
+      const classes = (attrMap.get('class') ?? '').split(/\s+/).filter(Boolean)
+
       const summary: ElementSummary = {
-        tag: describe.node.nodeName.toLowerCase(),
-        id: attrMap.get('id') || null,
-        classes: (attrMap.get('class') ?? '').split(/\s+/).filter(Boolean),
+        tag,
+        id,
+        classes,
         width: Math.round(box.model.width),
         height: Math.round(box.model.height),
         layout: parseLayout(styleMap),
         typography: parseTypography(styleMap),
         appearance: parseAppearance(styleMap)
       }
-      this.onSelect(summary)
+
+      const snapshot: DomSnapshotNode = {
+        tag,
+        id,
+        classes,
+        box: { width: box.model.width, height: box.model.height },
+        computedStyle: Object.fromEntries(computed.computedStyle.map((e) => [e.name, e.value]))
+      }
+      this.lastConversion = convertElement(snapshot)
+
+      this.onSelect({ element: summary, diagnostics: this.lastConversion.diagnostics })
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
     } finally {

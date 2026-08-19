@@ -156,9 +156,16 @@ interface DesignDocument {
   конвертером (Phase, где обрабатываются pseudo-elements), в самой модели
   никакого специального типа для них нет — они неотличимы от обычных узлов.
 
-## Реализация в Phase 1
+## Статус реализации
 
-В `packages/design-ast` сейчас лежат только типы + Zod-схемы для рантайм-валидации
+`packages/design-ast` (Phase 1) содержит типы + Zod-схемы для рантайм-валидации
 на границе bridge (сообщение `ImportNodeMessage` содержит `DesignDocument`,
 который должен быть провалидирован до применения в Figma — untrusted-граница
-процесса). Никакой логики построения AST ещё нет — это Phase 5.
+процесса).
+
+`packages/conversion-engine` (Phase 5, done) умеет строить один `DesignNode` из
+DOM/CSS-снапшота (`convertElement`) — типизированные Paint/StrokeInfo/
+TypographyInfo/CornerRadius/Effect[] из сырых computed-style значений, см.
+`conversion-rules.md`. Пока без Auto Layout inference и без хождения по детям —
+`layout.mode` всегда `'none'`, `children` не заполняется; это Phase 7 и Phase 8
+соответственно.

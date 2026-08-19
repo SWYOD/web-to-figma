@@ -137,6 +137,17 @@ API.
    bounds/видимостью view, а не полагаться на HTML-оверлей с высоким z-index —
    он будет перекрыт. См. `apps/desktop/src/main/browser.ts` (комментарий у
    класса `BrowserController`).
+9. **Относительные импорты внутри пакетов `packages/*` обязаны быть с
+   расширением `.js`.** Дважды наступили на эти грабли (bridge-protocol в
+   Phase 1, conversion-engine в Phase 5): `package.json` этих пакетов
+   объявляет `"type": "module"`, и `tsc` компилирует `import { x } from
+   './foo'` в JS дословно как есть — Node ESM-резолвер (в отличие от
+   Rollup/Vite, которые терпимее) отказывается резолвить такой импорт без
+   явного расширения (`ERR_MODULE_NOT_FOUND`). Билд через electron-vite/Vite
+   этого не ловит (бандлер резолвит на этапе сборки, а не в рантайме Node),
+   поэтому баг всплывает только при прямом `node dist/index.js`. Правило:
+   **все** относительные импорты в `src/` этих пакетов — с `.js` на конце
+   (`from './foo.js'`), даже притом что сам файл называется `foo.ts`.
 
 ## 7. Roadmap (вертикальные срезы, из исходного ТЗ, без изменений порядка)
 
@@ -157,7 +168,13 @@ Typography/Fill/Border/Radius/Shadow в Inspector Panel — **done**, вся ц�
 `DOM.describeNode`/`DOM.getBoxModel`/`DOM.pushNodesByBackendIdsToFrontend`/
 `CSS.getComputedStyleForNode` проверена live на реальном `<h1>` example.com —
 все нужные computed-свойства присутствуют под ожидаемыми именами) → Phase 5
-(Design AST)
+(Design AST: `packages/conversion-engine` — чистая `convertElement(DomSnapshotNode)`
+→ `DesignNode` + diagnostics, без Auto Layout/детей (это Phase 7/8), только
+типизация Paint/StrokeInfo/TypographyInfo/CornerRadius/Effect[] из сырых
+computed-style строк — **done**, 16 unit-тестов (включая fixture 6: сложный
+transform не роняет конвертацию, только diagnostic) + live-проверка: реальные
+CDP-данные `<h1>` example.com → `convertElement` → `DesignNodeSchema.safeParse`
+успешен)
 → Phase 6 (Figma renderer) → Phase 7 (Flex→Auto Layout) → Phase 8 (nested trees)
 → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
 (warnings/confidence score) → далее расширение scope.

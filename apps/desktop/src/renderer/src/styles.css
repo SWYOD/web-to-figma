@@ -183,3 +183,17 @@
   border-radius: 4px;
   border: 1px solid var(--border-strong);
 }
+
+/* ── Diagnostics (Phase 5, conversion-engine warnings) ───────────────── */
+.diagnostic-row {
+  padding: 5px 0;
+  font-size: 12px;
+  line-height: 1.45;
+  color: var(--text-dim);
+}
+.diagnostic-row.warning {
+  color: var(--warning);
+}
+.diagnostic-row.error {
+  color: var(--danger);
+}

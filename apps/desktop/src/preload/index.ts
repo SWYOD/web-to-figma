@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, AppSettings, BridgeStatusEvent, BrowserState, ElementSummary, PickState, ViewBounds } from '../shared/types'
+import type { Api, AppSettings, BridgeStatusEvent, BrowserState, PickState, SelectionResult, ViewBounds } from '../shared/types'
 
 const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -32,8 +32,8 @@ const api: Api = {
     ipcRenderer.on('inspector:pick-state', listener)
     return () => ipcRenderer.removeListener('inspector:pick-state', listener)
   },
-  onInspectorSelection: (cb: (element: ElementSummary) => void) => {
-    const listener = (_e: Electron.IpcRendererEvent, element: ElementSummary): void => cb(element)
+  onInspectorSelection: (cb: (result: SelectionResult) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, result: SelectionResult): void => cb(result)
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   }

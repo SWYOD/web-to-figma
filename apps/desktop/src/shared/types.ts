@@ -1,3 +1,5 @@
+import type { ConversionWarning } from '@web-to-figma/design-ast'
+
 /** Дублирует ThemeMode из @web-to-figma/ui намеренно: main-процесс не должен
  *  тянуть React/JSX-пакет только ради одного union-типа (см. tsconfig.node.json,
  *  которому не нужны jsx/DOM lib). */
@@ -83,6 +85,12 @@ export interface PickState {
   error: string | null
 }
 
+export interface SelectionResult {
+  element: ElementSummary
+  /** Диагностика conversion-engine (Phase 5) для этого же элемента — см. docs/conversion-rules.md. */
+  diagnostics: ConversionWarning[]
+}
+
 export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
@@ -102,5 +110,5 @@ export interface Api {
   inspectorStartPick: () => Promise<void>
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
-  onInspectorSelection: (cb: (element: ElementSummary) => void) => () => void
+  onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
 }

@@ -6,7 +6,7 @@ import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
-import type { AppSettings, BridgeInfo, ElementSummary, PickState, ViewBounds } from '../shared/types'
+import type { AppSettings, BridgeInfo, PickState, SelectionResult, ViewBounds } from '../shared/types'
 
 // Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
@@ -96,7 +96,7 @@ function createWindow(): void {
 
   elementPicker = new ElementPicker(
     () => browserController?.getWebContents() ?? null,
-    (element: ElementSummary) => mainWindow?.webContents.send('inspector:selection', element),
+    (result: SelectionResult) => mainWindow?.webContents.send('inspector:selection', result),
     (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
   )
 

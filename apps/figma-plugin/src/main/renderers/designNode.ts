@@ -6,7 +6,7 @@ import { applyLayout } from './layout'
 import { createImagePaint, createVectorFromAsset } from './asset'
 import { applyCornerRadius } from './cornerRadius'
 import { createTextNode } from './textNode'
-import { loadStyleCatalog, matchNearestSolidPaintStyle, type StyleCatalog } from './styleMatching'
+import { loadStyleCatalog, matchNearestSolidPaintStyle, NO_STYLE_MATCHING, type StyleMatchOptions } from './styleMatching'
 
 /**
  * DesignNode → SceneNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
@@ -17,19 +17,26 @@ import { loadStyleCatalog, matchNearestSolidPaintStyle, type StyleCatalog } from
  * текстовые узлы с содержимым) — через `createTextNode` (`textNode.ts`,
  * требует `figma.loadFontAsync`, поэтому весь рендер асинхронный).
  *
- * `useMatchedStyles` (см. styleMatching.ts) — грузим каталог локальных
- * text/paint styles ОДИН раз на весь импорт (не на узел — `getLocalTextStylesAsync`/
- * `getLocalPaintStylesAsync` не привязаны к конкретному узлу), дальше просто
- * пробрасываем вниз по рекурсии.
+ * Раздельные переключатели для шрифтов/цветов (см. styleMatching.ts) —
+ * грузим каталог локальных text/paint styles ОДИН раз на весь импорт (не на
+ * узел — `getLocalTextStylesAsync`/`getLocalPaintStylesAsync` не привязаны к
+ * конкретному узлу), если включён хотя бы один из двух, дальше просто
+ * пробрасываем вниз по рекурсии вместе с обоими флагами.
  */
-export async function renderDesignNode(node: DesignNode, assets: AssetManifest, useMatchedStyles = false): Promise<SceneNode> {
-  const catalog = useMatchedStyles ? await loadStyleCatalog() : null
-  return buildFrame(node, assets, catalog)
+export async function renderDesignNode(
+  node: DesignNode,
+  assets: AssetManifest,
+  matchText = false,
+  matchColor = false
+): Promise<SceneNode> {
+  const styleMatch: StyleMatchOptions =
+    matchText || matchColor ? { catalog: await loadStyleCatalog(), matchText, matchColor } : NO_STYLE_MATCHING
+  return buildFrame(node, assets, styleMatch)
 }
 
-async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: StyleCatalog | null): Promise<SceneNode> {
+async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: StyleMatchOptions): Promise<SceneNode> {
   if (node.type === 'text') {
-    const { textNode } = await createTextNode(node, catalog)
+    const { textNode } = await createTextNode(node, styleMatch)
     return textNode
   }
 
@@ -51,7 +58,7 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: Styl
   frame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
 
   const imagePaint = node.type === 'image' && node.asset ? createImagePaint(node.asset.assetId, assets) : null
-  const matchedFillStyle = !imagePaint ? matchSolidFillStyle(node.fills, catalog) : null
+  const matchedFillStyle = !imagePaint ? matchSolidFillStyle(node.fills, styleMatch) : null
   if (matchedFillStyle) {
     frame.fillStyleId = matchedFillStyle.id
   } else {
@@ -59,7 +66,7 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: Styl
   }
 
   if (node.strokes) {
-    const matchedStrokeStyle = matchSolidFillStyle(node.strokes.paints, catalog)
+    const matchedStrokeStyle = matchSolidFillStyle(node.strokes.paints, styleMatch)
     if (matchedStrokeStyle) {
       frame.strokeStyleId = matchedStrokeStyle.id
     } else {
@@ -84,7 +91,7 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: Styl
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
 
   for (const child of node.children ?? []) {
-    const childNode = await buildFrame(child, assets, catalog)
+    const childNode = await buildFrame(child, assets, styleMatch)
     frame.appendChild(childNode)
 
     // positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout
@@ -114,12 +121,12 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: Styl
   return frame
 }
 
-/** Первый solid paint массива → ближайший локальный paint style (или null — нет каталога/подходящих стилей/solid-заливок). */
-function matchSolidFillStyle(paints: DesignNode['fills'], catalog: StyleCatalog | null): PaintStyle | null {
-  if (!catalog) return null
+/** Первый solid paint массива → ближайший локальный paint style (или null — цветовой матчинг выключен/нет каталога/подходящих стилей/solid-заливок). */
+function matchSolidFillStyle(paints: DesignNode['fills'], styleMatch: StyleMatchOptions): PaintStyle | null {
+  if (!styleMatch.matchColor || !styleMatch.catalog) return null
   const firstSolid = paints?.find((p) => p.type === 'solid')
   if (!firstSolid) return null
-  return matchNearestSolidPaintStyle(firstSolid.color, catalog.solidPaintStyles)
+  return matchNearestSolidPaintStyle(firstSolid.color, styleMatch.catalog.solidPaintStyles)
 }
 
 /** node.layout.widthSizing/heightSizing:'fill' → layoutSizingHorizontal/Vertical:'FILL' на реальном Auto Layout ребёнке; иначе 'FIXED' (явно, не полагаясь на дефолт API). */

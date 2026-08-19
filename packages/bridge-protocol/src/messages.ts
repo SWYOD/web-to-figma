@@ -69,9 +69,12 @@ export const ImportNodeMessageSchema = z.object({
     document: DesignDocumentSchema,
     as: z.enum(['frame', 'component']),
     /** "Стили проекта" (см. styleMatching.ts в figma-plugin) — подбирать
-     *  ближайший локальный text/paint style вместо raw-значений. Optional
-     *  для обратной совместимости со старым desktop-клиентом; отсутствие == false. */
-    useMatchedStyles: z.boolean().optional()
+     *  ближайший локальный style вместо raw-значения, отдельно для шрифтов
+     *  (text style) и для цветов (paint style/fills+strokes) — пользователь
+     *  явно попросил раздельные переключатели, не один общий. Optional для
+     *  обратной совместимости со старым desktop-клиентом; отсутствие == false. */
+    useMatchedTextStyles: z.boolean().optional(),
+    useMatchedColorStyles: z.boolean().optional()
   })
 })
 

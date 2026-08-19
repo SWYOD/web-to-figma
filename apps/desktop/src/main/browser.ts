@@ -52,7 +52,11 @@ export class BrowserController {
      *  ElementPicker (Phase 3), чтобы сбрасывать pick-режим на смене страницы, и
      *  RecentSitesStore (index.ts), чтобы записать визит — сам BrowserController
      *  остаётся fs/IPC-агностиком, просто передаёт url колбэком. */
-    private readonly onNavigate?: (url: string) => void
+    private readonly onNavigate?: (url: string) => void,
+    /** Реальный клик В СТРАНИЦУ переводит OS-фокус на этот webContents —
+     *  используется index.ts, чтобы закрывать overlay-попап (см. overlay.ts),
+     *  который в главном окне такой клик не увидит (другой webContents). */
+    private readonly onFocus?: () => void
   ) {}
 
   mount(): void {
@@ -66,6 +70,7 @@ export class BrowserController {
     this.win.contentView.addChildView(this.view)
 
     const wc = this.view.webContents
+    wc.on('focus', () => this.onFocus?.())
     wc.on('did-start-loading', () => this.patch({ isLoading: true, loadError: null }))
     wc.on('did-stop-loading', () =>
       this.patch({

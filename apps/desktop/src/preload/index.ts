@@ -7,6 +7,7 @@ import type {
   BridgeStatusEvent,
   BrowserState,
   ImportResult,
+  OverlayOpenPayload,
   PickState,
   RecentSite,
   SelectionResult,
@@ -38,6 +39,14 @@ const api: Api = {
     return () => ipcRenderer.removeListener('browser:state', listener)
   },
 
+  overlayOpen: (payload: OverlayOpenPayload) => ipcRenderer.invoke('overlay:open', payload),
+  overlayClose: () => ipcRenderer.invoke('overlay:close'),
+  onOverlayContent: (cb: (kind: string | null) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, kind: string | null): void => cb(kind)
+    ipcRenderer.on('overlay:content', listener)
+    return () => ipcRenderer.removeListener('overlay:content', listener)
+  },
+
   inspectorStartPick: () => ipcRenderer.invoke('inspector:start-pick'),
   inspectorStopPick: () => ipcRenderer.invoke('inspector:stop-pick'),
   onInspectorPickState: (cb: (state: PickState) => void) => {
@@ -50,8 +59,8 @@ const api: Api = {
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
-  inspectorImportAsFrame: (useMatchedStyles: boolean): Promise<ImportResult> =>
-    ipcRenderer.invoke('inspector:import-as-frame', useMatchedStyles),
+  inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> =>
+    ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
     ipcRenderer.invoke('inspector:apply-styles', targets),
 

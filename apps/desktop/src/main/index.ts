@@ -9,12 +9,14 @@ import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
+import { OverlayController } from './overlay'
 import type {
   AppSettings,
   ApplyStylesResult,
   ApplyStylesTargets,
   BridgeInfo,
   ImportResult,
+  OverlayOpenPayload,
   PickState,
   RecentSite,
   SelectionResult,
@@ -34,7 +36,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   themeMode: 'system',
   themeId: 'default',
   customThemes: [],
-  useMatchedStyles: false
+  useMatchedTextStyles: false,
+  useMatchedColorStyles: false
 }
 
 interface BridgeSecret {
@@ -102,6 +105,21 @@ let bridgeServer: BridgeServer | null = null
 let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
 let elementPicker: ElementPicker | null = null
+let overlayController: OverlayController | null = null
+/** Какой попап сейчас показан в overlay-слое (см. overlay.ts) — единственный
+ *  источник правды, транслируется ОБОИМ рендерерам (главному окну — чтобы
+ *  кнопка-якорь знала, что её попап открыт/закрыт, и самому overlay —
+ *  какой контент рисовать), поэтому Escape/клик-снаружи/потеря фокуса
+ *  браузером всегда закрывают попап согласованно в обоих местах. */
+let overlayKind: string | null = null
+
+function setOverlay(kind: string | null, bounds?: ViewBounds): void {
+  overlayKind = kind
+  if (kind && bounds) overlayController?.setBounds(bounds)
+  else overlayController?.hide()
+  mainWindow?.webContents.send('overlay:content', kind)
+  overlayController?.send('overlay:content', kind)
+}
 const recentSites = new RecentSitesStore((list) => mainWindow?.webContents.send('recent-sites:updated', list))
 
 function createWindow(): void {
@@ -140,7 +158,8 @@ function createWindow(): void {
     (url) => {
       elementPicker?.stopIfActive()
       void recentSites.recordVisit(url)
-    }
+    },
+    () => setOverlay(null)
   )
   browserController.mount()
 
@@ -150,6 +169,17 @@ function createWindow(): void {
     (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
     // getEffectiveTheme, getViewScreenBounds // 4-й/5-й аргумент для кастомного тултипа, см. inspector.ts
   )
+
+  // Overlay монтируется ПОСЛЕ browser-пейна — addChildView упорядочен по
+  // времени добавления, поздние дети рисуются НАД более ранними (см. overlay.ts).
+  const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+  overlayController = new OverlayController()
+  overlayController.mount(mainWindow, devUrl)
+  // Окно сдвинулось/изменило размер — bounds overlay'я считаны от старой
+  // позиции анкера в renderer'е и больше не актуальны, закрываем, а не
+  // показываем неправильно расположенный попап.
+  mainWindow.on('resize', () => setOverlay(null))
+  mainWindow.on('move', () => setOverlay(null))
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     void loadDevUrlWithRetry(mainWindow, process.env['ELECTRON_RENDERER_URL'])
@@ -224,6 +254,11 @@ function registerIpc(): void {
   ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
   ipcMain.handle('browser:get-state', () => browserController?.getState())
 
+  ipcMain.handle('overlay:open', (_e, payload: OverlayOpenPayload): void => {
+    setOverlay(payload.kind, { x: payload.x, y: payload.y, width: payload.width, height: payload.height })
+  })
+  ipcMain.handle('overlay:close', (): void => setOverlay(null))
+
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
 
@@ -232,25 +267,33 @@ function registerIpc(): void {
     await recentSites.remove(url)
   })
 
-  ipcMain.handle('inspector:import-as-frame', async (_e, useMatchedStyles: boolean): Promise<ImportResult> => {
-    const document = elementPicker?.buildDocument(
-      browserController?.getState().url ?? '',
-      browserController?.getViewportSize() ?? { width: 0, height: 0 }
-    )
-    if (!document) return { ok: false, error: 'Сначала выберите элемент' }
-    if (!bridgeServer || bridgeServer.connectionCount === 0) {
-      return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
-    }
+  ipcMain.handle(
+    'inspector:import-as-frame',
+    async (_e, useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> => {
+      const document = elementPicker?.buildDocument(
+        browserController?.getState().url ?? '',
+        browserController?.getViewportSize() ?? { width: 0, height: 0 }
+      )
+      if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+      if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+      }
 
-    const message = createMessage<ImportNodeMessage>('import-node', { document, as: 'frame', useMatchedStyles })
-    try {
-      const response = await bridgeServer.request(message)
-      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
-      return { ok: true }
-    } catch (err) {
-      return { ok: false, error: (err as Error).message }
+      const message = createMessage<ImportNodeMessage>('import-node', {
+        document,
+        as: 'frame',
+        useMatchedTextStyles,
+        useMatchedColorStyles
+      })
+      try {
+        const response = await bridgeServer.request(message)
+        if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message }
+      }
     }
-  })
+  )
 
   ipcMain.handle('inspector:apply-styles', async (_e, targets: ApplyStylesTargets): Promise<ApplyStylesResult> => {
     const document = elementPicker?.buildDocument(

@@ -23,7 +23,14 @@ figma.showUI(__html__, { width: 320, height: 440, themeColors: true })
 type UiToMainMessage =
   | { type: 'get-stored-token' }
   | { type: 'save-token'; token: string }
-  | { type: 'import-node'; requestId: string; document: DesignDocument; as: 'frame' | 'component'; useMatchedStyles?: boolean }
+  | {
+      type: 'import-node'
+      requestId: string
+      document: DesignDocument
+      as: 'frame' | 'component'
+      useMatchedTextStyles?: boolean
+      useMatchedColorStyles?: boolean
+    }
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
 
 figma.ui.onmessage = async (msg: UiToMainMessage) => {
@@ -38,7 +45,12 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
   }
   if (msg.type === 'import-node') {
     try {
-      const created = await renderDesignNode(msg.document.root, msg.document.assets, msg.useMatchedStyles ?? false)
+      const created = await renderDesignNode(
+        msg.document.root,
+        msg.document.assets,
+        msg.useMatchedTextStyles ?? false,
+        msg.useMatchedColorStyles ?? false
+      )
       placeNearViewport(created)
       figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: created.id })
     } catch (err) {

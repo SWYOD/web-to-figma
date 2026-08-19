@@ -2,7 +2,7 @@
 import type { DesignNode } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toTextAlign, toTextCase, toTextDecoration } from './typography'
-import { matchNearestSolidPaintStyle, matchNearestTextStyle, type StyleCatalog } from './styleMatching'
+import { matchNearestSolidPaintStyle, matchNearestTextStyle, NO_STYLE_MATCHING, type StyleMatchOptions } from './styleMatching'
 
 /** Гарантированно доступен в любом Figma-файле — безопасный откат, если
  *  запрошенный шрифт/начертание не установлены (см. createTextNode). */
@@ -25,7 +25,7 @@ export interface CreateTextNodeResult {
  * только там применяется поверх УЖЕ загруженного шрифта существующего слоя,
  * здесь шрифт нужно выбрать с нуля для НОВОГО узла).
  */
-export async function createTextNode(node: DesignNode, styleCatalog: StyleCatalog | null = null): Promise<CreateTextNodeResult> {
+export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOptions = NO_STYLE_MATCHING): Promise<CreateTextNodeResult> {
   const typography = node.typography
   const requested: FontName | null = typography ? { family: typography.fontFamily, style: weightToStyle(typography.fontWeight) } : null
 
@@ -63,11 +63,12 @@ export async function createTextNode(node: DesignNode, styleCatalog: StyleCatalo
   }
 
   // "Стили проекта" (см. styleMatching.ts) — необязательный второй проход
-  // ПОВЕРХ уже применённых raw-свойств выше: если для fontSize/цвета
-  // нашёлся достаточно близкий локальный style — привязываем узел к нему
-  // (`setTextStyleIdAsync`/`fillStyleId`), иначе тихо остаёмся на raw.
-  if (styleCatalog && typography) {
-    const textStyle = matchNearestTextStyle(typography.fontSize, styleCatalog.textStyles)
+  // ПОВЕРХ уже применённых raw-свойств выше, раздельно для шрифта и цвета:
+  // если для fontSize/цвета нашёлся достаточно близкий локальный style —
+  // привязываем узел к нему (`setTextStyleIdAsync`/`fillStyleId`), иначе
+  // тихо остаёмся на raw.
+  if (styleMatch.matchText && styleMatch.catalog && typography) {
+    const textStyle = matchNearestTextStyle(typography.fontSize, styleMatch.catalog.textStyles)
     if (textStyle) {
       try {
         await textNode.setTextStyleIdAsync(textStyle.id)
@@ -78,7 +79,10 @@ export async function createTextNode(node: DesignNode, styleCatalog: StyleCatalo
   }
 
   const firstSolidFill = node.fills?.find((p) => p.type === 'solid')
-  const matchedPaintStyle = styleCatalog && firstSolidFill ? matchNearestSolidPaintStyle(firstSolidFill.color, styleCatalog.solidPaintStyles) : null
+  const matchedPaintStyle =
+    styleMatch.matchColor && styleMatch.catalog && firstSolidFill
+      ? matchNearestSolidPaintStyle(firstSolidFill.color, styleMatch.catalog.solidPaintStyles)
+      : null
   if (matchedPaintStyle) {
     textNode.fillStyleId = matchedPaintStyle.id
   } else if (node.fills) {

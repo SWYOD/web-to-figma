@@ -1,112 +1,79 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { Wand2 } from 'lucide-react'
-import { IconButton, Popover, Switch, ToolbarButton } from '@web-to-figma/ui'
-import type { ApplyStylesTargets } from '../../../shared/types'
-import { useBrowserBottomInset } from '../hooks/useBrowserBottomInset'
+import { IconButton } from '@web-to-figma/ui'
 
-const ALL_TARGETS: ApplyStylesTargets = {
-  typography: true,
-  fill: true,
-  border: true,
-  radius: true,
-  effects: true,
-  layout: true,
-  dimensions: true
-}
-
-const TARGET_LABELS: { key: keyof ApplyStylesTargets; label: string }[] = [
-  { key: 'typography', label: 'Typography' },
-  { key: 'fill', label: 'Fill' },
-  { key: 'border', label: 'Border' },
-  { key: 'radius', label: 'Radius' },
-  { key: 'effects', label: 'Effects' },
-  { key: 'layout', label: 'Auto Layout' },
-  { key: 'dimensions', label: 'Dimensions' }
-]
-
-type ApplyUiState =
-  | { kind: 'idle' | 'loading' }
-  | { kind: 'ok'; appliedTo: number; skipped: string[] }
-  | { kind: 'error'; message: string }
+const KIND = 'apply-to-selection'
+// Фиксированный размер overlay-окна под попап (см. main/overlay.ts) — своё
+// внутреннее содержимое (ApplyToSelectionContent) прокручивается, если вдруг
+// не влезло, `.popover`'s max-height:100% это уже покрывает.
+const WIDTH = 300
+const HEIGHT = 460
+const GAP = 6
 
 /**
- * Вынесено из InspectorPanel в toolbar (по запросу пользователя) — Apply to
- * Selection нужен из любого места, не только когда правая панель открыта.
- * Держит собственное состояние targets/applyState независимо от
- * InspectorPanel — та же "самодостаточный popover" схема, что и
- * BridgePopover/SettingsPopover; знает про наличие выбранного элемента через
- * тот же `onInspectorSelection`-листенер, что и InspectorPanel (несколько
- * подписчиков на одно IPC-событие — штатно, см. preload/index.ts).
+ * Иконка-якорь в PickerFloatBar. Само содержимое попапа (`ApplyToSelectionContent`)
+ * больше НЕ рендерится здесь — оно в отдельном overlay-рендерере поверх
+ * встроенного браузера (см. main/overlay.ts, OverlayRoot.tsx), чтобы попап
+ * был визуально НАД браузером без hide/inset-компромиссов, которые не устроили
+ * пользователя. Этот компонент только: (1) считает координаты, где должен
+ * появиться попап (та же арифметика, что раньше делал CSS `.popover-up`:
+ * правый край попапа = правый край якоря, нижний край попапа = верх якоря − 6px);
+ * (2) шлёт `overlayOpen`/`overlayClose`; (3) знает, открыт ли ИМЕННО ЕГО попап
+ * прямо сейчас — через `onOverlayContent` (общий канал, транслируется
+ * ОБОИМ рендерерам на любое открытие/закрытие, включая закрытие изнутри
+ * overlay по Escape/клику-снаружи — поэтому `open` здесь производный, а не
+ * собственный источник правды).
  */
-export function ApplyToSelectionPopover({ placement = 'down' }: { placement?: 'down' | 'up' | 'up-stretch' }): JSX.Element {
-  const [open, setOpen] = useState(false)
+export function ApplyToSelectionPopover(): JSX.Element {
   const [hasSelection, setHasSelection] = useState(false)
-  const [targets, setTargets] = useState<ApplyStylesTargets>(ALL_TARGETS)
-  const [state, setState] = useState<ApplyUiState>({ kind: 'idle' })
-  useBrowserBottomInset(open)
+  const [open, setOpen] = useState(false)
+  const ref = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
-    return window.api.onInspectorSelection(() => {
-      setHasSelection(true)
-      setState({ kind: 'idle' })
-    })
+    const offSelection = window.api.onInspectorSelection(() => setHasSelection(true))
+    const offOverlay = window.api.onOverlayContent((kind) => setOpen(kind === KIND))
+    return () => {
+      offSelection()
+      offOverlay()
+    }
   }, [])
 
-  const handleApply = async (): Promise<void> => {
-    setState({ kind: 'loading' })
-    const result = await window.api.inspectorApplyStyles(targets)
-    setState(
-      result.ok
-        ? { kind: 'ok', appliedTo: result.appliedTo ?? 0, skipped: result.skipped ?? [] }
-        : { kind: 'error', message: result.error ?? 'Не удалось применить стили' }
-    )
+  useEffect(() => {
+    if (!open) return
+    const onPointerDown = (e: PointerEvent): void => {
+      if (ref.current && !ref.current.contains(e.target as Node)) window.api.overlayClose()
+    }
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') window.api.overlayClose()
+    }
+    document.addEventListener('pointerdown', onPointerDown)
+    document.addEventListener('keydown', onKeyDown)
+    return () => {
+      document.removeEventListener('pointerdown', onPointerDown)
+      document.removeEventListener('keydown', onKeyDown)
+    }
+  }, [open])
+
+  const toggle = (): void => {
+    if (open) {
+      window.api.overlayClose()
+      return
+    }
+    const rect = ref.current!.getBoundingClientRect()
+    window.api.overlayOpen({
+      kind: KIND,
+      x: Math.max(8, Math.round(rect.right - WIDTH)),
+      y: Math.round(rect.top - GAP - HEIGHT),
+      width: WIDTH,
+      height: HEIGHT
+    })
   }
 
   return (
-    <Popover
-      open={open}
-      onClose={() => setOpen(false)}
-      placement={placement}
-      anchor={
-        <IconButton active={open} disabled={!hasSelection} onClick={() => setOpen((v) => !v)} title="Apply to Selection">
-          <Wand2 size={16} />
-        </IconButton>
-      }
-    >
-      <div className="popover-section">
-        <div className="popover-label">Apply to Selection</div>
-        {!hasSelection ? (
-          <div className="placeholder-hint">Сначала выберите элемент через Inspector.</div>
-        ) : (
-          <>
-            <div className="placeholder-hint">
-              Перенести выбранные категории стилей на уже выделенные слои в Figma (не создаёт новых нод).
-            </div>
-            {TARGET_LABELS.map(({ key, label }) => (
-              <div key={key} className="popover-row">
-                <span>{label}</span>
-                <Switch checked={targets[key]} onChange={(v) => setTargets((t) => ({ ...t, [key]: v }))} />
-              </div>
-            ))}
-            <ToolbarButton primary disabled={state.kind === 'loading'} onClick={handleApply}>
-              {state.kind === 'loading' ? 'Применение…' : 'Apply to Selection'}
-            </ToolbarButton>
-            {state.kind === 'ok' && (
-              <div className="import-status ok">
-                Применено к {state.appliedTo} слоям.
-                {state.skipped.length > 0 && (
-                  <ul className="apply-skipped-list">
-                    {state.skipped.map((s, i) => (
-                      <li key={i}>{s}</li>
-                    ))}
-                  </ul>
-                )}
-              </div>
-            )}
-            {state.kind === 'error' && <div className="import-status error">{state.message}</div>}
-          </>
-        )}
-      </div>
-    </Popover>
+    <div ref={ref} className="popover-anchor">
+      <IconButton active={open} disabled={!hasSelection} onClick={toggle} title="Apply to Selection">
+        <Wand2 size={16} />
+      </IconButton>
+    </div>
   )
 }

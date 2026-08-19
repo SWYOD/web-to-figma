@@ -22,6 +22,20 @@ export interface StyleCatalog {
   solidPaintStyles: PaintStyle[]
 }
 
+/**
+ * Раздельные переключатели для шрифтов и цветов (пользователь явно попросил
+ * не объединять в один общий "стили проекта") — `catalog` грузится, если
+ * ХОТЯ БЫ один из двух включён, но каждый узел проверяет СВОЙ флаг перед
+ * тем, как пробовать матчинг конкретно для текста/цвета.
+ */
+export interface StyleMatchOptions {
+  catalog: StyleCatalog | null
+  matchText: boolean
+  matchColor: boolean
+}
+
+export const NO_STYLE_MATCHING: StyleMatchOptions = { catalog: null, matchText: false, matchColor: false }
+
 export async function loadStyleCatalog(): Promise<StyleCatalog> {
   const [textStyles, paintStyles] = await Promise.all([figma.getLocalTextStylesAsync(), figma.getLocalPaintStylesAsync()])
   return {

@@ -52,9 +52,11 @@ export interface AppSettings {
   themeId: string
   /** Темы, созданные пользователем в редакторе темы (см. ThemeEditorModal). */
   customThemes: ThemeDef[]
-  /** Import as Frame: подбирать ближайший локальный text/paint style проекта
-   *  вместо "голых" значений — см. apps/figma-plugin/renderers/styleMatching.ts. */
-  useMatchedStyles: boolean
+  /** Import as Frame: подбирать ближайший локальный style проекта вместо
+   *  "голых" значений, раздельно для шрифтов (text style) и цветов (paint
+   *  style) — см. apps/figma-plugin/renderers/styleMatching.ts. */
+  useMatchedTextStyles: boolean
+  useMatchedColorStyles: boolean
 }
 
 export interface BridgeInfo {
@@ -84,6 +86,14 @@ export interface ViewBounds {
   y: number
   width: number
   height: number
+}
+
+/** См. main/overlay.ts — попап, который должен визуально стоять НАД
+ *  встроенным браузером, а не прятать/подвинуть его (см. main/browser.ts,
+ *  useBrowserBottomInset). `bounds` — в системе координат окна (DIP), той же,
+ *  что `getBoundingClientRect()` в renderer, см. BrowserViewport.tsx. */
+export interface OverlayOpenPayload extends ViewBounds {
+  kind: string
 }
 
 export interface ElementLayout {
@@ -182,6 +192,15 @@ export interface Api {
    *  popover/модалка, которая визуально заходит в browser area — см.
    *  usePopoverVisibility и main/browser.ts класс-docstring. */
   browserSetHidden: (hidden: boolean) => Promise<void>
+
+  /** См. main/overlay.ts — открывает попап в отдельном composited-слое НАД
+   *  браузером, ничего не пряча и не подвигая. */
+  overlayOpen: (payload: OverlayOpenPayload) => Promise<void>
+  overlayClose: () => Promise<void>
+  /** `content` — `{kind}` открытого попапа или `null`; шлётся ОБОИМ рендерерам
+   *  (главному окну и overlay) на любое изменение — единственный источник
+   *  правды про то, что сейчас открыто (см. index.ts `setOverlay`). */
+  onOverlayContent: (cb: (kind: string | null) => void) => () => void
   browserGetState: () => Promise<BrowserState>
   onBrowserState: (cb: (state: BrowserState) => void) => () => void
 
@@ -189,7 +208,7 @@ export interface Api {
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
-  inspectorImportAsFrame: (useMatchedStyles: boolean) => Promise<ImportResult>
+  inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean) => Promise<ImportResult>
   inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
 
   recentSitesGet: () => Promise<RecentSite[]>

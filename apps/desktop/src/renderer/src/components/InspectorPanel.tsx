@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelTitle, Switch } from '@web-to-figma/ui'
 import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
-import type { ElementSummary, PickState } from '../../../shared/types'
+import type { AppSettings, ElementSummary, PickState } from '../../../shared/types'
 
 const LEVEL_LABEL: Record<ConfidenceLevel, string> = { high: 'высокая', medium: 'средняя', low: 'низкая' }
 
@@ -57,6 +57,7 @@ export function InspectorPanel(): JSX.Element {
         )}
         {showDetails && <SelectionCard element={selection} />}
       </Block>
+      <ImportStylesBlock />
       {showDetails && (
         <Block>
           <BlockHead>Import Quality</BlockHead>
@@ -124,6 +125,51 @@ export function InspectorPanel(): JSX.Element {
         </>
       )}
     </Panel>
+  )
+}
+
+/**
+ * "Стили проекта" — независимо от текущего выбора (не под `showDetails`,
+ * это глобальная настройка Import as Frame, а не свойство элемента). Раньше
+ * жила как один общий переключатель в попапе над плавающим баром
+ * (`ImportSettingsPopover`) — по запросу пользователя вынесена в правую
+ * панель и разделена на два независимых тумблера (шрифты/цвета), т.к.
+ * пользователь может захотеть матчить, например, только цвета, не трогая
+ * шрифты. Читает/пишет `AppSettings` напрямую (тот же самодостаточный
+ * паттерн, что у других popover'ов) — `PickerFloatBar.handleImport()`
+ * перечитывает актуальные значения в момент клика на Import as Frame.
+ */
+function ImportStylesBlock(): JSX.Element | null {
+  const [settings, setSettings] = useState<AppSettings | null>(null)
+
+  useEffect(() => {
+    window.api.getSettings().then(setSettings)
+  }, [])
+
+  if (!settings) return null
+
+  const update = (patch: Partial<Pick<AppSettings, 'useMatchedTextStyles' | 'useMatchedColorStyles'>>): void => {
+    const next = { ...settings, ...patch }
+    setSettings(next)
+    window.api.saveSettings(next)
+  }
+
+  return (
+    <Block>
+      <BlockHead>Стили проекта при импорте</BlockHead>
+      <div className="prop-row">
+        <span className="prop-label">Шрифты</span>
+        <Switch checked={settings.useMatchedTextStyles} onChange={(v) => update({ useMatchedTextStyles: v })} />
+      </div>
+      <div className="prop-row">
+        <span className="prop-label">Цвета</span>
+        <Switch checked={settings.useMatchedColorStyles} onChange={(v) => update({ useMatchedColorStyles: v })} />
+      </div>
+      <div className="placeholder-hint">
+        Вместо исходных значений — ближайший локальный text/paint style файла (шрифт — по кеглю, цвет — по расстоянию в
+        RGBA). Если подходящего стиля нет — используется исходное значение.
+      </div>
+    </Block>
   )
 }
 

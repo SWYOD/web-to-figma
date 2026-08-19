@@ -192,11 +192,12 @@ Figma TextNode нет фона — непрозрачный `background-color` �
 `loadFontAsync` бросает (шрифт/начертание не установлены в Figma) — весь
 рендер-пайплайн (`designNode.ts`) поэтому асинхронный.
 
-**"Стили проекта" (`useMatchedStyles`) — необязательный второй проход поверх
-raw-рендера.** `renderers/styleMatching.ts` подбирает ближайший локальный
-text style (по fontSize) / solid paint style (по RGBA-расстоянию) и
-привязывает узел к нему (`setTextStyleIdAsync`/`fillStyleId`/`strokeStyleId`)
-вместо raw-значения — только когда `ImportNodeMessage.payload.useMatchedStyles`
+**"Стили проекта" (`useMatchedTextStyles`/`useMatchedColorStyles`, раздельно) —
+необязательный второй проход поверх raw-рендера.** `renderers/styleMatching.ts`
+подбирает ближайший локальный text style (по fontSize) / solid paint style
+(по RGBA-расстоянию) и привязывает узел к нему (`setTextStyleIdAsync`/
+`fillStyleId`/`strokeStyleId`) вместо raw-значения — независимо для шрифтов и
+для цветов, только когда соответствующий флаг `ImportNodeMessage.payload`
 включён (desktop-настройка), и только если подходящий стиль реально нашёлся,
 иначе raw-значение остаётся как есть. См. `docs/architecture.md`,
 `docs/bridge-protocol.md`.

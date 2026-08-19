@@ -57,11 +57,15 @@ Phase 1 реализовала и реально гоняла по сети то
 `ImportAsset(s)` (доставка ref-транспорта >256KB по требованию) и
 `GetSelection` — по-прежнему только контракт, без реализации.
 
-`ImportNodeMessage.payload.useMatchedStyles?: boolean` (добавлено вместе со
-"стилями проекта" — см. `apps/figma-plugin/src/main/renderers/styleMatching.ts`)
-— optional для обратной совместимости, отсутствие трактуется как `false`.
-Управляется настройкой `AppSettings.useMatchedStyles` в desktop (переключатель
-в `ImportSettingsPopover`, попап рядом с "Import as Frame" в floating bar).
+`ImportNodeMessage.payload.useMatchedTextStyles?: boolean` /
+`useMatchedColorStyles?: boolean` (добавлены вместе со "стилями проекта" —
+см. `apps/figma-plugin/src/main/renderers/styleMatching.ts`) — независимые
+переключатели для шрифтов и цветов (не один общий, пользователь явно
+попросил раздельно), оба optional для обратной совместимости, отсутствие
+трактуется как `false`. Управляются `AppSettings.useMatchedTextStyles`/
+`useMatchedColorStyles` в desktop — блок "Стили проекта при импорте" в
+`InspectorPanel.tsx` (не popover — живёт в правой панели как обычная
+настройка, читается заново в момент клика на Import as Frame).
 
 ## Handshake
 

@@ -115,6 +115,9 @@ interface DesignNode {
   cornerRadius?: number | CornerRadius
   opacity?: number
   rotationDeg?: number
+  /** Из CSS overflow/overflow-x/overflow-y — true, если хоть одна ось не 'visible'
+   *  (браузерный дефолт). undefined трактуется как false, не как дефолт Figma API. */
+  clipsContent?: boolean
   asset?: AssetReference
   /** Оригинальный DOM-контекст — не рендерится, только для диагностики/повторного импорта. */
   source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }

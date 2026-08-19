@@ -136,6 +136,14 @@ export interface DesignNode {
   cornerRadius?: number | z.infer<typeof CornerRadiusSchema>
   opacity?: number
   rotationDeg?: number
+  /** Из CSS `overflow`/`overflow-x`/`overflow-y` — true, если хоть одна ось не
+   *  'visible' (браузерный дефолт). Без этого дети, выходящие за пределы
+   *  родителя (напр. декоративные ::before/::after со смещением через
+   *  transform), либо утекают за край видимого фрейма там, где сайт их
+   *  обрезает, либо наоборот обрезаются там, где сайт даёт им "вытечь" —
+   *  оба расхождения заметны на глаз. Undefined трактуется как false
+   *  (CSS-дефолт), а не наследует поведение Figma API по умолчанию. */
+  clipsContent?: boolean
   asset?: z.infer<typeof AssetReferenceSchema>
   source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }
   children?: DesignNode[]
@@ -156,6 +164,7 @@ export const DesignNodeSchema: z.ZodType<DesignNode> = z.lazy(() =>
     cornerRadius: z.union([z.number(), CornerRadiusSchema]).optional(),
     opacity: z.number().min(0).max(1).optional(),
     rotationDeg: z.number().optional(),
+    clipsContent: z.boolean().optional(),
     asset: AssetReferenceSchema.optional(),
     source: z
       .object({

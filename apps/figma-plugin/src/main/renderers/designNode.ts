@@ -57,6 +57,11 @@ async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<Scen
 
   applyCornerRadius(frame, node.cornerRadius)
   applyLayout(frame, node.layout)
+  // Явно, не полагаясь на дефолт figma.createFrame() — CSS overflow:visible
+  // (браузерный дефолт) должен НЕ обрезать, что фактически важно для детей,
+  // выходящих за границы (напр. декоративные ::before/::after со смещением
+  // через transform, см. docs/architecture.md находку "double border").
+  frame.clipsContent = node.clipsContent ?? false
 
   if (node.opacity !== undefined) frame.opacity = node.opacity
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg

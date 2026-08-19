@@ -29,16 +29,6 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   const id = nanoid()
   const style = snapshot.computedStyle
 
-  const transform = style['transform']
-  if (transform && transform !== 'none') {
-    diagnostics.push({
-      nodeId: id,
-      code: 'transform-not-applied',
-      severity: 'info',
-      message: `CSS transform (${transform}) обнаружен, но пока не применяется — материализация transform запланирована для более поздней фазы.`
-    })
-  }
-
   // Текстовый лист (snapshot.text задан только для чистого текста без вложенных
   // элементов, см. domSnapshot.ts extractDirectText) обходит asset ТОЛЬКО когда
   // asset не задан — приоритет image/vector сохраняется, если оба сигнала пришли.
@@ -78,7 +68,26 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   const opacity = parseLength(style['opacity'], 1)
   const strokes = parseBorder(style)
   const cornerRadius = parseCornerRadius(style)
+  const clipsContent = isTextLeaf ? false : parseClipsContent(style)
   const layout = resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentLayoutMode, id, diagnostics)
+
+  // Чистый translate() на абсолютно спозиционированном узле НЕ нуждается в
+  // отдельном diagnostic: box-модель (CDP DOM.getBoxModel), из которой мы
+  // берём layout.absolute.x/y, уже отражает СМЕЩЁННЫЕ transform'ом экранные
+  // координаты (проверено вживую — см. architecture.md находку про
+  // ::before/::after со "стопкой бумаг" transform:translate()). Для узлов в
+  // обычном flow (Auto Layout родителя решает позицию сам, наши x/y не
+  // используются) и для rotate/scale/skew — по-прежнему честный warning,
+  // т.к. они реально не применяются к результирующей Figma-ноде.
+  const transform = style['transform']
+  if (transform && transform !== 'none' && !(layout.positioning === 'absolute' && isPureTranslate(transform))) {
+    diagnostics.push({
+      nodeId: id,
+      code: 'transform-not-applied',
+      severity: 'info',
+      message: `CSS transform (${transform}) обнаружен, но пока не применяется — материализация transform запланирована для более поздней фазы.`
+    })
+  }
 
   const children = isTextLeaf ? undefined : snapshot.children?.map((child) => convertNode(child, diagnostics, layout.mode))
 
@@ -96,6 +105,7 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     ...(effects.length > 0 ? { effects } : {}),
     ...(cornerRadius !== undefined ? { cornerRadius } : {}),
     ...(opacity < 1 ? { opacity } : {}),
+    ...(clipsContent ? { clipsContent } : {}),
     ...(children && children.length > 0 ? { children } : {}),
     source: {
       tag: snapshot.tag,
@@ -146,6 +156,38 @@ function buildSelector(snapshot: DomSnapshotNode): string {
   const idPart = snapshot.id ? `#${snapshot.id}` : ''
   const classPart = snapshot.classes.map((c) => `.${c}`).join('')
   return `${snapshot.tag}${idPart}${classPart}`
+}
+
+/**
+ * CSS default для `overflow`/`overflow-x`/`overflow-y` — 'visible' (не
+ * обрезает). Любое другое значение (`hidden`/`clip`/`scroll`/`auto`) в
+ * реальных браузерах визуально обрезает содержимое, выходящее за границы
+ * padding-box — грубое приближение (auto/scroll не обрезают ДО overflow,
+ * только после, но для статического снапшота разница не наблюдаема),
+ * зато честнее, чем всегда доверять дефолту Figma API для новых фреймов.
+ * Заметно на практике: декоративные ::before/::after со смещением через
+ * transform (см. п.21 находка "double border" в architecture.md) либо
+ * утекают за край там, где сайт их обрезает, либо наоборот обрезаются там,
+ * где сайт даёт им "вытечь" — без чтения overflow оба случая расходятся.
+ */
+/** Computed `transform` — всегда `matrix(a, b, c, d, tx, ty)` (браузер
+ *  нормализует любой transform-синтаксис в матрицу). Чистый translate —
+ *  единичная a/d, нулевые b/c, произвольные tx/ty. Малый epsilon —
+ *  подстраховка от float-погрешности вычисления матрицы браузером. */
+function isPureTranslate(transform: string): boolean {
+  const match = transform.match(/^matrix\(([^)]+)\)$/)
+  if (!match) return false
+  const parts = (match[1] ?? '').split(',').map((p) => parseFloat(p.trim()))
+  if (parts.length !== 6 || parts.some((p) => Number.isNaN(p))) return false
+  const [a, b, c, d] = parts
+  const EPSILON = 0.001
+  return Math.abs((a ?? 0) - 1) < EPSILON && Math.abs(b ?? 0) < EPSILON && Math.abs(c ?? 0) < EPSILON && Math.abs((d ?? 0) - 1) < EPSILON
+}
+
+function parseClipsContent(style: Record<string, string>): boolean {
+  const x = style['overflow-x'] ?? style['overflow'] ?? 'visible'
+  const y = style['overflow-y'] ?? style['overflow'] ?? 'visible'
+  return x !== 'visible' || y !== 'visible'
 }
 
 function parseBorder(style: Record<string, string>): StrokeInfo | undefined {

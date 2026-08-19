@@ -19,7 +19,8 @@
 | Nested flex (несколько уровней) | ✅ | 4 | Phase 8, рекурсивный обход через CDP + `convertElement` |
 | `::before` / `::after` | ✅ | 5 | Phase 8, материализуются как обычные дочерние узлы через `pseudoElements`/`backendNodeId`, без JS-инъекции |
 | `transform: matrix()`/`matrix3d()` | ⚠️ (по дизайну) | 6 | Не применяется, только diagnostic `transform-not-applied` — осознанный fallback, не баг |
-| `transform: translate/rotate/scale` (простые) | ⏳ | — | Не реализовано |
+| `transform: translate()` (чистый, `position:absolute`) | ✅ | — | См. отдельную строку ниже — уже покрыто box-моделью, не отдельная материализация |
+| `transform: translate()` не на absolute-узле / `rotate/scale/skew` (любой) | ⏳ | — | Не реализовано, diagnostic `transform-not-applied` честно предупреждает |
 | `<img>` / raster | ✅ | 7 | Phase 9 (asset-engine) — `fetch()` из main-процесса, hash-дедуп, `figma.createImage` |
 | `srcset` (выбор варианта) | ⏳ | — | Не реализовано, берётся только `src` |
 | inline `<svg>` / `.svg` | ✅ | 8 | Phase 9, сохраняется как vector через `figma.createNodeFromSvg`, не растрируется |
@@ -30,7 +31,8 @@
 | `font-family`/`font-size`/`font-weight`/`line-height` | ✅ | — | Phase 5 (значения) + текстовый узел (см. ниже) — подбор начертания под installed-в-Figma шрифты эвристический (по имени стиля от font-weight), не "нашёл точное совпадение" — фолбэк Inter Regular, если `loadFontAsync` не находит шрифт; конфигурируемый пользователем font-mapping (п.21 ТЗ) всё ещё не реализован |
 | Реальный текст (`type:'text'`, не пустой frame) | ✅ | — | Чистый текстовый лист (все прямые дети — DOM-текстовые узлы) → `figma.createText()` с содержимым; `fills` — CSS `color`, не `background-color` (см. design-ast.md) |
 | Смешанный inline-контент (текст + вложенные теги, напр. `<p>x <b>y</b> z</p>`) | ⚠️ (по дизайну) | — | Вложенные элементы конвертируются сами по себе (напр. `<b>` → свой текстовый узел), "голый" текст вокруг них теряется с diagnostic `mixed-inline-text-not-captured` — стилизованные диапазоны внутри одного текстового узла не поддержаны |
-| `overflow: hidden` | ⏳ | — | `clipsContent`, ещё не реализовано |
+| `overflow`/`overflow-x`/`overflow-y` | ✅ | — | `hidden`/`clip`/`scroll`/`auto` на любой оси → `frame.clipsContent = true`; `visible` (браузерный дефолт) → `false`, всегда выставляется явно, не полагаемся на дефолт Figma API |
+| `transform: translate()` (чистый, без rotate/scale/skew) на `position:absolute`-узле | ✅ | — | Позиция уже включает смещение через `DOM.getBoxModel` (проверено вживую) — не нужно применять отдельно, diagnostic `transform-not-applied` для этого случая подавлен как вводящий в заблуждение |
 | `canvas`/WebGL контент | ⏳ → raster snapshot (по дизайну) | — | Phase 9, обязательный warning |
 | CSS `calc()` | ✅ (по дизайну, "бесплатно") | — | Всегда читаем computed-значение через CDP, calc() никогда не долетает до engine |
 | CSS переменные (`var()`) | ✅ (по дизайну, "бесплатно") | — | Аналогично — резолвятся браузером до снятия снапшота |

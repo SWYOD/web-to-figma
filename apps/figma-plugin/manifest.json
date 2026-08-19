@@ -6,17 +6,17 @@
   "editorType": ["figma"],
   "networkAccess": {
     "allowedDomains": [
-      "ws://127.0.0.1:52847", "ws://127.0.0.1:52848", "ws://127.0.0.1:52849", "ws://127.0.0.1:52850", "ws://127.0.0.1:52851",
-      "ws://127.0.0.1:52852", "ws://127.0.0.1:52853", "ws://127.0.0.1:52854", "ws://127.0.0.1:52855", "ws://127.0.0.1:52856",
-      "http://127.0.0.1:52847", "http://127.0.0.1:52848", "http://127.0.0.1:52849", "http://127.0.0.1:52850", "http://127.0.0.1:52851",
-      "http://127.0.0.1:52852", "http://127.0.0.1:52853", "http://127.0.0.1:52854", "http://127.0.0.1:52855", "http://127.0.0.1:52856"
+      "ws://localhost:52847", "ws://localhost:52848", "ws://localhost:52849", "ws://localhost:52850", "ws://localhost:52851",
+      "ws://localhost:52852", "ws://localhost:52853", "ws://localhost:52854", "ws://localhost:52855", "ws://localhost:52856",
+      "http://localhost:52847", "http://localhost:52848", "http://localhost:52849", "http://localhost:52850", "http://localhost:52851",
+      "http://localhost:52852", "http://localhost:52853", "http://localhost:52854", "http://localhost:52855", "http://localhost:52856"
     ],
     "devAllowedDomains": [
-      "ws://127.0.0.1:52847", "ws://127.0.0.1:52848", "ws://127.0.0.1:52849", "ws://127.0.0.1:52850", "ws://127.0.0.1:52851",
-      "ws://127.0.0.1:52852", "ws://127.0.0.1:52853", "ws://127.0.0.1:52854", "ws://127.0.0.1:52855", "ws://127.0.0.1:52856",
-      "http://127.0.0.1:52847", "http://127.0.0.1:52848", "http://127.0.0.1:52849", "http://127.0.0.1:52850", "http://127.0.0.1:52851",
-      "http://127.0.0.1:52852", "http://127.0.0.1:52853", "http://127.0.0.1:52854", "http://127.0.0.1:52855", "http://127.0.0.1:52856"
+      "ws://localhost:52847", "ws://localhost:52848", "ws://localhost:52849", "ws://localhost:52850", "ws://localhost:52851",
+      "ws://localhost:52852", "ws://localhost:52853", "ws://localhost:52854", "ws://localhost:52855", "ws://localhost:52856",
+      "http://localhost:52847", "http://localhost:52848", "http://localhost:52849", "http://localhost:52850", "http://localhost:52851",
+      "http://localhost:52852", "http://localhost:52853", "http://localhost:52854", "http://localhost:52855", "http://localhost:52856"
     ],
-    "reasoning": "Подключение к локальному desktop-приложению Web To Figma через WebSocket (импорт элементов) и локальный HTTP-эндпоинт /pairing (автоматическое обнаружение токена подключения без ручного ввода кода) на 127.0.0.1, порт может отличаться в пределах диапазона fallback."
+    "reasoning": "Подключение к локальному desktop-приложению Web To Figma через WebSocket (импорт элементов) и локальный HTTP-эндпоинт /pairing (автоматическое обнаружение токена подключения без ручного ввода кода) на localhost, порт может отличаться в пределах диапазона fallback. IP-литерал 127.0.0.1 не проходит валидацию Figma manifest ('must be a valid URL') — только доменные имена/localhost."
   }
 }

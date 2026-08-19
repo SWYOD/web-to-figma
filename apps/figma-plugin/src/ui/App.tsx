@@ -44,7 +44,10 @@ async function discoverPairing(): Promise<Pairing | null> {
     const controller = new AbortController()
     const timeout = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS)
     try {
-      const res = await fetch(`http://127.0.0.1:${port}/pairing`, { signal: controller.signal })
+      // localhost, не 127.0.0.1 — Figma manifest's networkAccess.allowedDomains
+      // не проходит IP-литералы валидацией ("must be a valid URL"), только
+      // доменные имена/localhost (см. manifest.json reasoning).
+      const res = await fetch(`http://localhost:${port}/pairing`, { signal: controller.signal })
       if (!res.ok) throw new Error('not ok')
       const data = (await res.json()) as { token?: unknown }
       if (typeof data.token !== 'string') throw new Error('bad payload')
@@ -148,7 +151,7 @@ function Plugin(): JSX.Element {
   useEffect(() => {
     if (pairing === 'searching') return
     const client = new BridgeClient({
-      url: `ws://127.0.0.1:${pairing.port}`,
+      url: `ws://localhost:${pairing.port}`,
       token: pairing.token,
       clientVersion: PLUGIN_VERSION,
       onStateChange: setState,

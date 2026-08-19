@@ -17,6 +17,7 @@ import type {
   BridgeInfo,
   ImportResult,
   OverlayOpenPayload,
+  OverlaySize,
   PickState,
   RecentSite,
   SelectionResult,
@@ -113,10 +114,35 @@ let overlayController: OverlayController | null = null
  *  какой контент рисовать), поэтому Escape/клик-снаружи/потеря фокуса
  *  браузером всегда закрывают попап согласованно в обоих местах. */
 let overlayKind: string | null = null
+/** x/width заданы вызывающей стороной один раз при открытии, anchorTop —
+ *  верх кнопки-якоря; height пересчитывается на каждый `overlay:report-size`
+ *  от overlay-рендерера (реальная высота контента заранее неизвестна) — см.
+ *  applyOverlayBounds(). */
+let overlayGeometry: { x: number; width: number; anchorTop: number } | null = null
 
-function setOverlay(kind: string | null, bounds?: ViewBounds): void {
+const OVERLAY_GAP = 6
+// Разумная стартовая оценка высоты — применяется СРАЗУ при открытии, пока
+// overlay ещё не успел измерить и прислать реальную (см. applyOverlayBounds) —
+// нижний край попапа считается от неё так же, как от реальной, поэтому даже
+// эта оценка уже прижата к якорю корректно, просто верх box'а (невидим,
+// прозрачный фон) может на кадр оказаться чуть выше/ниже настоящего.
+const OVERLAY_INITIAL_HEIGHT_GUESS = 420
+
+function applyOverlayBounds(height: number): void {
+  if (!overlayGeometry) return
+  const { x, width, anchorTop } = overlayGeometry
+  overlayController?.setBounds({
+    x,
+    y: Math.round(anchorTop - OVERLAY_GAP - height),
+    width,
+    height: Math.max(1, Math.ceil(height))
+  })
+}
+
+function setOverlay(kind: string | null, geometry?: { x: number; width: number; anchorTop: number }): void {
   overlayKind = kind
-  if (kind && bounds) overlayController?.setBounds(bounds)
+  overlayGeometry = kind ? (geometry ?? null) : null
+  if (overlayGeometry) applyOverlayBounds(OVERLAY_INITIAL_HEIGHT_GUESS)
   else overlayController?.hide()
   mainWindow?.webContents.send('overlay:content', kind)
   overlayController?.send('overlay:content', kind)
@@ -170,7 +196,14 @@ function createWindow(): void {
 
   elementPicker = new ElementPicker(
     () => browserController?.getWebContents() ?? null,
-    (result: SelectionResult) => mainWindow?.webContents.send('inspector:selection', result),
+    // Тоже overlayController.send — ApplyToSelectionContent живёт в overlay-
+    // рендерере (отдельный webContents, см. overlay.ts), не в главном окне;
+    // без этого он никогда не узнаёт, что элемент выбран (см. живой баг:
+    // "Сначала выберите элемент" при уже выбранном в главном окне элементе).
+    (result: SelectionResult) => {
+      mainWindow?.webContents.send('inspector:selection', result)
+      overlayController?.send('inspector:selection', result)
+    },
     (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
     // getEffectiveTheme, getViewScreenBounds // 4-й/5-й аргумент для кастомного тултипа, см. inspector.ts
   )
@@ -277,9 +310,10 @@ function registerIpc(): void {
   ipcMain.handle('browser:get-tabs', (): TabsSnapshot => browserController?.getTabsSnapshot() ?? { tabs: [], activeTabId: null })
 
   ipcMain.handle('overlay:open', (_e, payload: OverlayOpenPayload): void => {
-    setOverlay(payload.kind, { x: payload.x, y: payload.y, width: payload.width, height: payload.height })
+    setOverlay(payload.kind, { x: payload.x, width: payload.width, anchorTop: payload.anchorTop })
   })
   ipcMain.handle('overlay:close', (): void => setOverlay(null))
+  ipcMain.handle('overlay:report-size', (_e, size: OverlaySize): void => applyOverlayBounds(size.height))
 
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())

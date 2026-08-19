@@ -1,4 +1,4 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { isValidThemeDef, ThemeProvider } from '@web-to-figma/ui'
 import type { AppSettings } from '../../shared/types'
 import { ApplyToSelectionContent } from './components/ApplyToSelectionContent'
@@ -17,6 +17,7 @@ import { ApplyToSelectionContent } from './components/ApplyToSelectionContent'
 export function OverlayRoot(): JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [content, setContent] = useState<string | null>(null)
+  const contentRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     window.api.getSettings().then((s) => setSettings({ ...s, customThemes: s.customThemes.filter(isValidThemeDef) }))
@@ -32,6 +33,20 @@ export function OverlayRoot(): JSX.Element | null {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [content])
 
+  // Реальная высота попапа заранее неизвестна (зависит от контента — есть
+  // выбор/нет, есть результат применения/нет) — измеряем сами и шлём main'у
+  // (см. index.ts applyOverlayBounds), тот пересчитывает bounds так, чтобы
+  // нижний край попапа оставался прижат к якорю независимо от высоты.
+  useEffect(() => {
+    const el = contentRef.current
+    if (!el || !content) return
+    const observer = new ResizeObserver(() => {
+      window.api.overlayReportSize({ height: el.getBoundingClientRect().height })
+    })
+    observer.observe(el)
+    return () => observer.disconnect()
+  }, [content])
+
   if (!settings) return null
 
   return (
@@ -41,7 +56,9 @@ export function OverlayRoot(): JSX.Element | null {
       themeId={settings.themeId}
       customThemes={settings.customThemes}
     >
-      <div className="overlay-root">{content === 'apply-to-selection' && <ApplyToSelectionContent />}</div>
+      <div className="overlay-root">
+        <div ref={contentRef}>{content === 'apply-to-selection' && <ApplyToSelectionContent />}</div>
+      </div>
     </ThemeProvider>
   )
 }

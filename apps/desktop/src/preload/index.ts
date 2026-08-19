@@ -7,6 +7,7 @@ import type {
   BridgeStatusEvent,
   ImportResult,
   OverlayOpenPayload,
+  OverlaySize,
   PickState,
   RecentSite,
   SelectionResult,
@@ -45,6 +46,7 @@ const api: Api = {
 
   overlayOpen: (payload: OverlayOpenPayload) => ipcRenderer.invoke('overlay:open', payload),
   overlayClose: () => ipcRenderer.invoke('overlay:close'),
+  overlayReportSize: (size: OverlaySize) => ipcRenderer.invoke('overlay:report-size', size),
   onOverlayContent: (cb: (kind: string | null) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, kind: string | null): void => cb(kind)
     ipcRenderer.on('overlay:content', listener)

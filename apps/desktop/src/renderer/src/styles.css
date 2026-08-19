@@ -255,15 +255,21 @@
 }
 
 /* ── Overlay-окно (второй WebContentsView НАД браузером, см. main/overlay.ts,
-   OverlayRoot.tsx) — прозрачный фон вместо непрозрачного body из base.css,
-   попап заполняет весь overlay-window вместо absolute-позиционирования
-   относительно анкера (тут анкера нет — сам window уже стоит где нужно). */
+   OverlayRoot.tsx) — прозрачный фон вместо непрозрачного body из base.css.
+   Bounds окна выше реального контента (main держит стартовую оценку высоты,
+   пока overlay не измерит и не пришлёт точную — см. index.ts
+   applyOverlayBounds), поэтому контент прижимается к НИЗУ окна
+   (justify-content:flex-end) — так нижний край попапа всегда у якоря,
+   независимо от того, насколько оценка высоты сейчас неточна. */
 body.overlay-body {
   background: transparent;
 }
 .overlay-root {
   width: 100%;
   height: 100%;
+  display: flex;
+  flex-direction: column;
+  justify-content: flex-end;
 }
 .popover.overlay-popover {
   position: static;

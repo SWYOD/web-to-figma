@@ -3,12 +3,11 @@ import { Wand2 } from 'lucide-react'
 import { IconButton } from '@web-to-figma/ui'
 
 const KIND = 'apply-to-selection'
-// Фиксированный размер overlay-окна под попап (см. main/overlay.ts) — своё
-// внутреннее содержимое (ApplyToSelectionContent) прокручивается, если вдруг
-// не влезло, `.popover`'s max-height:100% это уже покрывает.
+// Ширина фиксирована (совпадает с `.popover { min-width:260px }` — попап и
+// раньше не растягивался шире), а вот ВЫСОТУ overlay сам измеряет и шлёт
+// обратно (см. OverlayRoot.tsx / overlay:report-size) — заранее неизвестна,
+// зависит от контента (есть выбор/нет, есть результат применения/нет).
 const WIDTH = 300
-const HEIGHT = 460
-const GAP = 6
 
 /**
  * Иконка-якорь в PickerFloatBar. Само содержимое попапа (`ApplyToSelectionContent`)
@@ -16,8 +15,9 @@ const GAP = 6
  * встроенного браузера (см. main/overlay.ts, OverlayRoot.tsx), чтобы попап
  * был визуально НАД браузером без hide/inset-компромиссов, которые не устроили
  * пользователя. Этот компонент только: (1) считает координаты, где должен
- * появиться попап (та же арифметика, что раньше делал CSS `.popover-up`:
- * правый край попапа = правый край якоря, нижний край попапа = верх якоря − 6px);
+ * появиться попап (правый край попапа = правый край якоря — ширина фикс.,
+ * реальную высоту и, соответственно, верх box'а досчитывает main по
+ * `overlay:report-size` от самого overlay, см. index.ts `applyOverlayBounds`);
  * (2) шлёт `overlayOpen`/`overlayClose`; (3) знает, открыт ли ИМЕННО ЕГО попап
  * прямо сейчас — через `onOverlayContent` (общий канал, транслируется
  * ОБОИМ рендерерам на любое открытие/закрытие, включая закрытие изнутри
@@ -63,9 +63,8 @@ export function ApplyToSelectionPopover(): JSX.Element {
     window.api.overlayOpen({
       kind: KIND,
       x: Math.max(8, Math.round(rect.right - WIDTH)),
-      y: Math.round(rect.top - GAP - HEIGHT),
       width: WIDTH,
-      height: HEIGHT
+      anchorTop: rect.top
     })
   }
 

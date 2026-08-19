@@ -100,11 +100,24 @@ export interface ViewBounds {
 }
 
 /** См. main/overlay.ts — попап, который должен визуально стоять НАД
- *  встроенным браузером, а не прятать/подвинуть его (см. main/browser.ts,
- *  useBrowserBottomInset). `bounds` — в системе координат окна (DIP), той же,
- *  что `getBoundingClientRect()` в renderer, см. BrowserViewport.tsx. */
-export interface OverlayOpenPayload extends ViewBounds {
+ *  встроенным браузером, а не прятать/подвинуть его. `x`/`width` заданы
+ *  вызывающей стороной (сама знает свою ширину — фиксированная, как раньше
+ *  делал CSS `.popover { min-width }`), `anchorTop` — верх якоря; `height`
+ *  сюда НЕ входит — реальная высота попапа заранее неизвестна (зависит от
+ *  контента), overlay сам измеряет себя и шлёт `overlay:report-size`, main
+ *  пересчитывает `y = anchorTop - GAP - height` так, чтобы НИЖНИЙ край попапа
+ *  всегда был прижат к якорю независимо от высоты контента. Координаты — в
+ *  системе окна (DIP), той же, что `getBoundingClientRect()` в renderer, см.
+ *  BrowserViewport.tsx. */
+export interface OverlayOpenPayload {
   kind: string
+  x: number
+  width: number
+  anchorTop: number
+}
+
+export interface OverlaySize {
+  height: number
 }
 
 export interface ElementLayout {
@@ -208,6 +221,10 @@ export interface Api {
    *  браузером, ничего не пряча и не подвигая. */
   overlayOpen: (payload: OverlayOpenPayload) => Promise<void>
   overlayClose: () => Promise<void>
+  /** Overlay-рендерер сам измеряет свой реальный контент (ResizeObserver, см.
+   *  OverlayRoot.tsx) и шлёт сюда высоту — main пересчитывает bounds так,
+   *  чтобы нижний край попапа оставался прижат к якорю (см. OverlayOpenPayload). */
+  overlayReportSize: (size: OverlaySize) => Promise<void>
   /** `content` — `{kind}` открытого попапа или `null`; шлётся ОБОИМ рендерерам
    *  (главному окну и overlay) на любое изменение — единственный источник
    *  правды про то, что сейчас открыто (см. index.ts `setOverlay`). */

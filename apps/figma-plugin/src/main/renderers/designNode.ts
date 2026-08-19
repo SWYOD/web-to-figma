@@ -34,7 +34,30 @@ export async function renderDesignNode(
     matchText || matchColorEnabled
       ? { catalog: await loadStyleCatalog({ matchText, matchColor: matchColorEnabled, colorMatchSource }), matchText, matchColor: matchColorEnabled, colorMatchSource }
       : NO_STYLE_MATCHING
+  warnIfCatalogEmpty(styleMatch)
   return buildFrame(node, assets, styleMatch)
+}
+
+/**
+ * "Стили проекта" включены, но подходящих кандидатов в файле нет вообще —
+ * пользователь иначе не узнает, ПОЧЕМУ импорт тихо остался на raw-значениях
+ * (единственный видимый симптом — "не сработало", неотличимый на глаз от
+ * реального бага в подборе). `figma.notify` — тост в самой Figma, не нужно
+ * лезть в консоль плагина за диагностикой.
+ */
+function warnIfCatalogEmpty(styleMatch: StyleMatchOptions): void {
+  if (!styleMatch.catalog) return
+  if (styleMatch.matchText && styleMatch.catalog.textStyles.length === 0) {
+    figma.notify('Text styles не найдены в файле — шрифты импортированы как есть.', { timeout: 4000 })
+  }
+  if (styleMatch.matchColor) {
+    const source = styleMatch.colorMatchSource
+    const count = source === 'variable' ? styleMatch.catalog.colorVariables.length : styleMatch.catalog.solidPaintStyles.length
+    if (count === 0) {
+      const label = source === 'variable' ? 'Color variables' : 'Paint styles'
+      figma.notify(`${label} не найдены в файле — цвета импортированы как есть.`, { timeout: 4000 })
+    }
+  }
 }
 
 async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: StyleMatchOptions): Promise<SceneNode> {

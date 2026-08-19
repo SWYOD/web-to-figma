@@ -68,7 +68,16 @@ export async function loadStyleCatalog(opts: {
   const [textStyles, paintStyles, colorVariables] = await Promise.all([
     opts.matchText ? figma.getLocalTextStylesAsync() : Promise.resolve([]),
     opts.matchColor && opts.colorMatchSource === 'style' ? figma.getLocalPaintStylesAsync() : Promise.resolve([]),
-    opts.matchColor && opts.colorMatchSource === 'variable' ? loadColorVariables() : Promise.resolve([])
+    // Variables API может бросить (напр. недоступна на текущем плане файла) —
+    // не роняем весь импорт из-за этого, откатываемся на пустой список
+    // (см. warnIfCatalogEmpty в designNode.ts — пользователь всё равно увидит
+    // тост, что кандидатов нет, независимо от того, пустой список или ошибка).
+    opts.matchColor && opts.colorMatchSource === 'variable'
+      ? loadColorVariables().catch((err) => {
+          console.error('loadColorVariables failed', err)
+          return []
+        })
+      : Promise.resolve([])
   ])
   return {
     textStyles,

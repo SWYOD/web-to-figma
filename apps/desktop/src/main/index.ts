@@ -1,4 +1,5 @@
-import { app, BrowserWindow, ipcMain, nativeTheme, shell, type Rectangle } from 'electron'
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+// import { nativeTheme, type Rectangle } from 'electron' // нужно, если включить getEffectiveTheme/getViewScreenBounds ниже
 import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
 import { nanoid } from 'nanoid'
@@ -34,26 +35,29 @@ function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
 }
 
-/** Та же логика 'system' → light/dark, что резолвит renderer через
- *  prefers-color-scheme (ThemeProvider), но со стороны main для инжекта
- *  темизированного hover-тултипа picker'а (hoverTooltip.ts), у которого нет
- *  доступа к CSS инспектируемой страницы. */
-async function getEffectiveTheme(): Promise<'light' | 'dark'> {
-  const saved = await readJson<Partial<AppSettings>>(settingsPath())
-  const mode = saved?.themeMode ?? DEFAULT_SETTINGS.themeMode
-  return mode === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : mode
-}
-
-/** Экранный (не оконный) прямоугольник WebContentsView браузера — для
- *  сопоставления screen.getCursorScreenPoint() с координатами страницы
- *  (см. inspector.ts pollHover). */
-function getViewScreenBounds(): Rectangle | null {
-  if (!mainWindow || !browserController) return null
-  const viewBounds = browserController.getBounds()
-  if (!viewBounds) return null
-  const winBounds = mainWindow.getContentBounds()
-  return { x: winBounds.x + viewBounds.x, y: winBounds.y + viewBounds.y, width: viewBounds.width, height: viewBounds.height }
-}
+// Кастомный hover-тултип picker'а временно отключён (см. inspector.ts) —
+// эти два хелпера ему и служили, оставлены закомментированными, не удалены.
+//
+// /** Та же логика 'system' → light/dark, что резолвит renderer через
+//  *  prefers-color-scheme (ThemeProvider), но со стороны main для инжекта
+//  *  темизированного hover-тултипа picker'а (hoverTooltip.ts), у которого нет
+//  *  доступа к CSS инспектируемой страницы. */
+// async function getEffectiveTheme(): Promise<'light' | 'dark'> {
+//   const saved = await readJson<Partial<AppSettings>>(settingsPath())
+//   const mode = saved?.themeMode ?? DEFAULT_SETTINGS.themeMode
+//   return mode === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : mode
+// }
+//
+// /** Экранный (не оконный) прямоугольник WebContentsView браузера — для
+//  *  сопоставления screen.getCursorScreenPoint() с координатами страницы
+//  *  (см. inspector.ts pollHover). */
+// function getViewScreenBounds(): Rectangle | null {
+//   if (!mainWindow || !browserController) return null
+//   const viewBounds = browserController.getBounds()
+//   if (!viewBounds) return null
+//   const winBounds = mainWindow.getContentBounds()
+//   return { x: winBounds.x + viewBounds.x, y: winBounds.y + viewBounds.y, width: viewBounds.width, height: viewBounds.height }
+// }
 
 function bridgeSecretPath(): string {
   return join(app.getPath('userData'), 'bridge.json')
@@ -132,9 +136,8 @@ function createWindow(): void {
   elementPicker = new ElementPicker(
     () => browserController?.getWebContents() ?? null,
     (result: SelectionResult) => mainWindow?.webContents.send('inspector:selection', result),
-    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state),
-    getEffectiveTheme,
-    getViewScreenBounds
+    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
+    // getEffectiveTheme, getViewScreenBounds // 4-й/5-й аргумент для кастомного тултипа, см. inspector.ts
   )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {

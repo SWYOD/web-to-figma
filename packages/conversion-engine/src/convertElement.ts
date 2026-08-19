@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid'
-import type { ConversionWarning, CornerRadius, DesignNode, Paint, StrokeInfo, TypographyInfo } from '@web-to-figma/design-ast'
+import type { ConversionWarning, CornerRadius, DesignNode, LayoutInfo, Paint, StrokeInfo, TypographyInfo } from '@web-to-figma/design-ast'
 import { isTransparent, parseColor } from './color.js'
 import { parseLength } from './length.js'
 import { parseBoxShadow } from './shadow.js'
@@ -7,19 +7,27 @@ import { parseLayout } from './layout.js'
 import type { DomSnapshotNode } from './domSnapshot.js'
 
 /**
- * Один DOM-снапшот → один DesignNode (`type: 'frame'`). Phase 7 добавляет
- * вывод Auto Layout для `display:flex` (`layout.ts`) — по-прежнему без
- * хождения по детям, это Phase 8 (nested trees), см. docs/architecture.md §7
- * (roadmap). Остальное — типизация: сырые computed-style строки →
- * Paint/StrokeInfo/TypographyInfo/CornerRadius по правилам
- * docs/conversion-rules.md.
- *
- * Чистая функция — не трогает CDP/Electron, тестируется в изоляции.
+ * DOM-снапшот (с детьми, Phase 8) → дерево DesignNode. Чистая функция — не
+ * трогает CDP/Electron, тестируется в изоляции.
  */
 export function convertElement(snapshot: DomSnapshotNode): { node: DesignNode; diagnostics: ConversionWarning[] } {
+  const diagnostics: ConversionWarning[] = []
+  const node = convertNode(snapshot, diagnostics, null)
+  return { node, diagnostics }
+}
+
+/**
+ * `parentLayoutMode: null` — это корень (нет родителя, positioning не имеет
+ * смысла). Иначе — режим родителя решает, остаётся ли ребёнок в обычном
+ * flow (Auto Layout родителя сам разложит) или получает явные координаты:
+ * CSS `position:absolute/fixed` — всегда; а если у родителя вообще нет
+ * Auto Layout (`mode:'none'`, обычный block-flow) — тоже, это осознанный
+ * fallback по факту захваченных координат, см. docs/conversion-rules.md
+ * §block/inline (не пытаемся вывести устойчивый межэлементный margin).
+ */
+function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[], parentLayoutMode: LayoutInfo['mode'] | null): DesignNode {
   const id = nanoid()
   const style = snapshot.computedStyle
-  const diagnostics: ConversionWarning[] = []
 
   const transform = style['transform']
   if (transform && transform !== 'none') {
@@ -37,19 +45,23 @@ export function convertElement(snapshot: DomSnapshotNode): { node: DesignNode; d
   const opacity = parseLength(style['opacity'], 1)
   const strokes = parseBorder(style)
   const cornerRadius = parseCornerRadius(style)
+  const layout = resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentLayoutMode, id, diagnostics)
+
+  const children = snapshot.children?.map((child) => convertNode(child, diagnostics, layout.mode))
 
   const node: DesignNode = {
     id,
     type: 'frame',
     name: buildName(snapshot),
     size: { width: Math.round(snapshot.box.width), height: Math.round(snapshot.box.height) },
-    layout: parseLayout(style, id, diagnostics),
+    layout,
     typography: parseTypography(style),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),
     ...(effects.length > 0 ? { effects } : {}),
     ...(cornerRadius !== undefined ? { cornerRadius } : {}),
     ...(opacity < 1 ? { opacity } : {}),
+    ...(children && children.length > 0 ? { children } : {}),
     source: {
       tag: snapshot.tag,
       ...(snapshot.id ? { id: snapshot.id } : {}),
@@ -58,7 +70,35 @@ export function convertElement(snapshot: DomSnapshotNode): { node: DesignNode; d
     }
   }
 
-  return { node, diagnostics }
+  return node
+}
+
+function resolvePositioning(
+  layout: LayoutInfo,
+  snapshot: DomSnapshotNode,
+  style: Record<string, string>,
+  parentLayoutMode: LayoutInfo['mode'] | null,
+  nodeId: string,
+  diagnostics: ConversionWarning[]
+): LayoutInfo {
+  if (parentLayoutMode === null) return layout // корень — позиционирование относительно родителя не имеет смысла
+
+  const cssPosition = style['position']
+  const absoluteCoords = { x: Math.round(snapshot.box.x), y: Math.round(snapshot.box.y) }
+
+  if (cssPosition === 'absolute' || cssPosition === 'fixed') {
+    return { ...layout, positioning: 'absolute', absolute: absoluteCoords }
+  }
+  if (parentLayoutMode === 'none') {
+    diagnostics.push({
+      nodeId,
+      code: 'block-layout-approximated',
+      severity: 'info',
+      message: 'Родитель не Flex-контейнер — узел размещён по факту захваченных координат, не через Auto Layout.'
+    })
+    return { ...layout, positioning: 'absolute', absolute: absoluteCoords }
+  }
+  return layout // родитель — Auto Layout, ребёнок в обычном flow остаётся positioning:'auto'
 }
 
 function buildName(snapshot: DomSnapshotNode): string {

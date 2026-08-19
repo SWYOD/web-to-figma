@@ -220,5 +220,29 @@ row, row-gap для column)/`align`/`justify`, с approximation-диагност
 align совпали с ожидаемыми. По пути поправлен реальный баг в
 `normalizeUrlInput`: схемы без `//` (`data:`, `about:`, `file:`, `blob:`) не
 распознавались как уже-URL и уезжали поисковым запросом) → Phase 8 (nested
-trees) → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
-(warnings/confidence score) → далее расширение scope.
+trees: `DOM.describeNode({depth:-1})` даёт всю структуру поддерева одним
+запросом (включая `pseudoElements` — оказались полноценно опрашиваемыми через
+обычные `DOM.getBoxModel`/`CSS.getComputedStyleForNode` по их
+`backendNodeId`, без инъекции `Runtime.evaluate`, что заранее не было
+очевидно и было проверено live перед реализацией), затем один batch
+`DOM.pushNodesByBackendIdsToFrontend` на все узлы разом и параллельный опрос
+box+style — не по одному узлу за раз. `conversion-engine` рекурсивно строит
+дерево `DesignNode`; позиционирование ребёнка решается по режиму РОДИТЕЛЯ:
+Auto Layout родителя — обычный flow; `position:absolute/fixed` — явные
+координаты; родитель без Auto Layout (`mode:'none'`) — тоже явные координаты
+как fallback (см. conversion-rules.md §block/inline), с info-диагностикой
+`block-layout-approximated`. Материализованные `::before`/`::after` —
+обычные дочерние узлы, отфильтрованные, если не имеют визуального эффекта.
+Защита от гигантских поддеревьев — cap на 400 узлов с diagnostic
+`subtree-truncated` при обрезании. Figma-рендерер рекурсивно `appendChild`,
+абсолютные дети получают `layoutPositioning:'ABSOLUTE'` только если у
+родителя реально есть Auto Layout (иначе просто x/y на обычном фрейме) —
+**done**. 6 новых unit-тестов в conversion-engine (fixture 3 — absolute
+badge, fixture 4 — nested flex, fixture 5 — pseudo-element) + живая
+проверка: детерминированная `data:`-страница с вложенным flex, absolute
+badge внутри flex-родителя и `::before` внутри НЕ-flex кнопки — все 9
+структурных проверок прошли на реальном `convertElement`. Осознанно не
+входит в этот срез: реальные `<text>`-узлы с содержимым и загрузкой шрифтов
+(нужен отдельный проход из-за font-matching/fallback, п.21 ТЗ) — следующий
+естественный шаг, не Phase 9) → Phase 9 (asset engine) → Phase 10 (Apply to
+Selection) → Phase 11 (warnings/confidence score) → далее расширение scope.

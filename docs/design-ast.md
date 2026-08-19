@@ -163,9 +163,12 @@ interface DesignDocument {
 который должен быть провалидирован до применения в Figma — untrusted-граница
 процесса).
 
-`packages/conversion-engine` (Phase 5, done) умеет строить один `DesignNode` из
-DOM/CSS-снапшота (`convertElement`) — типизированные Paint/StrokeInfo/
-TypographyInfo/CornerRadius/Effect[] из сырых computed-style значений, см.
-`conversion-rules.md`. Пока без Auto Layout inference и без хождения по детям —
-`layout.mode` всегда `'none'`, `children` не заполняется; это Phase 7 и Phase 8
-соответственно.
+`packages/conversion-engine` строит `DesignNode`-дерево из DOM/CSS-снапшота
+(`convertElement`) — типизированные Paint/StrokeInfo/TypographyInfo/
+CornerRadius/Effect[] из сырых computed-style значений (Phase 5), Auto Layout
+inference для `display:flex` (Phase 7), рекурсия по `children` + absolute
+positioning + материализация `::before`/`::after` (Phase 8) — всё done. Ещё
+не реализовано: реальные `type:'text'` узлы с содержимым (сейчас текстовые
+элементы — просто `'frame'` с typography-метаданными, без самого текста) и
+`type:'image'`/`'vector'` (нужен asset-engine, Phase 9); CSS Grid — только
+направление в conversion-rules.md, не код.

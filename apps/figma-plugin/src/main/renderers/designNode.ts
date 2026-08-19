@@ -5,15 +5,19 @@ import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
 
 /**
- * DesignNode → FrameNode. Auto Layout (Phase 7, `layout.ts`) применяется,
- * когда conversion-engine распознал `display:flex`; иначе — обычный фрейм.
- * Без детей (Phase 8). `node.type` в Phase 5 всегда `'frame'` — ветки на
- * другие типы не нужны, пока conversion-engine их не производит
- * (design-ast.md: "потребители обязаны иметь default-ветку на неизвестный
- * тип", но конкретную реализацию для text/image/vector добавляем тогда,
- * когда появится продюсер, не раньше).
+ * DesignNode → FrameNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
+ * (Phase 7, `layout.ts`) применяется, когда conversion-engine распознал
+ * `display:flex`; иначе — обычный фрейм. `node.type` в Phase 5 всегда
+ * `'frame'` — ветки на другие типы не нужны, пока conversion-engine их не
+ * производит (design-ast.md: "потребители обязаны иметь default-ветку на
+ * неизвестный тип", но конкретную реализацию для text/image/vector добавляем
+ * тогда, когда появится продюсер, не раньше).
  */
 export function renderDesignNode(node: DesignNode): FrameNode {
+  return buildFrame(node)
+}
+
+function buildFrame(node: DesignNode): FrameNode {
   const frame = figma.createFrame()
   frame.name = node.name
   frame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
@@ -34,6 +38,22 @@ export function renderDesignNode(node: DesignNode): FrameNode {
 
   if (node.opacity !== undefined) frame.opacity = node.opacity
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
+
+  for (const child of node.children ?? []) {
+    const childFrame = buildFrame(child)
+    frame.appendChild(childFrame)
+
+    // positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout
+    // родителя. positioning:'absolute' — либо реальный CSS absolute, либо
+    // fallback block-flow-родителя без Auto Layout (см. conversion-engine
+    // resolvePositioning) — в обоих случаях нужны явные координаты;
+    // layoutPositioning — только если у родителя ЕСТЬ что "покидать".
+    if (child.layout?.positioning === 'absolute' && child.layout.absolute) {
+      if (frame.layoutMode !== 'NONE') childFrame.layoutPositioning = 'ABSOLUTE'
+      childFrame.x = child.layout.absolute.x
+      childFrame.y = child.layout.absolute.y
+    }
+  }
 
   return frame
 }

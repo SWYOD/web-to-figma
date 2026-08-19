@@ -1,7 +1,8 @@
 import type { WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
-import { convertElement, type DomSnapshotNode } from '@web-to-figma/conversion-engine'
+import { convertElement } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning, DesignDocument, DesignNode } from '@web-to-figma/design-ast'
+import { buildSnapshotTree } from './domSnapshot'
 import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
 import type { ElementSummary, PickState, SelectionResult } from '../shared/types'
 
@@ -11,18 +12,6 @@ const log = createConsoleLogger('inspector')
 // оставляем "latest", чтобы поведение не менялось молча между версиями Chromium.
 const CDP_PROTOCOL_VERSION = '1.3'
 
-interface DescribeNodeResult {
-  node: { nodeName: string; attributes?: string[] }
-}
-interface BoxModelResult {
-  model: { width: number; height: number }
-}
-interface PushNodesResult {
-  nodeIds: number[]
-}
-interface ComputedStyleResult {
-  computedStyle: { name: string; value: string }[]
-}
 interface InspectNodeRequestedParams {
   backendNodeId: number
 }
@@ -149,48 +138,31 @@ export class ElementPicker {
     if (!wc) return
 
     try {
-      const [describe, box, pushed] = await Promise.all([
-        wc.debugger.sendCommand('DOM.describeNode', { backendNodeId: params.backendNodeId }) as Promise<DescribeNodeResult>,
-        wc.debugger.sendCommand('DOM.getBoxModel', { backendNodeId: params.backendNodeId }) as Promise<BoxModelResult>,
-        // CSS.getComputedStyleForNode принимает только nodeId, не backendNodeId — см. docs/architecture.md.
-        wc.debugger.sendCommand('DOM.pushNodesByBackendIdsToFrontend', {
-          backendNodeIds: [params.backendNodeId]
-        }) as Promise<PushNodesResult>
-      ])
-
-      const nodeId = pushed.nodeIds[0]
-      const computed = nodeId
-        ? ((await wc.debugger.sendCommand('CSS.getComputedStyleForNode', { nodeId })) as ComputedStyleResult)
-        : { computedStyle: [] }
-      const styleMap = toComputedStyleMap(computed.computedStyle)
-
-      const attrs = describe.node.attributes ?? []
-      const attrMap = new Map<string, string>()
-      for (let i = 0; i < attrs.length; i += 2) attrMap.set(attrs[i] as string, attrs[i + 1] ?? '')
-
-      const tag = describe.node.nodeName.toLowerCase()
-      const id = attrMap.get('id') || null
-      const classes = (attrMap.get('class') ?? '').split(/\s+/).filter(Boolean)
+      const { tree: snapshot, truncated } = await buildSnapshotTree(wc, params.backendNodeId)
+      const styleMap = toComputedStyleMap(
+        Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value }))
+      )
 
       const summary: ElementSummary = {
-        tag,
-        id,
-        classes,
-        width: Math.round(box.model.width),
-        height: Math.round(box.model.height),
+        tag: snapshot.tag,
+        id: snapshot.id,
+        classes: snapshot.classes,
+        width: Math.round(snapshot.box.width),
+        height: Math.round(snapshot.box.height),
         layout: parseLayout(styleMap),
         typography: parseTypography(styleMap),
         appearance: parseAppearance(styleMap)
       }
 
-      const snapshot: DomSnapshotNode = {
-        tag,
-        id,
-        classes,
-        box: { width: box.model.width, height: box.model.height },
-        computedStyle: Object.fromEntries(computed.computedStyle.map((e) => [e.name, e.value]))
-      }
       this.lastConversion = convertElement(snapshot)
+      if (truncated) {
+        this.lastConversion.diagnostics.push({
+          nodeId: this.lastConversion.node.id,
+          code: 'subtree-truncated',
+          severity: 'warning',
+          message: 'Поддерево слишком большое — часть вложенных элементов не импортирована.'
+        })
+      }
 
       this.onSelect({ element: summary, diagnostics: this.lastConversion.diagnostics })
     } catch (err) {

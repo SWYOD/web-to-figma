@@ -8,7 +8,7 @@ function snapshot(overrides: Partial<DomSnapshotNode> = {}): DomSnapshotNode {
     tag: 'div',
     id: null,
     classes: [],
-    box: { width: 200, height: 40 },
+    box: { width: 200, height: 40, x: 0, y: 0 },
     computedStyle: {
       display: 'block',
       position: 'static',

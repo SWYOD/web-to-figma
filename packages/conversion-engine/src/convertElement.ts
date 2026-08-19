@@ -51,11 +51,12 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
 
   const node: DesignNode = {
     id,
-    type: 'frame',
+    type: snapshot.asset ? (snapshot.asset.kind === 'svg' ? 'vector' : 'image') : 'frame',
     name: buildName(snapshot),
     size: { width: Math.round(snapshot.box.width), height: Math.round(snapshot.box.height) },
     layout,
     typography: parseTypography(style),
+    ...(snapshot.asset ? { asset: { assetId: snapshot.asset.assetId } } : {}),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),
     ...(effects.length > 0 ? { effects } : {}),

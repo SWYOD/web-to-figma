@@ -18,4 +18,11 @@ export interface DomSnapshotNode {
   children?: DomSnapshotNode[]
   /** Заполнено только для узлов, материализованных из ::before/::after. */
   pseudoType?: 'before' | 'after'
+  /**
+   * Phase 9 — узел уже опознан и задедуплицирован вызывающей стороной
+   * (apps/desktop, через @web-to-figma/asset-engine) как asset: `<img>` →
+   * 'raster', inline `<svg>` → 'svg'. conversion-engine сам ассеты не
+   * скачивает и не хэширует — только переводит это в `DesignNode.type`.
+   */
+  asset?: { assetId: string; kind: 'raster' | 'svg' }
 }

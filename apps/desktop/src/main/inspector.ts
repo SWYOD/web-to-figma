@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { convertElement } from '@web-to-figma/conversion-engine'
-import type { ConversionWarning, DesignDocument, DesignNode } from '@web-to-figma/design-ast'
+import type { ConversionWarning, DesignAsset, DesignDocument, DesignNode } from '@web-to-figma/design-ast'
 import { buildSnapshotTree } from './domSnapshot'
 import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
 import type { ElementSummary, PickState, SelectionResult } from '../shared/types'
@@ -42,6 +42,7 @@ const HIGHLIGHT_CONFIG = {
 export class ElementPicker {
   private active = false
   private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
+  private lastAssets: Record<string, DesignAsset> = {}
 
   constructor(
     private readonly getWebContents: () => WebContents | null,
@@ -59,7 +60,7 @@ export class ElementPicker {
     return {
       version: 1,
       root: this.lastConversion.node,
-      assets: {},
+      assets: this.lastAssets,
       diagnostics: this.lastConversion.diagnostics,
       metadata: { sourceUrl, capturedAt: new Date().toISOString(), viewport }
     }
@@ -138,7 +139,8 @@ export class ElementPicker {
     if (!wc) return
 
     try {
-      const { tree: snapshot, truncated } = await buildSnapshotTree(wc, params.backendNodeId)
+      const { tree: snapshot, truncated, assets } = await buildSnapshotTree(wc, params.backendNodeId)
+      this.lastAssets = assets
       const styleMap = toComputedStyleMap(
         Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value }))
       )

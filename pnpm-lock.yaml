@@ -17,6 +17,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@web-to-figma/asset-engine':
+        specifier: workspace:*
+        version: link:../../packages/asset-engine
       '@web-to-figma/bridge-protocol':
         specifier: workspace:*
         version: link:../../packages/bridge-protocol
@@ -121,6 +124,22 @@ importers:
       vite-plugin-singlefile:
         specifier: ^2.1.0
         version: 2.3.3(rollup@4.62.4)(vite@5.4.21(@types/node@22.20.1))
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)
+
+  packages/asset-engine:
+    dependencies:
+      '@web-to-figma/design-ast':
+        specifier: workspace:*
+        version: link:../design-ast
+    devDependencies:
+      '@types/node':
+        specifier: ^22.10.1
+        version: 22.20.1
+      typescript:
+        specifier: ^5.7.2
+        version: 5.9.3
       vitest:
         specifier: ^2.1.8
         version: 2.1.9(@types/node@22.20.1)

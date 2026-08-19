@@ -1,8 +1,17 @@
 # Asset Model
 
 Живёт в `packages/design-ast` (манифест — часть `DesignDocument`) и обслуживается
-логикой `packages/asset-engine` (Phase 9). Этот документ фиксирует модель данных
-и стратегию дедупликации/транспорта, реализация extraction pipeline — позже.
+логикой `packages/asset-engine` (Phase 9 — **реализовано**). Этот документ
+фиксирует модель данных и стратегию дедупликации/транспорта.
+
+Реализованный extraction pipeline (Phase 9): `apps/desktop/src/main/domSnapshot.ts`
+во время обхода CDP-дерева распознаёт `<img>` (растровые source) и inline
+`<svg>` (векторные, не растрируются — `figma.createNodeFromSvg` на стороне
+плагина), запрашивает байты через обычный `fetch()` из Electron main-процесса
+(не `Page.getResourceContent` — см. architecture.md, находка про ненадёжность
+этого CDP-метода для уже загруженных суб-ресурсов), нормализует/хеширует через
+`packages/asset-engine`'s `AssetCollector`. `srcset`, CSS `background-image` и
+доставка `ref`-транспорта по требованию — явно отложены на будущие срезы.
 
 ## Модель
 

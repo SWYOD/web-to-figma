@@ -1,28 +1,43 @@
 /// <reference types="@figma/plugin-typings" />
-import type { CornerRadius, DesignNode } from '@web-to-figma/design-ast'
+import type { AssetManifest, CornerRadius, DesignNode } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
+import { createImagePaint, createVectorFromAsset } from './asset'
 
 /**
  * DesignNode → FrameNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
  * (Phase 7, `layout.ts`) применяется, когда conversion-engine распознал
- * `display:flex`; иначе — обычный фрейм. `node.type` в Phase 5 всегда
- * `'frame'` — ветки на другие типы не нужны, пока conversion-engine их не
- * производит (design-ast.md: "потребители обязаны иметь default-ветку на
- * неизвестный тип", но конкретную реализацию для text/image/vector добавляем
- * тогда, когда появится продюсер, не раньше).
+ * `display:flex`; иначе — обычный фрейм. `type:'image'`/`'vector'` (Phase 9)
+ * рендерятся из `assets` манифеста DesignDocument — `asset.ts` изолирует
+ * работу с `figma.createImage`/`createNodeFromSvg`. Остальные типы
+ * (`'text'`) conversion-engine пока не производит — default-ветка не нужна
+ * раньше появления продюсера (design-ast.md).
  */
-export function renderDesignNode(node: DesignNode): FrameNode {
-  return buildFrame(node)
+export function renderDesignNode(node: DesignNode, assets: AssetManifest): FrameNode {
+  return buildFrame(node, assets)
 }
 
-function buildFrame(node: DesignNode): FrameNode {
+function buildFrame(node: DesignNode, assets: AssetManifest): FrameNode {
+  if (node.type === 'vector' && node.asset) {
+    const svgFrame = createVectorFromAsset(node.asset.assetId, assets)
+    if (svgFrame) {
+      svgFrame.name = node.name
+      svgFrame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
+      if (node.opacity !== undefined) svgFrame.opacity = node.opacity
+      if (node.rotationDeg !== undefined) svgFrame.rotation = node.rotationDeg
+      // SVG сам несёт свои fills/strokes/effects — не перезаписываем содержимым AST.
+      return svgFrame
+    }
+    // Ассет недоступен (ref-транспорт/ошибка) — тихо деградируем до обычного фрейма ниже.
+  }
+
   const frame = figma.createFrame()
   frame.name = node.name
   frame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
 
-  frame.fills = node.fills ? toFigmaPaints(node.fills) : []
+  const imagePaint = node.type === 'image' && node.asset ? createImagePaint(node.asset.assetId, assets) : null
+  frame.fills = imagePaint ? [imagePaint] : node.fills ? toFigmaPaints(node.fills) : []
 
   if (node.strokes) {
     frame.strokes = toFigmaPaints(node.strokes.paints)
@@ -40,7 +55,7 @@ function buildFrame(node: DesignNode): FrameNode {
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
 
   for (const child of node.children ?? []) {
-    const childFrame = buildFrame(child)
+    const childFrame = buildFrame(child, assets)
     frame.appendChild(childFrame)
 
     // positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout

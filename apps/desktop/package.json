@@ -12,6 +12,7 @@
     "typecheck": "npm run typecheck:node && npm run typecheck:web"
   },
   "dependencies": {
+    "@web-to-figma/asset-engine": "workspace:*",
     "@web-to-figma/bridge-protocol": "workspace:*",
     "@web-to-figma/conversion-engine": "workspace:*",
     "@web-to-figma/design-ast": "workspace:*",

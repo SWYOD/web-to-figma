@@ -244,5 +244,29 @@ badge внутри flex-родителя и `::before` внутри НЕ-flex к
 структурных проверок прошли на реальном `convertElement`. Осознанно не
 входит в этот срез: реальные `<text>`-узлы с содержимым и загрузкой шрифтов
 (нужен отдельный проход из-за font-matching/fallback, п.21 ТЗ) — следующий
-естественный шаг, не Phase 9) → Phase 9 (asset engine) → Phase 10 (Apply to
+естественный шаг, не Phase 9) → Phase 9 (asset engine: детекция `<img>`/inline
+`<svg>` во время обхода CDP-дерева, реальный HTTP fetch байтов ассетов из
+main-процесса, hash-дедуп через `packages/asset-engine`, рендер `type:'image'`
+через `figma.createImage`/`type:'vector'` через `figma.createNodeFromSvg` —
+**готово**. Новый пакет `packages/asset-engine` (`AssetCollector`,
+`fetchAssetBytes`, SHA-256 hash-дедуп с нормализацией SVG-разметки перед
+хешированием) — 7 unit-тестов. `conversion-engine` расширен asset-aware типизацией
+узлов (image/vector вместо frame при наличии `snapshot.asset`) — 3 новых теста
+(33/33 всего). Ключевая находка: `Page.getResourceContent` CDP-метода ненадёжен
+для уже загруженных суб-ресурсов (пустой `content` без ошибки для реальных
+картинок, при этом исправно работает для главного документа) — решение
+пересмотрено в пользу прямого `fetch()` из Electron main-процесса (заодно в
+обход CORS/CSP). `figma-plugin/renderers/asset.ts` изолирует работу с
+`figma.createImage`/`createNodeFromSvg` от остального рендерера
+(`designNode.ts`) — 14/14 существующих тестов плагина не пострадали (asset.ts
+не тестируется unit-тестами, т.к. напрямую использует `figma.*`, недоступные
+вне реальной Figma). Проверено вживую через `--remote-debugging-port` +
+внешний Node/CDP-скрипт на детерминированной `data:`-фикстуре (fixtures 7/8/9:
+реальная растровая картинка через `fetch()`, 3 дублированных inline SVG-иконки)
+— полный 10/10 PASS: корректная типизация image/vector, корректные
+asset-ссылки, корректный hash-дедуп (3 идентичные иконки → 1 ассет, разные
+картинки → отдельные ассеты, итого 2 уникальных). Явно отложено: отдельная
+панель Asset Inspector (просмотр/copy-to-clipboard ассетов вне единичного
+инспектируемого элемента), доставка по требованию для ref-транспорта
+(ассеты >256KB), детекция CSS `background-image`) → Phase 10 (Apply to
 Selection) → Phase 11 (warnings/confidence score) → далее расширение scope.

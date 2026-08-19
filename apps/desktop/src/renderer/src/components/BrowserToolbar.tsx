@@ -12,13 +12,17 @@ interface BrowserToolbarProps {
   onStop: () => void
 }
 
+// Стартовая страница — свой data: URL (см. main/startPage.ts), не хотим
+// показывать пользователю его сырой вид в адресной строке.
+const isStartPage = (url: string): boolean => url.startsWith('data:text/html')
+
 export function BrowserToolbar({ state, onNavigate, onBack, onForward, onReload, onStop }: BrowserToolbarProps): JSX.Element {
-  const [draft, setDraft] = useState(state.url)
+  const [draft, setDraft] = useState(isStartPage(state.url) ? '' : state.url)
   const [focused, setFocused] = useState(false)
   const inputRef = useRef<HTMLInputElement>(null)
 
   useEffect(() => {
-    if (!focused) setDraft(state.url)
+    if (!focused) setDraft(isStartPage(state.url) ? '' : state.url)
   }, [state.url, focused])
 
   const commit = (): void => {
@@ -68,7 +72,7 @@ export function BrowserToolbar({ state, onNavigate, onBack, onForward, onReload,
             onKeyDown={(e) => {
               if (e.key === 'Enter') commit()
               if (e.key === 'Escape') {
-                setDraft(state.url)
+                setDraft(isStartPage(state.url) ? '' : state.url)
                 inputRef.current?.blur()
               }
             }}

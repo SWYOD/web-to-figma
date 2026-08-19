@@ -1,10 +1,11 @@
 import { WebContentsView, type BrowserWindow, type Rectangle, type WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
+import { START_PAGE_URL } from './startPage'
 import type { BrowserState } from '../shared/types'
 
 const log = createConsoleLogger('browser')
 
-const START_URL = 'https://www.google.com'
+const START_URL = START_PAGE_URL
 
 /** -3 = ERR_ABORTED — обычная штатная ситуация (редирект/навигация прервана
  *  новой навигацией до завершения предыдущей), не настоящая ошибка загрузки. */

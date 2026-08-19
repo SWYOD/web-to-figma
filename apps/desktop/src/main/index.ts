@@ -72,7 +72,7 @@ function createWindow(): void {
     show: false,
     backgroundColor: '#0a0a0c',
     autoHideMenuBar: true,
-    title: 'Web → Figma',
+    title: 'Web To Figma',
     webPreferences: {
       preload: join(__dirname, '../preload/index.js'),
       sandbox: false,
@@ -102,9 +102,28 @@ function createWindow(): void {
   )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
-    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+    void loadDevUrlWithRetry(mainWindow, process.env['ELECTRON_RENDERER_URL'])
   } else {
     mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+/**
+ * electron-vite сигналит "dev server running" и сразу запускает Electron, но
+ * на некоторых машинах первый connect на localhost:5173 всё равно ловит
+ * ECONNREFUSED — TCP-listener Vite открывается на пару кадров позже своего же
+ * лога. Ретраим несколько раз с задержкой вместо падения в пустое окно.
+ */
+async function loadDevUrlWithRetry(win: BrowserWindow, url: string, attempt = 0): Promise<void> {
+  try {
+    await win.loadURL(url)
+  } catch (err) {
+    if (win.isDestroyed() || attempt >= 10) {
+      log.warn('dev server load failed, giving up', { message: (err as Error).message, attempt })
+      return
+    }
+    await new Promise((resolve) => setTimeout(resolve, 300))
+    await loadDevUrlWithRetry(win, url, attempt + 1)
   }
 }
 

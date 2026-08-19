@@ -46,7 +46,7 @@ function Shell({
     <div className="app">
       <div className="toolbar">
         <div className="toolbar-left">
-          <span className="brand">Web → Figma</span>
+          <span className="brand">Web To Figma</span>
         </div>
         <div className="toolbar-right">
           <Segmented value={themeMode} options={THEME_OPTIONS} onChange={onThemeModeChange} />

@@ -26,6 +26,11 @@ export default defineConfig({
   },
   renderer: {
     root: resolve(__dirname, 'src/renderer'),
+    // Явно IPv4 loopback: без этого Vite биндится на то, во что резолвится
+    // голое "localhost" в Node на этой машине -- здесь это оказался ::1-only,
+    // а Electron's loadURL('http://localhost:5173') бьёт в 127.0.0.1 и ловит
+    // ECONNREFUSED (не race, а стабильный mismatch адресных семейств).
+    server: { host: '127.0.0.1' },
     resolve: {
       alias: {
         '@': resolve(__dirname, 'src/renderer/src'),

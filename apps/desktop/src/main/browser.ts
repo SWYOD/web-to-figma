@@ -42,9 +42,11 @@ export class BrowserController {
   constructor(
     private readonly win: BrowserWindow,
     private readonly onState: (state: BrowserState) => void,
-    /** Именно top-level навигация (не любой patch стейта) — используется
-     *  ElementPicker (Phase 3), чтобы сбрасывать pick-режим на смене страницы. */
-    private readonly onNavigate?: () => void
+    /** Именно top-level навигация (не любой patch стейта), с URL — используется
+     *  ElementPicker (Phase 3), чтобы сбрасывать pick-режим на смене страницы, и
+     *  RecentSitesStore (index.ts), чтобы записать визит — сам BrowserController
+     *  остаётся fs/IPC-агностиком, просто передаёт url колбэком. */
+    private readonly onNavigate?: (url: string) => void
   ) {}
 
   mount(): void {
@@ -72,7 +74,7 @@ export class BrowserController {
         canGoBack: wc.navigationHistory.canGoBack(),
         canGoForward: wc.navigationHistory.canGoForward()
       })
-      this.onNavigate?.()
+      this.onNavigate?.(url)
     })
     wc.on('did-navigate-in-page', (_e, url) => this.patch({ url }))
     wc.on('page-title-updated', (_e, title) => this.patch({ title }))

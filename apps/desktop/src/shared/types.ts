@@ -5,8 +5,52 @@ import type { ConversionWarning } from '@web-to-figma/design-ast'
  *  которому не нужны jsx/DOM lib). */
 export type ThemeMode = 'light' | 'dark' | 'system'
 
+/** Дублирует ThemeVars/ThemeVariant/ThemeDef из @web-to-figma/ui теми же
+ *  причинами, что и ThemeMode выше — main-процесс только читает/пишет их как
+ *  данные (settings:get/settings:save), никогда не применяет как CSS, поэтому
+ *  не нужно тянуть пакет с DOM-зависимым apply.ts. Структурно идентичны
+ *  packages/ui/src/theme/tokens.ts — TS считает их взаимозаменяемыми. */
+export interface ThemeVars {
+  bg: string
+  'bg-panel': string
+  'bg-canvas': string
+  surface: string
+  'surface-2': string
+  hover: string
+  border: string
+  'border-strong': string
+  text: string
+  'text-dim': string
+  'text-faint': string
+  accent: string
+  'accent-soft': string
+  'accent-text': string
+  danger: string
+  warning: string
+  info: string
+  success: string
+  shadow: string
+}
+
+export interface ThemeVariant {
+  vars: ThemeVars
+}
+
+export interface ThemeDef {
+  id: string
+  name: string
+  dark: boolean
+  vars: ThemeVars
+  builtin?: boolean
+  altVariant?: ThemeVariant
+}
+
 export interface AppSettings {
   themeMode: ThemeMode
+  /** id активной темы — встроенной (см. @web-to-figma/ui BUILTIN_THEMES) или из customThemes. */
+  themeId: string
+  /** Темы, созданные пользователем в редакторе темы (см. ThemeEditorModal). */
+  customThemes: ThemeDef[]
 }
 
 export interface BridgeInfo {
@@ -96,6 +140,15 @@ export interface ImportResult {
   error?: string
 }
 
+/** Одна запись истории посещений встроенного браузера (см. main/recentSites.ts). */
+export interface RecentSite {
+  url: string
+  title: string
+  faviconUrl: string | null
+  /** ISO timestamp последнего перехода на этот URL (для сортировки most-recent-first). */
+  visitedAt: string
+}
+
 export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
@@ -117,4 +170,8 @@ export interface Api {
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
   inspectorImportAsFrame: () => Promise<ImportResult>
+
+  recentSitesGet: () => Promise<RecentSite[]>
+  recentSitesRemove: (url: string) => Promise<void>
+  onRecentSitesUpdated: (cb: (list: RecentSite[]) => void) => () => void
 }

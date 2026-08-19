@@ -7,7 +7,8 @@ import { createMessage, type ErrorMessage, type ImportNodeMessage } from '@web-t
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
-import type { AppSettings, BridgeInfo, ImportResult, PickState, SelectionResult, ViewBounds } from '../shared/types'
+import { RecentSitesStore } from './recentSites'
+import type { AppSettings, BridgeInfo, ImportResult, PickState, RecentSite, SelectionResult, ViewBounds } from '../shared/types'
 
 // Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
@@ -18,7 +19,9 @@ const isDev = !app.isPackaged
 const log = createConsoleLogger('main')
 
 const DEFAULT_SETTINGS: AppSettings = {
-  themeMode: 'system'
+  themeMode: 'system',
+  themeId: 'default',
+  customThemes: []
 }
 
 interface BridgeSecret {
@@ -62,6 +65,7 @@ let bridgeServer: BridgeServer | null = null
 let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
 let elementPicker: ElementPicker | null = null
+const recentSites = new RecentSitesStore((list) => mainWindow?.webContents.send('recent-sites:updated', list))
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -90,8 +94,16 @@ function createWindow(): void {
 
   browserController = new BrowserController(
     mainWindow,
-    (state) => mainWindow?.webContents.send('browser:state', state),
-    () => elementPicker?.stopIfActive()
+    (state) => {
+      mainWindow?.webContents.send('browser:state', state)
+      // title/favicon приходят отдельными событиями ПОСЛЕ did-navigate — каждый
+      // патч state уточняет уже записанную визитом запись (см. RecentSitesStore).
+      void recentSites.updateLatestMeta(state.url, { title: state.title, faviconUrl: state.faviconUrl })
+    },
+    (url) => {
+      elementPicker?.stopIfActive()
+      void recentSites.recordVisit(url)
+    }
   )
   browserController.mount()
 
@@ -176,6 +188,11 @@ function registerIpc(): void {
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
 
+  ipcMain.handle('recent-sites:get', (): RecentSite[] => recentSites.getAll())
+  ipcMain.handle('recent-sites:remove', async (_e, url: string): Promise<void> => {
+    await recentSites.remove(url)
+  })
+
   ipcMain.handle('inspector:import-as-frame', async (): Promise<ImportResult> => {
     const document = elementPicker?.buildDocument(
       browserController?.getState().url ?? '',
@@ -199,6 +216,7 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   registerIpc()
+  await recentSites.load()
   await startBridge()
   createWindow()
 

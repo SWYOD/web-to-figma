@@ -1,5 +1,6 @@
 export * from './theme/tokens'
 export * from './theme/palette'
+export * from './theme/builtins'
 export * from './theme/apply'
 export * from './theme/ThemeProvider'
 

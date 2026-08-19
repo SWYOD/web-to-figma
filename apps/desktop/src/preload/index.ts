@@ -1,5 +1,15 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, AppSettings, BridgeStatusEvent, BrowserState, ImportResult, PickState, SelectionResult, ViewBounds } from '../shared/types'
+import type {
+  Api,
+  AppSettings,
+  BridgeStatusEvent,
+  BrowserState,
+  ImportResult,
+  PickState,
+  RecentSite,
+  SelectionResult,
+  ViewBounds
+} from '../shared/types'
 
 const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -37,7 +47,15 @@ const api: Api = {
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
-  inspectorImportAsFrame: (): Promise<ImportResult> => ipcRenderer.invoke('inspector:import-as-frame')
+  inspectorImportAsFrame: (): Promise<ImportResult> => ipcRenderer.invoke('inspector:import-as-frame'),
+
+  recentSitesGet: () => ipcRenderer.invoke('recent-sites:get'),
+  recentSitesRemove: (url: string) => ipcRenderer.invoke('recent-sites:remove', url),
+  onRecentSitesUpdated: (cb: (list: RecentSite[]) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, list: RecentSite[]): void => cb(list)
+    ipcRenderer.on('recent-sites:updated', listener)
+    return () => ipcRenderer.removeListener('recent-sites:updated', listener)
+  }
 }
 
 contextBridge.exposeInMainWorld('api', api)

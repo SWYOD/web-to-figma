@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import type { BrowserState } from '../../../shared/types'
 import { BrowserToolbar } from './BrowserToolbar'
 import { BrowserViewport } from './BrowserViewport'
+import { PickerFloatBar } from './PickerFloatBar'
 
 const EMPTY_STATE: BrowserState = {
   url: '',
@@ -31,7 +32,10 @@ export function BrowserPane(): JSX.Element {
         onReload={() => window.api.browserReload()}
         onStop={() => window.api.browserStop()}
       />
-      <BrowserViewport />
+      <div className="browser-viewport-wrap">
+        <BrowserViewport />
+        <PickerFloatBar />
+      </div>
     </>
   )
 }

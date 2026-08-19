@@ -1,11 +1,17 @@
 import { createContext, useContext, useEffect, useMemo, useState, type ReactNode } from 'react'
-import { applyThemeVars, systemPrefersDark, varsForMode, watchSystemPreference } from './apply'
-import type { ResolvedThemeMode, ThemeMode } from './tokens'
+import { applyThemeVars, effectiveVariant, resolveTheme, systemPrefersDark, watchSystemPreference } from './apply'
+import { DEFAULT_THEME_ID } from './builtins'
+import type { ResolvedThemeMode, ThemeDef, ThemeMode } from './tokens'
 
 interface ThemeContextValue {
   mode: ThemeMode
   resolvedMode: ResolvedThemeMode
   setMode: (mode: ThemeMode) => void
+  /** Активная тема (встроенная или кастомная), уже разрешённая из themeId. */
+  theme: ThemeDef
+  themeId: string
+  customThemes: ThemeDef[]
+  setThemeId: (themeId: string) => void
 }
 
 const ThemeContext = createContext<ThemeContextValue | null>(null)
@@ -16,23 +22,46 @@ export interface ThemeProviderProps {
   mode: ThemeMode
   /** Вызывается при смене режима пользователем (desktop — сохраняет в settings.json). */
   onModeChange: (mode: ThemeMode) => void
+  /** id активной темы — встроенной или из customThemes. Необязателен: потребители
+   *  пакета без галереи тем (figma-plugin UI) просто получают тему 'default'. */
+  themeId?: string
+  customThemes?: ThemeDef[]
+  onThemeIdChange?: (themeId: string) => void
 }
 
-/** Портировано из App.tsx Skill-tree (applyThemeVars в useEffect), расширено System через matchMedia. */
-export function ThemeProvider({ children, mode, onModeChange }: ThemeProviderProps): JSX.Element {
+/** Портировано из App.tsx Skill-tree (applyThemeVars в useEffect), расширено
+ *  System через matchMedia и реестром тем (themeId/customThemes) — см.
+ *  docs/design-system.md §7. */
+export function ThemeProvider({
+  children,
+  mode,
+  onModeChange,
+  themeId = DEFAULT_THEME_ID,
+  customThemes = [],
+  onThemeIdChange
+}: ThemeProviderProps): JSX.Element {
   const [systemDark, setSystemDark] = useState(() => systemPrefersDark())
 
   useEffect(() => watchSystemPreference(setSystemDark), [])
 
   const resolvedMode: ResolvedThemeMode = mode === 'system' ? (systemDark ? 'dark' : 'light') : mode
+  const theme = resolveTheme(themeId, customThemes)
 
   useEffect(() => {
-    applyThemeVars(varsForMode(resolvedMode))
-  }, [resolvedMode])
+    applyThemeVars(effectiveVariant(theme, resolvedMode))
+  }, [theme, resolvedMode])
 
   const value = useMemo<ThemeContextValue>(
-    () => ({ mode, resolvedMode, setMode: onModeChange }),
-    [mode, resolvedMode, onModeChange]
+    () => ({
+      mode,
+      resolvedMode,
+      setMode: onModeChange,
+      theme,
+      themeId: theme.id,
+      customThemes,
+      setThemeId: onThemeIdChange ?? (() => {})
+    }),
+    [mode, resolvedMode, onModeChange, theme, customThemes, onThemeIdChange]
   )
 
   return <ThemeContext.Provider value={value}>{children}</ThemeContext.Provider>

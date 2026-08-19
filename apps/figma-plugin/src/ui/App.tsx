@@ -3,22 +3,58 @@ import {
   BridgeClient,
   createResponse,
   DEFAULT_PORT,
+  PORT_FALLBACK_RANGE,
   type BridgeConnectionState,
   type ErrorMessage,
   type ResponseMessage
 } from '@web-to-figma/bridge-protocol'
-import { StatusRow, ThemeProvider, ToolbarButton } from '@web-to-figma/ui'
+import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
 import type { DesignDocument } from '@web-to-figma/design-ast'
 
 const PLUGIN_VERSION = '0.1.0'
+const DISCOVERY_TIMEOUT_MS = 1200
+const DISCOVERY_RETRY_MS = 2500
 
 type MainToUiMessage =
-  | { type: 'stored-token'; token: string | null }
   | { type: 'import-result'; requestId: string; ok: true; nodeId: string }
   | { type: 'import-result'; requestId: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
+}
+
+interface Pairing {
+  token: string
+  port: number
+}
+
+/**
+ * Опрашивает `/pairing` (см. `packages/bridge-protocol/src/server.ts`) на
+ * каждом порту диапазона fallback параллельно — тот же диапазон, что desktop
+ * перебирает при старте (`constants.ts`). Раньше пользователь копировал этот
+ * токен вручную из desktop-приложения в это поле — теперь плагин добывает
+ * его сам, как у "DesignAgent"-подобных мостов: плагин сам ищет запущенный
+ * локальный хост, а не ждёт participation пользователя.
+ */
+async function discoverPairing(): Promise<Pairing | null> {
+  const ports = Array.from({ length: PORT_FALLBACK_RANGE + 1 }, (_, i) => DEFAULT_PORT + i)
+  const attempts = ports.map(async (port): Promise<Pairing> => {
+    const controller = new AbortController()
+    const timeout = setTimeout(() => controller.abort(), DISCOVERY_TIMEOUT_MS)
+    try {
+      const res = await fetch(`http://127.0.0.1:${port}/pairing`, { signal: controller.signal })
+      if (!res.ok) throw new Error('not ok')
+      const data = (await res.json()) as { token?: unknown }
+      if (typeof data.token !== 'string') throw new Error('bad payload')
+      return { token: data.token, port }
+    } finally {
+      clearTimeout(timeout)
+    }
+  })
+
+  const results = await Promise.allSettled(attempts)
+  const found = results.find((r): r is PromiseFulfilledResult<Pairing> => r.status === 'fulfilled')
+  return found?.value ?? null
 }
 
 export default function App(): JSX.Element {
@@ -35,52 +71,70 @@ interface LastImport {
 }
 
 function Plugin(): JSX.Element {
-  const [token, setToken] = useState<string | null | 'loading'>('loading')
-  const [port, setPort] = useState(String(DEFAULT_PORT))
-  const [tokenInput, setTokenInput] = useState('')
+  const [pairing, setPairing] = useState<Pairing | 'searching'>('searching')
+  const [retryNonce, setRetryNonce] = useState(0)
   const [state, setState] = useState<BridgeConnectionState>('disconnected')
-  const [authError, setAuthError] = useState<string | null>(null)
+  const [authError, setAuthError] = useState<'AUTH_FAILED' | 'VERSION_UNSUPPORTED' | null>(null)
   const [lastImport, setLastImport] = useState<LastImport | null>(null)
   const clientRef = useRef<BridgeClient | null>(null)
 
-  // Main sandbox → UI: результат импорта, привязанный к mainMessage listener ниже.
+  // Main sandbox → UI: результат импорта.
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
       const msg = event.data?.pluginMessage as MainToUiMessage | undefined
-      if (!msg) return
-      if (msg.type === 'stored-token') {
-        setToken(msg.token)
-      } else if (msg.type === 'import-result') {
-        setLastImport(msg.ok ? { ok: true, detail: msg.nodeId } : { ok: false, detail: msg.error })
-        if (msg.ok) {
-          clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
-        } else {
-          clientRef.current?.send(
-            createResponse<ErrorMessage>('error', msg.requestId, { code: 'IMPORT_FAILED', message: msg.error })
-          )
-        }
+      if (!msg || msg.type !== 'import-result') return
+      setLastImport(msg.ok ? { ok: true, detail: msg.nodeId } : { ok: false, detail: msg.error })
+      if (msg.ok) {
+        clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
+      } else {
+        clientRef.current?.send(createResponse<ErrorMessage>('error', msg.requestId, { code: 'IMPORT_FAILED', message: msg.error }))
       }
     }
     window.addEventListener('message', onMessage)
-    postToMain({ type: 'get-stored-token' })
     return () => window.removeEventListener('message', onMessage)
   }, [])
 
+  // Автообнаружение desktop-приложения — без ручного ввода кода. Пока не
+  // найден — повторяем с интервалом; retryNonce также дёргается ниже после
+  // AUTH_FAILED (сервер мог перегенерировать токен между discovery и hello).
   useEffect(() => {
-    if (!token || token === 'loading') return
-    connect(token, Number(port))
-    return () => clientRef.current?.disconnect()
-    // Подключаемся заново только по смене токена — правки поля "Порт" применяются явной кнопкой, не на каждый keystroke.
-  }, [token])
+    let cancelled = false
+    let retryTimer: ReturnType<typeof setTimeout> | null = null
 
-  function connect(activeToken: string, activePort: number): void {
-    clientRef.current?.disconnect()
+    async function attempt(): Promise<void> {
+      const found = await discoverPairing()
+      if (cancelled) return
+      if (found) {
+        setPairing(found)
+      } else {
+        setPairing('searching')
+        retryTimer = setTimeout(attempt, DISCOVERY_RETRY_MS)
+      }
+    }
+
+    void attempt()
+    return () => {
+      cancelled = true
+      if (retryTimer) clearTimeout(retryTimer)
+    }
+  }, [retryNonce])
+
+  useEffect(() => {
+    if (pairing === 'searching') return
     const client = new BridgeClient({
-      url: `ws://127.0.0.1:${activePort}`,
-      token: activeToken,
+      url: `ws://127.0.0.1:${pairing.port}`,
+      token: pairing.token,
       clientVersion: PLUGIN_VERSION,
       onStateChange: setState,
-      onAuthFailed: (reason) => setAuthError(reason),
+      onAuthFailed: (reason) => {
+        setAuthError(reason)
+        if (reason === 'AUTH_FAILED') {
+          setTimeout(() => {
+            setPairing('searching')
+            setRetryNonce((n) => n + 1)
+          }, DISCOVERY_RETRY_MS)
+        }
+      },
       onMessage: (message) => {
         // ImportNodeMessage инициирует desktop (не запрос этого клиента) — main
         // sandbox — единственное место с доступом к figma.*, поэтому релеим.
@@ -92,40 +146,26 @@ function Plugin(): JSX.Element {
     clientRef.current = client
     setAuthError(null)
     client.connect()
-  }
+    return () => client.disconnect()
+  }, [pairing])
 
-  const savePairing = (): void => {
-    const value = tokenInput.trim()
-    if (!value) return
-    postToMain({ type: 'save-token', token: value })
-    setToken(value)
-  }
-
-  if (token === 'loading') return <div className="plugin-hint">Загрузка…</div>
-
-  if (!token || authError === 'AUTH_FAILED') {
+  if (pairing === 'searching') {
     return (
       <div className="plugin-section">
         <div className="plugin-title">Web Importer</div>
-        {authError === 'AUTH_FAILED' && (
-          <div className="plugin-hint" style={{ color: 'var(--danger)' }}>
-            Код не подошёл — проверьте код в desktop-приложении и попробуйте снова.
-          </div>
-        )}
-        <div className="plugin-hint">
-          Вставьте код подключения из desktop-приложения Web → Figma (Toolbar → Bridge).
+        <StatusRow state="connecting">Ищем приложение Web To Figma…</StatusRow>
+        <div className="plugin-hint">Откройте desktop-приложение Web To Figma — плагин подключится сам.</div>
+      </div>
+    )
+  }
+
+  if (authError === 'VERSION_UNSUPPORTED') {
+    return (
+      <div className="plugin-section">
+        <div className="plugin-title">Web Importer</div>
+        <div className="plugin-hint" style={{ color: 'var(--danger)' }}>
+          Версия плагина не совместима с desktop-приложением — обновите одно из них.
         </div>
-        <input
-          className="text-input"
-          placeholder="Код подключения"
-          value={tokenInput}
-          onChange={(e) => setTokenInput(e.target.value)}
-          onKeyDown={(e) => e.key === 'Enter' && savePairing()}
-        />
-        <input className="text-input" placeholder="Порт" value={port} onChange={(e) => setPort(e.target.value)} />
-        <ToolbarButton primary onClick={savePairing}>
-          Подключиться
-        </ToolbarButton>
       </div>
     )
   }

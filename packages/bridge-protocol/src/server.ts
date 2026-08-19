@@ -1,3 +1,4 @@
+import { createServer, type Server as HttpServer } from 'node:http'
 import { WebSocketServer, type WebSocket as WSSocket } from 'ws'
 import { nanoid } from 'nanoid'
 import { PING_INTERVAL_MS, PONG_TIMEOUT_MS, PORT_FALLBACK_RANGE, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS } from './constants.js'
@@ -9,6 +10,15 @@ import type { BridgeMessage } from './messages.js'
  * (`apps/desktop`). Слушает строго 127.0.0.1, см. docs/bridge-protocol.md.
  * Ничего Electron-специфичного здесь нет: токен и порт передаются снаружи,
  * персистентность (bridge.json) — забота вызывающего кода в apps/desktop.
+ *
+ * Помимо WS (на том же порту, тот же `http.Server`) отдаёт один plain-HTTP
+ * GET `/pairing` — им плагин САМ узнаёт токен без ручного ввода кода
+ * пользователем (см. docs/bridge-protocol.md §Discovery). Это не открывает
+ * bridge наружу: ответ содержит ровно то же самое значение `token`, что и
+ * раньше нужно было копировать вручную — сам WS-хендшейк (`hello`/`hello-ack`/
+ * `hello-reject`) не меняется и по-прежнему обязателен для любого сообщения,
+ * кроме `hello`. `/pairing` — это способ ДОСТАВКИ токена плагину, а не отказ
+ * от него.
  */
 
 export interface BridgeServerOptions {
@@ -37,6 +47,7 @@ interface PendingRequest {
 
 export class BridgeServer {
   private wss: WebSocketServer | null = null
+  private httpServer: HttpServer | null = null
   private readonly peers = new Set<Peer>()
   private readonly pending = new Map<string, PendingRequest>()
 
@@ -91,6 +102,8 @@ export class BridgeServer {
     }
     this.wss?.close()
     this.wss = null
+    this.httpServer?.close()
+    this.httpServer = null
   }
 
   get connectionCount(): number {
@@ -99,14 +112,26 @@ export class BridgeServer {
 
   private listen(host: string, port: number): Promise<void> {
     return new Promise((resolve, reject) => {
-      const wss = new WebSocketServer({ host, port })
-      wss.once('error', reject)
-      wss.once('listening', () => {
-        wss.removeListener('error', reject)
-        wss.on('error', () => {
+      const httpServer = createServer((req, res) => {
+        if (req.method === 'GET' && req.url === '/pairing') {
+          // CORS: Figma UI iframe вызывает fetch() с чужого origin'а — без
+          // этого заголовка браузер отдаст запрос, но не даст JS прочитать ответ.
+          res.writeHead(200, { 'Content-Type': 'application/json', 'Access-Control-Allow-Origin': '*' })
+          res.end(JSON.stringify({ token: this.options.token }))
+          return
+        }
+        res.writeHead(404)
+        res.end()
+      })
+      const wss = new WebSocketServer({ server: httpServer })
+      httpServer.once('error', reject)
+      httpServer.listen(port, host, () => {
+        httpServer.removeListener('error', reject)
+        httpServer.on('error', () => {
           // Ошибки отдельных соединений не должны валить сервер целиком.
         })
         this.wss = wss
+        this.httpServer = httpServer
         wss.on('connection', (socket) => this.handleConnection(socket))
         resolve()
       })

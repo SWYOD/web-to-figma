@@ -42,7 +42,7 @@ export function BridgePopover(): JSX.Element {
       </div>
       <div className="popover-sep" />
       <div className="popover-section">
-        <div className="popover-label">Код подключения</div>
+        <div className="popover-label">Код подключения (для отладки)</div>
         <div className="bridge-code">
           <span className="bridge-code-value">{info?.pairingToken ?? '…'}</span>
           <IconButton size="xs" onClick={copyToken} title="Скопировать">
@@ -50,8 +50,9 @@ export function BridgePopover(): JSX.Element {
           </IconButton>
         </div>
         <div className="bridge-hint">
-          Вставьте этот код один раз в UI Figma Plugin (Web Importer) при первом запуске —
-          он сохранится и переиспользуется автоматически.
+          Плагин Web Importer подключается сам — просто откройте его в Figma,
+          пока запущено это приложение. Код нужен только вручную, если
+          автоподключение почему-то не сработало.
         </div>
       </div>
     </Popover>

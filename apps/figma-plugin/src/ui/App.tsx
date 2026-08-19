@@ -1,10 +1,21 @@
 import { useEffect, useRef, useState } from 'react'
-import { BridgeClient, DEFAULT_PORT, type BridgeConnectionState } from '@web-to-figma/bridge-protocol'
+import {
+  BridgeClient,
+  createResponse,
+  DEFAULT_PORT,
+  type BridgeConnectionState,
+  type ErrorMessage,
+  type ResponseMessage
+} from '@web-to-figma/bridge-protocol'
 import { StatusRow, ThemeProvider, ToolbarButton } from '@web-to-figma/ui'
+import type { DesignDocument } from '@web-to-figma/design-ast'
 
 const PLUGIN_VERSION = '0.1.0'
 
-type MainToUiMessage = { type: 'stored-token'; token: string | null }
+type MainToUiMessage =
+  | { type: 'stored-token'; token: string | null }
+  | { type: 'import-result'; requestId: string; ok: true; nodeId: string }
+  | { type: 'import-result'; requestId: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
@@ -18,18 +29,37 @@ export default function App(): JSX.Element {
   )
 }
 
+interface LastImport {
+  ok: boolean
+  detail: string
+}
+
 function Plugin(): JSX.Element {
   const [token, setToken] = useState<string | null | 'loading'>('loading')
   const [port, setPort] = useState(String(DEFAULT_PORT))
   const [tokenInput, setTokenInput] = useState('')
   const [state, setState] = useState<BridgeConnectionState>('disconnected')
   const [authError, setAuthError] = useState<string | null>(null)
+  const [lastImport, setLastImport] = useState<LastImport | null>(null)
   const clientRef = useRef<BridgeClient | null>(null)
 
+  // Main sandbox → UI: результат импорта, привязанный к mainMessage listener ниже.
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
       const msg = event.data?.pluginMessage as MainToUiMessage | undefined
-      if (msg?.type === 'stored-token') setToken(msg.token)
+      if (!msg) return
+      if (msg.type === 'stored-token') {
+        setToken(msg.token)
+      } else if (msg.type === 'import-result') {
+        setLastImport(msg.ok ? { ok: true, detail: msg.nodeId } : { ok: false, detail: msg.error })
+        if (msg.ok) {
+          clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
+        } else {
+          clientRef.current?.send(
+            createResponse<ErrorMessage>('error', msg.requestId, { code: 'IMPORT_FAILED', message: msg.error })
+          )
+        }
+      }
     }
     window.addEventListener('message', onMessage)
     postToMain({ type: 'get-stored-token' })
@@ -50,7 +80,14 @@ function Plugin(): JSX.Element {
       token: activeToken,
       clientVersion: PLUGIN_VERSION,
       onStateChange: setState,
-      onAuthFailed: (reason) => setAuthError(reason)
+      onAuthFailed: (reason) => setAuthError(reason),
+      onMessage: (message) => {
+        // ImportNodeMessage инициирует desktop (не запрос этого клиента) — main
+        // sandbox — единственное место с доступом к figma.*, поэтому релеим.
+        if (message.kind === 'import-node') {
+          postToMain({ type: 'import-node', requestId: message.id, document: message.payload.document as DesignDocument, as: message.payload.as })
+        }
+      }
     })
     clientRef.current = client
     setAuthError(null)
@@ -102,15 +139,19 @@ function Plugin(): JSX.Element {
         </StatusRow>
       </div>
       <div className="plugin-section">
-        <div className="plugin-hint">Selected:</div>
-        <div className="selected-tag">— (Element picker появится в Phase 3)</div>
+        <div className="plugin-hint">
+          Выбор элемента и импорт запускаются из desktop-приложения (Inspector → Select element →
+          Import as Frame).
+        </div>
       </div>
-      <div className="plugin-section plugin-actions">
-        <ToolbarButton primary disabled>
-          Import
-        </ToolbarButton>
-        <div className="plugin-hint">Импорт станет доступен вместе с Design AST/renderer (Phase 5-6).</div>
-      </div>
+      {lastImport && (
+        <div className="plugin-section">
+          <div className="plugin-hint">Последний импорт:</div>
+          <div className={`selected-tag${lastImport.ok ? '' : ' import-error'}`}>
+            {lastImport.ok ? `Frame создан (${lastImport.detail})` : lastImport.detail}
+          </div>
+        </div>
+      )}
     </>
   )
 }

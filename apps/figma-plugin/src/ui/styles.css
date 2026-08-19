@@ -35,12 +35,11 @@ body {
   border-radius: var(--radius);
   padding: 7px 9px;
 }
-
-.plugin-actions {
-  display: flex;
-  flex-direction: column;
-  gap: 6px;
+.selected-tag.import-error {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 40%, var(--border));
 }
+
 .plugin-hint {
   font-size: 11.5px;
   color: var(--text-faint);

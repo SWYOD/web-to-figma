@@ -3,10 +3,11 @@ import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
 import { nanoid } from 'nanoid'
 import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
+import { createMessage, type ErrorMessage, type ImportNodeMessage } from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
-import type { AppSettings, BridgeInfo, PickState, SelectionResult, ViewBounds } from '../shared/types'
+import type { AppSettings, BridgeInfo, ImportResult, PickState, SelectionResult, ViewBounds } from '../shared/types'
 
 // Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
@@ -118,7 +119,9 @@ async function startBridge(): Promise<void> {
       mainWindow?.webContents.send('bridge:status', { connectionCount: count })
     },
     onMessage: (message) => {
-      // Phase 5+: диспетчеризация ImportNode/ImportAsset(s)/ApplyStyles/GetSelection.
+      // Ответы на запросы desktop (ImportNode и т.д.) перехватываются
+      // BridgeServer.request() раньше этого колбэка — сюда попадают только
+      // сообщения, ИНИЦИИРОВАННЫЕ плагином (напр. будущий GetSelectionMessage, Phase 10+).
       log.debug('bridge message received', { kind: message.kind })
     }
   })
@@ -153,6 +156,26 @@ function registerIpc(): void {
 
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
+
+  ipcMain.handle('inspector:import-as-frame', async (): Promise<ImportResult> => {
+    const document = elementPicker?.buildDocument(
+      browserController?.getState().url ?? '',
+      browserController?.getViewportSize() ?? { width: 0, height: 0 }
+    )
+    if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+    if (!bridgeServer || bridgeServer.connectionCount === 0) {
+      return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+    }
+
+    const message = createMessage<ImportNodeMessage>('import-node', { document, as: 'frame' })
+    try {
+      const response = await bridgeServer.request(message)
+      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
 }
 
 app.whenReady().then(async () => {

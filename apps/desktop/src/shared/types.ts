@@ -91,6 +91,11 @@ export interface SelectionResult {
   diagnostics: ConversionWarning[]
 }
 
+export interface ImportResult {
+  ok: boolean
+  error?: string
+}
+
 export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
@@ -111,4 +116,5 @@ export interface Api {
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
+  inspectorImportAsFrame: () => Promise<ImportResult>
 }

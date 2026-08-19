@@ -197,3 +197,15 @@
 .diagnostic-row.error {
   color: var(--danger);
 }
+
+/* ── Import as Frame (Phase 6) ───────────────────────────────────────── */
+.import-status {
+  font-size: 12px;
+  line-height: 1.45;
+}
+.import-status.ok {
+  color: var(--success);
+}
+.import-status.error {
+  color: var(--danger);
+}

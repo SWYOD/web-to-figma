@@ -78,6 +78,9 @@ importers:
       '@web-to-figma/bridge-protocol':
         specifier: workspace:*
         version: link:../../packages/bridge-protocol
+      '@web-to-figma/design-ast':
+        specifier: workspace:*
+        version: link:../../packages/design-ast
       '@web-to-figma/ui':
         specifier: workspace:*
         version: link:../../packages/ui
@@ -118,6 +121,9 @@ importers:
       vite-plugin-singlefile:
         specifier: ^2.1.0
         version: 2.3.3(rollup@4.62.4)(vite@5.4.21(@types/node@22.20.1))
+      vitest:
+        specifier: ^2.1.8
+        version: 2.1.9(@types/node@22.20.1)
 
   packages/bridge-protocol:
     dependencies:

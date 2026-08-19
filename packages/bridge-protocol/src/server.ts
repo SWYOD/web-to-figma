@@ -1,6 +1,6 @@
 import { WebSocketServer, type WebSocket as WSSocket } from 'ws'
 import { nanoid } from 'nanoid'
-import { PING_INTERVAL_MS, PONG_TIMEOUT_MS, PORT_FALLBACK_RANGE, PROTOCOL_VERSION } from './constants.js'
+import { PING_INTERVAL_MS, PONG_TIMEOUT_MS, PORT_FALLBACK_RANGE, PROTOCOL_VERSION, REQUEST_TIMEOUT_MS } from './constants.js'
 import { encodeBridgeMessage, parseBridgeMessage } from './codec.js'
 import type { BridgeMessage } from './messages.js'
 
@@ -29,11 +29,41 @@ interface Peer {
   pongTimeout: ReturnType<typeof setTimeout> | null
 }
 
+interface PendingRequest {
+  resolve: (message: BridgeMessage) => void
+  reject: (error: Error) => void
+  timeout: ReturnType<typeof setTimeout>
+}
+
 export class BridgeServer {
   private wss: WebSocketServer | null = null
   private readonly peers = new Set<Peer>()
+  private readonly pending = new Map<string, PendingRequest>()
 
   constructor(private readonly options: BridgeServerOptions) {}
+
+  /**
+   * Сообщение, инициированное СЕРВЕРОМ (не ответ на запрос плагина) — напр.
+   * `ImportNodeMessage` по клику "Import as Frame" в desktop UI. Рассылается
+   * всем аутентифицированным пирам (на практике обычно один — один открытый
+   * Figma-файл), резолвится первым пришедшим `response`/`error` с тем же
+   * `requestId`. См. docs/bridge-protocol.md §Request/response корреляция.
+   */
+  request(message: BridgeMessage): Promise<BridgeMessage> {
+    return new Promise((resolve, reject) => {
+      const authenticated = [...this.peers].filter((p) => p.authenticated)
+      if (authenticated.length === 0) {
+        reject(new Error('No authenticated bridge peer connected'))
+        return
+      }
+      const timeout = setTimeout(() => {
+        this.pending.delete(message.id)
+        reject(new Error(`Bridge request "${message.kind}" timed out`))
+      }, REQUEST_TIMEOUT_MS)
+      this.pending.set(message.id, { resolve, reject, timeout })
+      for (const peer of authenticated) this.replyTo(peer, message)
+    })
+  }
 
   async start(): Promise<{ port: number }> {
     const host = this.options.host ?? '127.0.0.1'
@@ -54,6 +84,11 @@ export class BridgeServer {
 
   stop(): void {
     for (const peer of this.peers) this.teardownPeer(peer)
+    for (const [id, pending] of this.pending) {
+      clearTimeout(pending.timeout)
+      pending.reject(new Error('Bridge server stopped'))
+      this.pending.delete(id)
+    }
     this.wss?.close()
     this.wss = null
   }
@@ -134,6 +169,16 @@ export class BridgeServer {
       if (peer.pongTimeout) clearTimeout(peer.pongTimeout)
       peer.pongTimeout = null
       return
+    }
+
+    if ((message.kind === 'response' || message.kind === 'error') && message.requestId) {
+      const pending = this.pending.get(message.requestId)
+      if (pending) {
+        clearTimeout(pending.timeout)
+        this.pending.delete(message.requestId)
+        pending.resolve(message)
+        return
+      }
     }
 
     this.options.onMessage?.(message, (reply) => this.replyTo(peer, reply))

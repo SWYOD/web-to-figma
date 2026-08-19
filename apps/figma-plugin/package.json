@@ -9,10 +9,12 @@
     "dev:code": "npm run build:code -- --watch",
     "dev:ui": "npm run build:ui -- --watch",
     "dev": "concurrently -n code,ui -c blue,magenta \"npm:dev:code\" \"npm:dev:ui\"",
-    "typecheck": "tsc --noEmit"
+    "typecheck": "tsc --noEmit",
+    "test": "vitest run"
   },
   "dependencies": {
     "@web-to-figma/bridge-protocol": "workspace:*",
+    "@web-to-figma/design-ast": "workspace:*",
     "@web-to-figma/ui": "workspace:*",
     "lucide-react": "^0.462.0",
     "react": "^18.3.1",
@@ -27,6 +29,7 @@
     "esbuild": "^0.24.0",
     "typescript": "^5.7.2",
     "vite": "^5.4.11",
-    "vite-plugin-singlefile": "^2.1.0"
+    "vite-plugin-singlefile": "^2.1.0",
+    "vitest": "^2.1.8"
   }
 }

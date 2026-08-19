@@ -27,6 +27,7 @@ const ERR_ABORTED = -3
  */
 export class BrowserController {
   private view: WebContentsView | null = null
+  private lastBounds: Rectangle | null = null
   private state: BrowserState = {
     url: '',
     title: '',
@@ -86,7 +87,13 @@ export class BrowserController {
   }
 
   setBounds(bounds: Rectangle): void {
+    this.lastBounds = bounds
     this.view?.setBounds(bounds)
+  }
+
+  /** Размер browser viewport — для DesignDocument.metadata.viewport (Phase 6). */
+  getViewportSize(): { width: number; height: number } {
+    return { width: this.lastBounds?.width ?? 0, height: this.lastBounds?.height ?? 0 }
   }
 
   /** Для ElementPicker (Phase 3) — CDP-инспекция идёт по webContents браузерной

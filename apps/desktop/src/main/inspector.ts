@@ -1,7 +1,7 @@
 import type { WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { convertElement, type DomSnapshotNode } from '@web-to-figma/conversion-engine'
-import type { ConversionWarning, DesignNode } from '@web-to-figma/design-ast'
+import type { ConversionWarning, DesignDocument, DesignNode } from '@web-to-figma/design-ast'
 import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
 import type { ElementSummary, PickState, SelectionResult } from '../shared/types'
 
@@ -52,7 +52,6 @@ const HIGHLIGHT_CONFIG = {
  */
 export class ElementPicker {
   private active = false
-  /** Последний результат convertElement — для Phase 6 (Import as Frame через bridge), пока без потребителя. */
   private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
 
   constructor(
@@ -63,6 +62,18 @@ export class ElementPicker {
 
   getLastConversion(): { node: DesignNode; diagnostics: ConversionWarning[] } | null {
     return this.lastConversion
+  }
+
+  /** Оборачивает lastConversion в полноценный DesignDocument для отправки через bridge (Phase 6). */
+  buildDocument(sourceUrl: string, viewport: { width: number; height: number }): DesignDocument | null {
+    if (!this.lastConversion) return null
+    return {
+      version: 1,
+      root: this.lastConversion.node,
+      assets: {},
+      diagnostics: this.lastConversion.diagnostics,
+      metadata: { sourceUrl, capturedAt: new Date().toISOString(), viewport }
+    }
   }
 
   isActive(): boolean {

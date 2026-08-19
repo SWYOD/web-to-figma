@@ -138,16 +138,32 @@ API.
    он будет перекрыт. См. `apps/desktop/src/main/browser.ts` (комментарий у
    класса `BrowserController`).
 9. **Относительные импорты внутри пакетов `packages/*` обязаны быть с
-   расширением `.js`.** Дважды наступили на эти грабли (bridge-protocol в
-   Phase 1, conversion-engine в Phase 5): `package.json` этих пакетов
-   объявляет `"type": "module"`, и `tsc` компилирует `import { x } from
-   './foo'` в JS дословно как есть — Node ESM-резолвер (в отличие от
-   Rollup/Vite, которые терпимее) отказывается резолвить такой импорт без
-   явного расширения (`ERR_MODULE_NOT_FOUND`). Билд через electron-vite/Vite
-   этого не ловит (бандлер резолвит на этапе сборки, а не в рантайме Node),
-   поэтому баг всплывает только при прямом `node dist/index.js`. Правило:
-   **все** относительные импорты в `src/` этих пакетов — с `.js` на конце
-   (`from './foo.js'`), даже притом что сам файл называется `foo.ts`.
+   расширением `.js`.** Наступили на эти грабли трижды (bridge-protocol в
+   Phase 1 — включая сам `index.ts`, откуда баг всплыл только в Phase 6 при
+   первом прямом импорте пакета целиком, а не только `/server`; conversion-engine
+   в Phase 5): `package.json` этих пакетов объявляет `"type": "module"`, и
+   `tsc` компилирует `import { x } from './foo'` в JS дословно как есть — Node
+   ESM-резолвер (в отличие от Rollup/Vite, которые терпимее) отказывается
+   резолвить такой импорт без явного расширения (`ERR_MODULE_NOT_FOUND`). Билд
+   через electron-vite/Vite этого не ловит (бандлер резолвит на этапе сборки,
+   а не в рантайме Node), поэтому баг всплывает только при прямом `node
+   dist/index.js` — и может прятаться в барузер-файле (`index.ts`), даже если
+   все остальные файлы пакета исправлены. Правило: **все** относительные
+   импорты в `src/` этих пакетов — с `.js` на конце (`from './foo.js'`), даже
+   притом что сам файл называется `foo.ts`; при добавлении нового `packages/*`
+   пакета первым делом grep на `from '\./[^']*'` без `.js` перед первым
+   прямым `node`-тестом, не полагаясь на то, что typecheck/build через
+   бандлер это поймают — не ловят.
+10. **`@figma/plugin-typings` требует `blurType` у blur-эффектов.** Обнаружено
+    typecheck'ом в Phase 6 (не документацией — актуальная версия тайпингов
+    разошлась с тем, что можно было бы предположить по устаревшим примерам):
+    `LAYER_BLUR`/`BACKGROUND_BLUR` в текущей версии — не единственный
+    вариант `Effect`, а часть union `BlurEffectNormal | BlurEffectProgressive`,
+    различаемого полем `blurType: 'NORMAL' | 'PROGRESSIVE'`. Урок: даже для
+    Figma Plugin API, где обычно достаточно `@figma/plugin-typings`
+    (обновляется вместе с реальным API), не полагаться на память/примеры из
+    обучающих данных — типы меняются, и типизированный `tsc --noEmit` перед
+    тем, как считать фичу готовой, — не формальность.
 
 ## 7. Roadmap (вертикальные срезы, из исходного ТЗ, без изменений порядка)
 
@@ -175,6 +191,22 @@ computed-style строк — **done**, 16 unit-тестов (включая fix
 transform не роняет конвертацию, только diagnostic) + live-проверка: реальные
 CDP-данные `<h1>` example.com → `convertElement` → `DesignNodeSchema.safeParse`
 успешен)
-→ Phase 6 (Figma renderer) → Phase 7 (Flex→Auto Layout) → Phase 8 (nested trees)
-→ Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
-(warnings/confidence score) → далее расширение scope.
+→ Phase 6 (Figma renderer: desktop получает кнопку "Import as Frame" в
+Inspector Panel → `BridgeServer.request()` (новый метод — desktop-инициированные
+сообщения с ожиданием ответа, отдельно от request/response самого плагина) →
+`ImportNodeMessage` → UI-iframe плагина релеит в main sandbox через
+`postMessage` (только там есть `figma.*`) → `renderDesignNode` создаёт
+`FrameNode` (fills/strokes/effects/cornerRadius/opacity из DesignNode,
+без Auto Layout — Phase 7) → ставится у `figma.viewport.center`, выбирается,
+результат уходит обратно как `response`/`error` — **done**. Проверено live:
+(1) 23 unit-теста (conversion-engine 16 + новые paint/effects mapping-тесты
+figma-plugin 7); (2) отдельный e2e-тест реальными `BridgeServer`+`BridgeClient`
+(не переизобретёнными) — сервер шлёт `import-node` с настоящим `DesignDocument`,
+клиент отвечает `response`, `server.request()` резолвится корректным
+результатом; (3) live против настоящего приложения — ветки "нет выбранного
+элемента"/"плагин не подключён" в `inspector:import-as-frame` возвращают
+верный `ImportResult`. Не автоматизировано: реальный `figma.createFrame()` —
+нужен настоящий Figma, запущенный пользователем; сами CDP-вызовы renderer'а
+не задействованы (это Figma Plugin API, не CDP)) → Phase 7 (Flex→Auto Layout)
+→ Phase 8 (nested trees) → Phase 9 (asset engine) → Phase 10 (Apply to
+Selection) → Phase 11 (warnings/confidence score) → далее расширение scope.

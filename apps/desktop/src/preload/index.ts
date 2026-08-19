@@ -1,5 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
-import type { Api, AppSettings, BridgeStatusEvent, BrowserState, PickState, SelectionResult, ViewBounds } from '../shared/types'
+import type { Api, AppSettings, BridgeStatusEvent, BrowserState, ImportResult, PickState, SelectionResult, ViewBounds } from '../shared/types'
 
 const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
@@ -36,7 +36,8 @@ const api: Api = {
     const listener = (_e: Electron.IpcRendererEvent, result: SelectionResult): void => cb(result)
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
-  }
+  },
+  inspectorImportAsFrame: (): Promise<ImportResult> => ipcRenderer.invoke('inspector:import-as-frame')
 }
 
 contextBridge.exposeInMainWorld('api', api)

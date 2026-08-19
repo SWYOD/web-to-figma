@@ -125,12 +125,27 @@ API.
    main-процесса с нативными биндингами (например, будущий `sharp` для
    растеризации canvas/asset-обработки, если он появится) должна сразу
    проверяться на этот же класс проблемы и добавляться в `external`.
+8. **`WebContentsView` всегда поверх HTML-слоя окна.** Это нативный
+   композитный слой, а не DOM-элемент — он рисуется НАД React-UI внутри
+   своего bounds-прямоугольника независимо от z-index. В Phase 2 это не
+   создаёт проблем (browser area геометрически не пересекается с popover'ами
+   toolbar'а), но Phase 3 (element picker) должен это учитывать: hover-рамка
+   и bounding-box вокруг наведённого DOM-элемента, скорее всего, тоже придётся
+   рисовать либо инъекцией overlay внутрь самой страницы (через CDP
+   `Page.addScriptToEvaluateOnNewDocument`/`Runtime.evaluate`, поверх контента
+   страницы, а не поверх WebContentsView снаружи), либо явно управлять
+   bounds/видимостью view, а не полагаться на HTML-оверлей с высоким z-index —
+   он будет перекрыт. См. `apps/desktop/src/main/browser.ts` (комментарий у
+   класса `BrowserController`).
 
 ## 7. Roadmap (вертикальные срезы, из исходного ТЗ, без изменений порядка)
 
-Phase 0 (этот документ) → Phase 1 (monorepo + Electron shell + Figma Plugin
-shell + bridge + темы, **этот milestone**) → Phase 2 (браузер+навигация) →
-Phase 3 (element picker) → Phase 4 (property extraction) → Phase 5 (Design AST)
+Phase 0 (документация) → Phase 1 (monorepo + Electron shell + Figma Plugin
+shell + bridge + темы, **done**) → Phase 2 (встроенный браузер:
+`WebContentsView`, адресная строка, back/forward/reload, favicon/title/loading
+state — **done**, проверено live через CDP: реальная навигация на google.com
+→ example.com, корректные title/favicon/canGoBack) → Phase 3 (element
+picker) → Phase 4 (property extraction) → Phase 5 (Design AST)
 → Phase 6 (Figma renderer) → Phase 7 (Flex→Auto Layout) → Phase 8 (nested trees)
 → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
 (warnings/confidence score) → далее расширение scope.

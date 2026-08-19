@@ -4,6 +4,7 @@ import { Block, BlockHead, Panel, PanelHead, PanelTitle, Segmented, ThemeProvide
 import type { ThemeMode } from '@web-to-figma/ui'
 import type { AppSettings } from '../../shared/types'
 import { BridgePopover } from './components/BridgePopover'
+import { BrowserPane } from './components/BrowserPane'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: JSX.Element }[] = [
   { value: 'light', label: 'Light', icon: <Sun size={13} /> },
@@ -64,12 +65,7 @@ function Workspace(): JSX.Element {
   return (
     <div className="workspace">
       <div className="col center-col">
-        <div className="placeholder">
-          <div className="placeholder-title">Встроенный браузер</div>
-          <div className="placeholder-hint">
-            Появится в Phase 2 (WebContentsView + адресная строка + навигация).
-          </div>
-        </div>
+        <BrowserPane />
       </div>
       <div className="resizer" {...resizer} />
       <div className="col" style={{ width: rightWidth }}>

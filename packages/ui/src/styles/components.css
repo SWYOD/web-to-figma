@@ -171,9 +171,13 @@
   color: var(--text-dim);
   transition: all 0.14s ease;
 }
-.icon-btn:hover {
+.icon-btn:hover:not(:disabled) {
   background: var(--hover);
   color: var(--text);
+}
+.icon-btn:disabled {
+  opacity: 0.35;
+  cursor: default;
 }
 .icon-btn.active {
   color: var(--accent);

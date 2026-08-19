@@ -45,3 +45,13 @@ textarea {
   font-family: inherit;
   color: var(--text);
 }
+
+/* Портировано из Skill-tree (.spin) — вращающийся индикатор загрузки на иконке. */
+.spin {
+  animation: spin 0.9s linear infinite;
+}
+@keyframes spin {
+  to {
+    transform: rotate(360deg);
+  }
+}

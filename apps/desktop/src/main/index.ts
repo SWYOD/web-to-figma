@@ -1,4 +1,4 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, ipcMain, nativeTheme, shell, type Rectangle } from 'electron'
 import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
 import { nanoid } from 'nanoid'
@@ -13,6 +13,7 @@ import type { AppSettings, BridgeInfo, ImportResult, PickState, SelectionResult,
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
 // независимо от того, как запущен процесс (electron-vite dev / packaged build).
 app.setName('web-to-figma')
+if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9333')
 
 const isDev = !app.isPackaged
 const log = createConsoleLogger('main')
@@ -28,6 +29,27 @@ interface BridgeSecret {
 
 function settingsPath(): string {
   return join(app.getPath('userData'), 'settings.json')
+}
+
+/** Та же логика 'system' → light/dark, что резолвит renderer через
+ *  prefers-color-scheme (ThemeProvider), но со стороны main для инжекта
+ *  темизированного hover-тултипа picker'а (hoverTooltip.ts), у которого нет
+ *  доступа к CSS инспектируемой страницы. */
+async function getEffectiveTheme(): Promise<'light' | 'dark'> {
+  const saved = await readJson<Partial<AppSettings>>(settingsPath())
+  const mode = saved?.themeMode ?? DEFAULT_SETTINGS.themeMode
+  return mode === 'system' ? (nativeTheme.shouldUseDarkColors ? 'dark' : 'light') : mode
+}
+
+/** Экранный (не оконный) прямоугольник WebContentsView браузера — для
+ *  сопоставления screen.getCursorScreenPoint() с координатами страницы
+ *  (см. inspector.ts pollHover). */
+function getViewScreenBounds(): Rectangle | null {
+  if (!mainWindow || !browserController) return null
+  const viewBounds = browserController.getBounds()
+  if (!viewBounds) return null
+  const winBounds = mainWindow.getContentBounds()
+  return { x: winBounds.x + viewBounds.x, y: winBounds.y + viewBounds.y, width: viewBounds.width, height: viewBounds.height }
 }
 
 function bridgeSecretPath(): string {
@@ -98,7 +120,9 @@ function createWindow(): void {
   elementPicker = new ElementPicker(
     () => browserController?.getWebContents() ?? null,
     (result: SelectionResult) => mainWindow?.webContents.send('inspector:selection', result),
-    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
+    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state),
+    getEffectiveTheme,
+    getViewScreenBounds
   )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {

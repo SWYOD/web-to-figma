@@ -164,6 +164,29 @@ API.
     (обновляется вместе с реальным API), не полагаться на память/примеры из
     обучающих данных — типы меняются, и типизированный `tsc --noEmit` перед
     тем, как считать фичу готовой, — не формальность.
+11. **`Overlay.setInspectMode` перехватывает mousemove до диспетчеризации в
+    JS страницы.** Обнаружено вживую внешним CDP-скриптом при попытке
+    заменить встроенный info-тултип picker'а на собственный, темизированный:
+    пока `Overlay.setInspectMode({mode:'searchForNode'})` активен (клик по
+    "Select element"), `document.addEventListener('mousemove', ...)`,
+    инжектированный в страницу через `Runtime.evaluate`, не получает ни
+    одного события — то же поведение, что не даёт странице реагировать на
+    hover своим JS во время реального "Inspect element" в DevTools (Chromium
+    забирает mousemove на уровне ниже обычной диспетчеризации, ради
+    предсказуемого picking, не зависящего от JS сайта). Решение
+    (`apps/desktop/src/main/hoverTooltip.ts` + `inspector.ts`): вместо
+    mousemove-листенера — polling из main-процесса каждые 50мс
+    (`screen.getCursorScreenPoint()` + `WebContentsView`-bounds → CDP
+    `DOM.getNodeForLocation`), обновляющий уже установленный в странице
+    тултип через короткие `Runtime.evaluate`. Тултип содержит тот же набор
+    данных, что нативный DevTools-тултип (selector, размеры, секция
+    Accessibility — Name/Role/Keyboard-focusable через
+    `Accessibility.getPartialAXTree`), и привязан к верхней/нижней грани
+    bounding-box'а элемента (`DOM.getBoxModel`), а не к позиции курсора —
+    проверено вживую (реальное перемещение курсора пользователем + отдельный
+    CDP-скрипт, напрямую вызывающий `DOM.getNodeForLocation`/`describeNode`/
+    `getBoxModel`/`Accessibility.getPartialAXTree` на реальном элементе и
+    сверяющий результат с тем, что строит tooltip-pipeline).
 
 ## 7. Roadmap (вертикальные срезы, из исходного ТЗ, без изменений порядка)
 

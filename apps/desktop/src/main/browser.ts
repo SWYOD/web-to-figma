@@ -92,6 +92,12 @@ export class BrowserController {
     this.view?.setBounds(bounds)
   }
 
+  /** Bounds последнего setBounds, в системе координат окна (не экрана) —
+   *  ElementPicker (hover-тултип) домножает на экранную позицию окна сам. */
+  getBounds(): Rectangle | null {
+    return this.lastBounds
+  }
+
   /** Размер browser viewport — для DesignDocument.metadata.viewport (Phase 6). */
   getViewportSize(): { width: number; height: number } {
     return { width: this.lastBounds?.width ?? 0, height: this.lastBounds?.height ?? 0 }

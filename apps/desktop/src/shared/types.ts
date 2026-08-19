@@ -81,6 +81,17 @@ export interface BrowserState {
   loadError: string | null
 }
 
+/** Одна вкладка встроенного браузера — см. main/browser.ts (по одному
+ *  `WebContentsView` на вкладку, видна только активная). */
+export interface TabState extends BrowserState {
+  id: string
+}
+
+export interface TabsSnapshot {
+  tabs: TabState[]
+  activeTabId: string | null
+}
+
 export interface ViewBounds {
   x: number
   y: number
@@ -201,13 +212,20 @@ export interface Api {
    *  (главному окну и overlay) на любое изменение — единственный источник
    *  правды про то, что сейчас открыто (см. index.ts `setOverlay`). */
   onOverlayContent: (cb: (kind: string | null) => void) => () => void
-  browserGetState: () => Promise<BrowserState>
-  onBrowserState: (cb: (state: BrowserState) => void) => () => void
+
+  browserNewTab: () => Promise<void>
+  browserCloseTab: (id: string) => Promise<void>
+  browserSwitchTab: (id: string) => Promise<void>
+  browserGetTabs: () => Promise<TabsSnapshot>
+  onTabsState: (cb: (snapshot: TabsSnapshot) => void) => () => void
 
   inspectorStartPick: () => Promise<void>
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
+  /** Текущий/последний выбор — для гидратации панели, если она была закрыта
+   *  в момент клика пикером (см. main/inspector.ts getLastSelection). */
+  inspectorGetLastSelection: () => Promise<SelectionResult | null>
   inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean) => Promise<ImportResult>
   inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
 

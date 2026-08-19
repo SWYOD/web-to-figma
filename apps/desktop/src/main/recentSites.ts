@@ -6,6 +6,20 @@ import type { RecentSite } from '../shared/types'
 
 const CAP = 40
 
+/** "Сайт" в истории — домен, не отдельная страница (см. `recordVisit`) —
+ *  иначе разные страницы одного сайта плодят отдельные записи в "Recent",
+ *  хотя UI (`LeftSidebar.tsx`) и так уже показывает hostname как подпись,
+ *  подразумевая один сайт = одна запись. При ошибке парсинга (не должно
+ *  случаться — url уже прошёл normalizeUrlInput до этой точки) возвращает
+ *  сам url как ключ — деградирует к прежнему "одна запись на URL", не падает. */
+function siteKey(url: string): string {
+  try {
+    return new URL(url).hostname
+  } catch {
+    return url
+  }
+}
+
 function recentSitesPath(): string {
   return join(app.getPath('userData'), 'recent-sites.json')
 }
@@ -42,7 +56,18 @@ export class RecentSitesStore {
   constructor(private readonly onUpdate?: (list: RecentSite[]) => void) {}
 
   async load(): Promise<RecentSite[]> {
-    this.list = (await readJson<RecentSite[]>(recentSitesPath())) ?? []
+    const stored = (await readJson<RecentSite[]>(recentSitesPath())) ?? []
+    // Одноразовая миграция уже накопленных до этого фикса дублей одного
+    // домена (список уже most-recent-first — первое вхождение ключа и есть
+    // самая свежая запись, остальные для того же домена отбрасываем).
+    const seen = new Set<string>()
+    this.list = stored.filter((s) => {
+      const key = siteKey(s.url)
+      if (seen.has(key)) return false
+      seen.add(key)
+      return true
+    })
+    if (this.list.length !== stored.length) await this.persist()
     return this.list
   }
 
@@ -52,10 +77,13 @@ export class RecentSitesStore {
 
   /** Новая top-level навигация — стартовую страницу (data: URL) не запоминаем
    *  (см. isStartPage), реальный title/favicon подтянутся чуть позже отдельными
-   *  событиями через updateLatestMeta. */
+   *  событиями через updateLatestMeta. Дедуп по домену (см. siteKey), не по
+   *  точному URL — переход на другую страницу того же домена ОБНОВЛЯЕТ
+   *  существующую запись (новый url/время), а не создаёт вторую. */
   async recordVisit(url: string): Promise<void> {
     if (!url || isStartPage(url)) return
-    this.list = this.list.filter((s) => s.url !== url)
+    const key = siteKey(url)
+    this.list = this.list.filter((s) => siteKey(s.url) !== key)
     this.list.unshift({ url, title: '', faviconUrl: null, visitedAt: new Date().toISOString() })
     if (this.list.length > CAP) this.list.length = CAP
     await this.persist()

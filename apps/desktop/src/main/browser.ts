@@ -1,7 +1,8 @@
-import { WebContentsView, type BrowserWindow, type Rectangle, type WebContents } from 'electron'
+import { WebContentsView, type BrowserWindow, type Rectangle } from 'electron'
+import { nanoid } from 'nanoid'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { START_PAGE_URL } from './startPage'
-import type { BrowserState } from '../shared/types'
+import type { BrowserState, TabsSnapshot } from '../shared/types'
 
 const log = createConsoleLogger('browser')
 
@@ -11,11 +12,18 @@ const START_URL = START_PAGE_URL
  *  новой навигацией до завершения предыдущей), не настоящая ошибка загрузки. */
 const ERR_ABORTED = -3
 
+interface Tab {
+  id: string
+  view: WebContentsView
+  state: BrowserState
+}
+
 /**
- * Управляет встроенным браузером как отдельным `WebContentsView`, наложенным
- * поверх HTML-слоя окна (см. docs/architecture.md §2 — WebContentsView вместо
- * deprecated BrowserView). Изолировано от IPC/React — apps/desktop/src/main/index.ts
- * только вызывает методы и подписывается на onState.
+ * Управляет встроенным браузером как набором `WebContentsView` (по одному на
+ * вкладку), наложенных поверх HTML-слоя окна (см. docs/architecture.md §2 —
+ * WebContentsView вместо deprecated BrowserView). Изолировано от IPC/React —
+ * apps/desktop/src/main/index.ts только вызывает методы и подписывается на
+ * onTabsChange.
  *
  * Важный нюанс платформы: WebContentsView — нативный композитный слой поверх
  * HTML renderer'а окна, а не DOM-элемент. Он всегда рисуется НАД HTML внутри
@@ -27,31 +35,32 @@ const ERR_ABORTED = -3
  * после того, как floating-bar попапы (Import Settings/Apply to Selection) и
  * модалки тем стали визуально залезать в browser area; renderer вызывает это
  * через общий хук `usePopoverVisibility` на каждом popover/модалке.
+ *
+ * Вкладки: КАЖДАЯ вкладка — отдельный `WebContentsView` со своим состоянием
+ * (не одна навигация в общем view) — так сохраняется реальное состояние
+ * страницы (scroll/форма/JS) при переключении, а не просто URL. Видна только
+ * АКТИВНАЯ вкладка — у остальных нулевые bounds (тот же приём, что и у
+ * `setHidden`), реального скрытия WebContents в Electron нет.
  */
 export class BrowserController {
-  private view: WebContentsView | null = null
+  private tabs = new Map<string, Tab>()
+  /** Порядок вкладок для UI (Map не гарантирует порядок вставки достаточно явно для reorder в будущем). */
+  private order: string[] = []
+  private activeTabId: string | null = null
   private lastBounds: Rectangle | null = null
   /** См. класс-docstring — попап/модалка, которая визуально заходит в область
    *  browser-viewport, обязана прятать нативный слой на время своей жизни
-   *  (setHidden(true)), иначе он всё равно нарисуется поверх неё. */
+   *  (setHidden(true)), иначе он всё равно нарисуется поверх неё. Применяется
+   *  к АКТИВНОЙ вкладке — неактивные и так уже невидимы (нулевые bounds). */
   private hidden = false
-  private state: BrowserState = {
-    url: '',
-    title: '',
-    isLoading: false,
-    canGoBack: false,
-    canGoForward: false,
-    faviconUrl: null,
-    loadError: null
-  }
 
   constructor(
     private readonly win: BrowserWindow,
-    private readonly onState: (state: BrowserState) => void,
-    /** Именно top-level навигация (не любой patch стейта), с URL — используется
-     *  ElementPicker (Phase 3), чтобы сбрасывать pick-режим на смене страницы, и
-     *  RecentSitesStore (index.ts), чтобы записать визит — сам BrowserController
-     *  остаётся fs/IPC-агностиком, просто передаёт url колбэком. */
+    private readonly onTabsChange: (snapshot: TabsSnapshot) => void,
+    /** Именно top-level навигация АКТИВНОЙ вкладки (не любой patch стейта), с
+     *  URL — используется ElementPicker (Phase 3), чтобы сбрасывать pick-режим
+     *  на смене страницы, и RecentSitesStore (index.ts), чтобы записать визит —
+     *  сам BrowserController остаётся fs/IPC-агностиком, просто передаёт url колбэком. */
     private readonly onNavigate?: (url: string) => void,
     /** Реальный клик В СТРАНИЦУ переводит OS-фокус на этот webContents —
      *  используется index.ts, чтобы закрывать overlay-попап (см. overlay.ts),
@@ -60,49 +69,125 @@ export class BrowserController {
   ) {}
 
   mount(): void {
-    this.view = new WebContentsView({
+    this.newTab(START_URL)
+  }
+
+  /** Создаёт вкладку и делает её активной (кроме самой первой при mount() —
+   *  там активация всё равно единственный возможный исход). */
+  newTab(url: string = START_URL): string {
+    const id = nanoid()
+    const view = new WebContentsView({
       webPreferences: {
         contextIsolation: true,
         sandbox: true,
         nodeIntegration: false
       }
     })
-    this.win.contentView.addChildView(this.view)
+    this.win.contentView.addChildView(view)
+    view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
 
-    const wc = this.view.webContents
+    const state: BrowserState = {
+      url: '',
+      title: '',
+      isLoading: false,
+      canGoBack: false,
+      canGoForward: false,
+      faviconUrl: null,
+      loadError: null
+    }
+    const tab: Tab = { id, view, state }
+    this.tabs.set(id, tab)
+    this.order.push(id)
+
+    const wc = view.webContents
     wc.on('focus', () => this.onFocus?.())
-    wc.on('did-start-loading', () => this.patch({ isLoading: true, loadError: null }))
+    wc.on('did-start-loading', () => this.patchTab(id, { isLoading: true, loadError: null }))
     wc.on('did-stop-loading', () =>
-      this.patch({
+      this.patchTab(id, {
         isLoading: false,
         canGoBack: wc.navigationHistory.canGoBack(),
         canGoForward: wc.navigationHistory.canGoForward()
       })
     )
-    wc.on('did-navigate', (_e, url) => {
-      this.patch({
-        url,
+    wc.on('did-navigate', (_e, navUrl) => {
+      this.patchTab(id, {
+        url: navUrl,
         canGoBack: wc.navigationHistory.canGoBack(),
         canGoForward: wc.navigationHistory.canGoForward()
       })
-      this.onNavigate?.(url)
+      if (id === this.activeTabId) this.onNavigate?.(navUrl)
     })
-    wc.on('did-navigate-in-page', (_e, url) => this.patch({ url }))
-    wc.on('page-title-updated', (_e, title) => this.patch({ title }))
-    wc.on('page-favicon-updated', (_e, favicons) => this.patch({ faviconUrl: favicons[0] ?? null }))
+    wc.on('did-navigate-in-page', (_e, navUrl) => this.patchTab(id, { url: navUrl }))
+    wc.on('page-title-updated', (_e, title) => this.patchTab(id, { title }))
+    wc.on('page-favicon-updated', (_e, favicons) => this.patchTab(id, { faviconUrl: favicons[0] ?? null }))
     wc.on('did-fail-load', (_e, errorCode, errorDescription, _validatedURL, isMainFrame) => {
       if (isMainFrame && errorCode !== ERR_ABORTED) {
         log.warn('did-fail-load', { errorCode, errorDescription })
-        this.patch({ isLoading: false, loadError: errorDescription })
+        this.patchTab(id, { isLoading: false, loadError: errorDescription })
       }
     })
 
-    this.navigate(START_URL)
+    wc.loadURL(normalizeUrlInput(url)).catch((err: Error) => {
+      // did-fail-load уже отражает ошибку в state — тут только не даём unhandled rejection.
+      log.debug('loadURL rejected', { url, message: err.message })
+    })
+
+    this.switchTab(id)
+    return id
+  }
+
+  /** Закрывает вкладку; если это была активная — переключается на соседнюю
+   *  (или создаёт новую стартовую, если закрыли последнюю). */
+  closeTab(id: string): void {
+    const tab = this.tabs.get(id)
+    if (!tab) return
+    const wasActive = id === this.activeTabId
+    const idx = this.order.indexOf(id)
+
+    this.win.contentView.removeChildView(tab.view)
+    tab.view.webContents.close()
+    this.tabs.delete(id)
+    this.order.splice(idx, 1)
+
+    if (this.order.length === 0) {
+      this.activeTabId = null
+      this.newTab()
+      return
+    }
+    if (wasActive) {
+      this.switchTab(this.order[Math.min(idx, this.order.length - 1)]!)
+    } else {
+      this.emitTabs()
+    }
+  }
+
+  switchTab(id: string): void {
+    if (id === this.activeTabId) return
+    const next = this.tabs.get(id)
+    if (!next) return
+
+    const prev = this.activeTabId ? this.tabs.get(this.activeTabId) : null
+    prev?.view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+
+    this.activeTabId = id
+    if (!this.hidden && this.lastBounds) next.view.setBounds(this.lastBounds)
+    this.emitTabs()
+  }
+
+  getActiveTabId(): string | null {
+    return this.activeTabId
+  }
+
+  getTabsSnapshot(): TabsSnapshot {
+    return {
+      tabs: this.order.map((id) => ({ id, ...this.tabs.get(id)!.state })),
+      activeTabId: this.activeTabId
+    }
   }
 
   setBounds(bounds: Rectangle): void {
     this.lastBounds = bounds
-    if (!this.hidden) this.view?.setBounds(bounds)
+    if (!this.hidden) this.activeView()?.setBounds(bounds)
   }
 
   /** Прячет/возвращает нативный view нулевыми bounds, НЕ трогая `lastBounds`
@@ -113,8 +198,9 @@ export class BrowserController {
   setHidden(hidden: boolean): void {
     if (this.hidden === hidden) return
     this.hidden = hidden
-    if (hidden) this.view?.setBounds({ x: 0, y: 0, width: 0, height: 0 })
-    else if (this.lastBounds) this.view?.setBounds(this.lastBounds)
+    const view = this.activeView()
+    if (hidden) view?.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    else if (this.lastBounds) view?.setBounds(this.lastBounds)
   }
 
   /** Bounds последнего setBounds, в системе координат окна (не экрана) —
@@ -128,45 +214,65 @@ export class BrowserController {
     return { width: this.lastBounds?.width ?? 0, height: this.lastBounds?.height ?? 0 }
   }
 
-  /** Для ElementPicker (Phase 3) — CDP-инспекция идёт по webContents браузерной
-   *  страницы, не по webContents главного окна (там наш React UI, не сайт). */
-  getWebContents(): WebContents | null {
-    return this.view?.webContents ?? null
+  /** Для ElementPicker (Phase 3) — CDP-инспекция идёт по webContents АКТИВНОЙ
+   *  вкладки, не по webContents главного окна (там наш React UI, не сайт). */
+  getWebContents(): Electron.WebContents | null {
+    return this.activeView()?.webContents ?? null
   }
 
   navigate(input: string): void {
-    if (!this.view) return
+    const view = this.activeView()
+    if (!view) return
     const url = normalizeUrlInput(input)
-    this.view.webContents.loadURL(url).catch((err: Error) => {
-      // did-fail-load уже отражает ошибку в state — тут только не даём unhandled rejection.
+    view.webContents.loadURL(url).catch((err: Error) => {
       log.debug('loadURL rejected', { url, message: err.message })
     })
   }
 
   back(): void {
-    this.view?.webContents.navigationHistory.goBack()
+    this.activeView()?.webContents.navigationHistory.goBack()
   }
 
   forward(): void {
-    this.view?.webContents.navigationHistory.goForward()
+    this.activeView()?.webContents.navigationHistory.goForward()
   }
 
   reload(): void {
-    this.view?.webContents.reload()
+    this.activeView()?.webContents.reload()
   }
 
   stop(): void {
-    this.view?.webContents.stop()
+    this.activeView()?.webContents.stop()
   }
 
   getState(): BrowserState {
-    return this.state
+    return (this.activeTabId ? this.tabs.get(this.activeTabId)?.state : null) ?? EMPTY_STATE
   }
 
-  private patch(next: Partial<BrowserState>): void {
-    this.state = { ...this.state, ...next }
-    this.onState(this.state)
+  private activeView(): WebContentsView | null {
+    return (this.activeTabId ? this.tabs.get(this.activeTabId)?.view : null) ?? null
   }
+
+  private patchTab(id: string, next: Partial<BrowserState>): void {
+    const tab = this.tabs.get(id)
+    if (!tab) return
+    tab.state = { ...tab.state, ...next }
+    this.emitTabs()
+  }
+
+  private emitTabs(): void {
+    this.onTabsChange(this.getTabsSnapshot())
+  }
+}
+
+const EMPTY_STATE: BrowserState = {
+  url: '',
+  title: '',
+  isLoading: false,
+  canGoBack: false,
+  canGoForward: false,
+  faviconUrl: null,
+  loadError: null
 }
 
 /**

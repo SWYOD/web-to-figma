@@ -53,6 +53,99 @@
   line-height: 1.5;
 }
 
+/* ── Browser tab bar (вкладки) ───────────────────────────────────────── */
+.browser-tab-bar {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  padding: 6px 8px 0;
+  background: var(--surface-2);
+  border-bottom: 1px solid var(--border);
+  overflow-x: auto;
+}
+.browser-tab-list {
+  display: flex;
+  align-items: flex-end;
+  gap: 2px;
+  min-width: 0;
+}
+.browser-tab {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  min-width: 0;
+  width: 180px;
+  padding: 7px 8px;
+  border-radius: 8px 8px 0 0;
+  color: var(--text-dim);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.browser-tab:hover {
+  background: var(--hover);
+}
+.browser-tab.active {
+  background: var(--surface);
+  color: var(--text);
+}
+.browser-tab-icon {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.browser-tab-favicon {
+  width: 13px;
+  height: 13px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+.browser-tab-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  font-size: 12px;
+}
+.browser-tab-close {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 5px;
+  color: var(--text-faint);
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s, color 0.12s;
+}
+.browser-tab:hover .browser-tab-close,
+.browser-tab.active .browser-tab-close {
+  opacity: 1;
+}
+.browser-tab-close:hover {
+  background: var(--danger);
+  color: #fff;
+}
+.browser-tab-new {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 26px;
+  height: 26px;
+  margin-bottom: 4px;
+  border-radius: 7px;
+  color: var(--text-faint);
+  cursor: pointer;
+  transition: background 0.12s, color 0.12s;
+}
+.browser-tab-new:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
 /* ── Browser toolbar (навигация + адресная строка) ──────────────────────
    Тот же паттерн, что stats-bar в Skill-tree: тонкая полоса-шапка над
    рабочей областью колонки, а не часть общего app-level toolbar (см.

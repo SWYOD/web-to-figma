@@ -16,6 +16,15 @@ export function InspectorPanel(): JSX.Element {
   const [diagnostics, setDiagnostics] = useState<ConversionWarning[]>([])
 
   useEffect(() => {
+    // Панель могла быть закрыта (не смонтирована) в момент клика пикером —
+    // пропустила live-событие ниже. Подхватываем уже сделанный выбор при
+    // каждом монтировании, а не остаёмся в пустом состоянии до следующего клика.
+    window.api.inspectorGetLastSelection().then((result) => {
+      if (!result) return
+      setSelection(result.element)
+      setDiagnostics(result.diagnostics)
+    })
+
     const offPick = window.api.onInspectorPickState(setPick)
     const offSelection = window.api.onInspectorSelection((result) => {
       setSelection(result.element)

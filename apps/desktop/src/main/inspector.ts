@@ -34,13 +34,23 @@ const CDP_PROTOCOL_VERSION = '1.3'
 // ширину) — из-за этого адаптивные сайты (напр. Tailwind `min-width:900px`)
 // отдают мобильную/узкую раскладку вместо desktop-flex, который видит
 // пользователь в обычном браузере (см. docs/architecture.md, живая проверка
-// на ris.pxls-cdn.ru/standardization). Перед снапшотом временно расширяем
-// CDP-viewport хотя бы до этого reference-размера через
+// на ris.pxls-cdn.ru/standardization). `withDesktopViewport` временно
+// раздвигает CDP-viewport хотя бы до этого reference-размера через
 // Emulation.setDeviceMetricsOverride (реальный layout страницы пересчитывается,
 // backendNodeId остаётся валиден — идентичность DOM-узла не зависит от
-// раскладки), захват идёт уже по desktop-раскладке независимо от того, каким
-// узким сейчас видим сам pane. Никогда не СУЖАЕМ — если реальный viewport и
-// так шире (пользователь развернул окно на большом экране), используем его.
+// раскладки). Никогда не СУЖАЕМ — если реальный viewport и так шире
+// (пользователь развернул окно на большом экране), используем его.
+//
+// ВАЖНО: это ре-раскладка РЕАЛЬНОГО видимого webContents (offscreen-снапшот
+// в CDP не сделать) — на видимой странице это выглядит как заметный "дёрг"
+// раскладки на время override'а. Раньше это применялось на КАЖДЫЙ клик
+// пикера (handleInspectNodeRequested) — пользователь поймал баг ("странно
+// дёргается при клике в инспект-режиме"). Теперь применяется ТОЛЬКО один раз,
+// прямо перед реальным импортом в Figma (`prepareForImport()`, вызывается из
+// index.ts перед `buildDocument()`) — обычный клик для просмотра в Inspector
+// Panel снимает снапшот на текущем реальном viewport без какого-либо дёрга,
+// как было до этой фичи; "дёрг" остаётся только один раз на committing-действие
+// Import as Frame, где это ощутимо более приемлемо, чем на каждом exploratory-клике.
 const CAPTURE_MIN_WIDTH = 1440
 const CAPTURE_MIN_HEIGHT = 900
 
@@ -116,6 +126,16 @@ export class ElementPicker {
   private active = false
   private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
   private lastAssets: Record<string, DesignAsset> = {}
+  /** backendNodeId последнего клика — нужен, чтобы `prepareForImport()` мог
+   *  пересобрать `lastConversion` на desktop-ширине перед реальным импортом
+   *  (см. комментарий у CAPTURE_MIN_WIDTH выше), не заставляя обычный клик
+   *  пикера трогать реальный viewport. */
+  private lastBackendNodeId: number | null = null
+  /** Последний результат для панели (не только DesignNode-дерево для
+   *  импорта) — нужен, чтобы правая панель могла подхватить уже сделанный
+   *  выбор при повторном открытии (закрыта в момент клика → пропустила
+   *  live-событие onSelect). */
+  private lastSelectionResult: SelectionResult | null = null
   // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
   // private hoverTimer: ReturnType<typeof setInterval> | null = null
   // private hoverBackendNodeId: number | null = null
@@ -135,6 +155,10 @@ export class ElementPicker {
 
   getLastConversion(): { node: DesignNode; diagnostics: ConversionWarning[] } | null {
     return this.lastConversion
+  }
+
+  getLastSelection(): SelectionResult | null {
+    return this.lastSelectionResult
   }
 
   /** Оборачивает lastConversion в полноценный DesignDocument для отправки через bridge (Phase 6). */
@@ -348,46 +372,85 @@ export class ElementPicker {
     }
   }
 
+  /** Снимает снапшот backendNodeId на ТЕКУЩЕМ (реальном) viewport и обновляет
+   *  lastConversion/lastAssets/lastSelectionResult — общий путь для обычного
+   *  клика пикера и для `prepareForImport()` (та лишь оборачивает вызов в
+   *  `withDesktopViewport`, см. комментарий у CAPTURE_MIN_WIDTH). */
+  private async captureAndConvert(wc: WebContents, backendNodeId: number): Promise<SelectionResult> {
+    const { tree: snapshot, truncated, assets } = await buildSnapshotTree(wc, backendNodeId)
+    this.lastAssets = assets
+    const styleMap = toComputedStyleMap(Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value })))
+
+    const summary: ElementSummary = {
+      tag: snapshot.tag,
+      id: snapshot.id,
+      classes: snapshot.classes,
+      width: Math.round(snapshot.box.width),
+      height: Math.round(snapshot.box.height),
+      layout: parseLayout(styleMap),
+      typography: parseTypography(styleMap),
+      appearance: parseAppearance(styleMap)
+    }
+
+    this.lastConversion = convertElement(snapshot)
+    if (truncated) {
+      this.lastConversion.diagnostics.push({
+        nodeId: this.lastConversion.node.id,
+        code: 'subtree-truncated',
+        severity: 'warning',
+        message: 'Поддерево слишком большое — часть вложенных элементов не импортирована.'
+      })
+    }
+
+    return { element: summary, diagnostics: this.lastConversion.diagnostics }
+  }
+
   private async handleInspectNodeRequested(params: InspectNodeRequestedParams): Promise<void> {
     const wc = this.getWebContents()
     if (!wc) return
 
     try {
-      const { tree: snapshot, truncated, assets } = await this.withDesktopViewport(wc.debugger, () =>
-        buildSnapshotTree(wc, params.backendNodeId)
-      )
-      this.lastAssets = assets
-      const styleMap = toComputedStyleMap(
-        Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value }))
-      )
-
-      const summary: ElementSummary = {
-        tag: snapshot.tag,
-        id: snapshot.id,
-        classes: snapshot.classes,
-        width: Math.round(snapshot.box.width),
-        height: Math.round(snapshot.box.height),
-        layout: parseLayout(styleMap),
-        typography: parseTypography(styleMap),
-        appearance: parseAppearance(styleMap)
-      }
-
-      this.lastConversion = convertElement(snapshot)
-      if (truncated) {
-        this.lastConversion.diagnostics.push({
-          nodeId: this.lastConversion.node.id,
-          code: 'subtree-truncated',
-          severity: 'warning',
-          message: 'Поддерево слишком большое — часть вложенных элементов не импортирована.'
-        })
-      }
-
-      this.onSelect({ element: summary, diagnostics: this.lastConversion.diagnostics })
+      this.lastBackendNodeId = params.backendNodeId
+      const result = await this.captureAndConvert(wc, params.backendNodeId)
+      this.lastSelectionResult = result
+      this.onSelect(result)
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
     } finally {
       // Клик фиксирует выбор — как в реальном "Inspect element", pick-режим сам выключается.
       await this.stop()
+    }
+  }
+
+  /**
+   * Перед реальным импортом в Figma — пересобирает lastConversion на
+   * desktop-ширине (см. CAPTURE_MIN_WIDTH выше) для УЖЕ выбранного узла, не
+   * трогая viewport на обычном клике пикера. Дебаггер к этому моменту уже
+   * отсоединён (`stop()` вызывается сразу после каждого клика) — временно
+   * подключаем заново сами, минимальный набор доменов (без Overlay — тут не
+   * нужен hover/inspect режим, только чтение DOM/CSS).
+   */
+  async prepareForImport(): Promise<boolean> {
+    if (this.lastBackendNodeId === null) return false
+    const wc = this.getWebContents()
+    if (!wc) return false
+
+    const dbg = wc.debugger
+    const alreadyAttached = dbg.isAttached()
+    try {
+      if (!alreadyAttached) {
+        dbg.attach(CDP_PROTOCOL_VERSION)
+        await dbg.sendCommand('DOM.enable')
+        await dbg.sendCommand('CSS.enable')
+      }
+      const result = await this.withDesktopViewport(dbg, () => this.captureAndConvert(wc, this.lastBackendNodeId!))
+      this.lastSelectionResult = result
+      return true
+    } catch (err) {
+      log.warn('prepareForImport failed', { message: (err as Error).message })
+      return false
+    } finally {
+      if (!alreadyAttached && dbg.isAttached()) dbg.detach()
     }
   }
 }

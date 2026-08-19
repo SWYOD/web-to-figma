@@ -20,6 +20,7 @@ import type {
   PickState,
   RecentSite,
   SelectionResult,
+  TabsSnapshot,
   ViewBounds
 } from '../shared/types'
 
@@ -149,11 +150,15 @@ function createWindow(): void {
 
   browserController = new BrowserController(
     mainWindow,
-    (state) => {
-      mainWindow?.webContents.send('browser:state', state)
+    (snapshot: TabsSnapshot) => {
+      mainWindow?.webContents.send('browser:tabs', snapshot)
       // title/favicon приходят отдельными событиями ПОСЛЕ did-navigate — каждый
       // патч state уточняет уже записанную визитом запись (см. RecentSitesStore).
-      void recentSites.updateLatestMeta(state.url, { title: state.title, faviconUrl: state.faviconUrl })
+      // По ВСЕМ вкладкам, не только активной — matched по url, no-op для
+      // неизменившихся, но так фоновые вкладки тоже уточняют свою запись.
+      for (const tab of snapshot.tabs) {
+        void recentSites.updateLatestMeta(tab.url, { title: tab.title, faviconUrl: tab.faviconUrl })
+      }
     },
     (url) => {
       elementPicker?.stopIfActive()
@@ -252,7 +257,24 @@ function registerIpc(): void {
   ipcMain.handle('browser:stop', (): void => browserController?.stop())
   ipcMain.handle('browser:set-bounds', (_e, bounds: ViewBounds): void => browserController?.setBounds(bounds))
   ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
-  ipcMain.handle('browser:get-state', () => browserController?.getState())
+
+  // Пикер держит CDP debugger-сессию на КОНКРЕТНОМ webContents активной
+  // вкладки (см. inspector.ts) — переключение/закрытие вкладки меняет,
+  // какой webContents видим, поэтому сбрасываем активный pick-режим, чтобы
+  // не остаться привязанными к уже невидимой вкладке.
+  ipcMain.handle('browser:new-tab', (): void => {
+    elementPicker?.stopIfActive()
+    browserController?.newTab()
+  })
+  ipcMain.handle('browser:close-tab', (_e, id: string): void => {
+    elementPicker?.stopIfActive()
+    browserController?.closeTab(id)
+  })
+  ipcMain.handle('browser:switch-tab', (_e, id: string): void => {
+    elementPicker?.stopIfActive()
+    browserController?.switchTab(id)
+  })
+  ipcMain.handle('browser:get-tabs', (): TabsSnapshot => browserController?.getTabsSnapshot() ?? { tabs: [], activeTabId: null })
 
   ipcMain.handle('overlay:open', (_e, payload: OverlayOpenPayload): void => {
     setOverlay(payload.kind, { x: payload.x, y: payload.y, width: payload.width, height: payload.height })
@@ -261,6 +283,11 @@ function registerIpc(): void {
 
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
+  // Правая панель могла быть закрыта в момент клика пикером (пропустила
+  // live-событие 'inspector:selection') — при открытии подхватывает уже
+  // сделанный выбор через этот запрос вместо того, чтобы показывать пустое
+  // состояние, пока пользователь не кликнет заново.
+  ipcMain.handle('inspector:get-last-selection', (): SelectionResult | null => elementPicker?.getLastSelection() ?? null)
 
   ipcMain.handle('recent-sites:get', (): RecentSite[] => recentSites.getAll())
   ipcMain.handle('recent-sites:remove', async (_e, url: string): Promise<void> => {
@@ -270,6 +297,10 @@ function registerIpc(): void {
   ipcMain.handle(
     'inspector:import-as-frame',
     async (_e, useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> => {
+      // См. inspector.ts CAPTURE_MIN_WIDTH — desktop-ширина применяется здесь,
+      // один раз перед реальным импортом, а не на каждом клике пикера
+      // (это раньше вызывало заметный "дёрг" видимой страницы на каждый клик).
+      await elementPicker?.prepareForImport()
       const document = elementPicker?.buildDocument(
         browserController?.getState().url ?? '',
         browserController?.getViewportSize() ?? { width: 0, height: 0 }

@@ -5,12 +5,12 @@ import type {
   ApplyStylesResult,
   ApplyStylesTargets,
   BridgeStatusEvent,
-  BrowserState,
   ImportResult,
   OverlayOpenPayload,
   PickState,
   RecentSite,
   SelectionResult,
+  TabsSnapshot,
   ViewBounds
 } from '../shared/types'
 
@@ -32,11 +32,15 @@ const api: Api = {
   browserStop: () => ipcRenderer.invoke('browser:stop'),
   browserSetBounds: (bounds: ViewBounds) => ipcRenderer.invoke('browser:set-bounds', bounds),
   browserSetHidden: (hidden: boolean) => ipcRenderer.invoke('browser:set-hidden', hidden),
-  browserGetState: () => ipcRenderer.invoke('browser:get-state'),
-  onBrowserState: (cb: (state: BrowserState) => void) => {
-    const listener = (_e: Electron.IpcRendererEvent, state: BrowserState): void => cb(state)
-    ipcRenderer.on('browser:state', listener)
-    return () => ipcRenderer.removeListener('browser:state', listener)
+
+  browserNewTab: () => ipcRenderer.invoke('browser:new-tab'),
+  browserCloseTab: (id: string) => ipcRenderer.invoke('browser:close-tab', id),
+  browserSwitchTab: (id: string) => ipcRenderer.invoke('browser:switch-tab', id),
+  browserGetTabs: () => ipcRenderer.invoke('browser:get-tabs'),
+  onTabsState: (cb: (snapshot: TabsSnapshot) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, snapshot: TabsSnapshot): void => cb(snapshot)
+    ipcRenderer.on('browser:tabs', listener)
+    return () => ipcRenderer.removeListener('browser:tabs', listener)
   },
 
   overlayOpen: (payload: OverlayOpenPayload) => ipcRenderer.invoke('overlay:open', payload),
@@ -59,6 +63,7 @@ const api: Api = {
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
+  inspectorGetLastSelection: (): Promise<SelectionResult | null> => ipcRenderer.invoke('inspector:get-last-selection'),
   inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> =>
     ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>

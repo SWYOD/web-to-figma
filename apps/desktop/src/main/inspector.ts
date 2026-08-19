@@ -1,5 +1,6 @@
 import type { WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
+import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
 import type { ElementSummary, PickState } from '../shared/types'
 
 const log = createConsoleLogger('inspector')
@@ -13,6 +14,12 @@ interface DescribeNodeResult {
 }
 interface BoxModelResult {
   model: { width: number; height: number }
+}
+interface PushNodesResult {
+  nodeIds: number[]
+}
+interface ComputedStyleResult {
+  computedStyle: { name: string; value: string }[]
 }
 interface InspectNodeRequestedParams {
   backendNodeId: number
@@ -68,6 +75,7 @@ export class ElementPicker {
       dbg.on('message', this.handleMessage)
       dbg.on('detach', this.handleDetach)
       await dbg.sendCommand('DOM.enable')
+      await dbg.sendCommand('CSS.enable')
       await dbg.sendCommand('Overlay.enable')
       await dbg.sendCommand('Overlay.setInspectMode', { mode: 'searchForNode', highlightConfig: HIGHLIGHT_CONFIG })
     } catch (err) {
@@ -122,10 +130,20 @@ export class ElementPicker {
     if (!wc) return
 
     try {
-      const [describe, box] = await Promise.all([
+      const [describe, box, pushed] = await Promise.all([
         wc.debugger.sendCommand('DOM.describeNode', { backendNodeId: params.backendNodeId }) as Promise<DescribeNodeResult>,
-        wc.debugger.sendCommand('DOM.getBoxModel', { backendNodeId: params.backendNodeId }) as Promise<BoxModelResult>
+        wc.debugger.sendCommand('DOM.getBoxModel', { backendNodeId: params.backendNodeId }) as Promise<BoxModelResult>,
+        // CSS.getComputedStyleForNode принимает только nodeId, не backendNodeId — см. docs/architecture.md.
+        wc.debugger.sendCommand('DOM.pushNodesByBackendIdsToFrontend', {
+          backendNodeIds: [params.backendNodeId]
+        }) as Promise<PushNodesResult>
       ])
+
+      const nodeId = pushed.nodeIds[0]
+      const computed = nodeId
+        ? ((await wc.debugger.sendCommand('CSS.getComputedStyleForNode', { nodeId })) as ComputedStyleResult)
+        : { computedStyle: [] }
+      const styleMap = toComputedStyleMap(computed.computedStyle)
 
       const attrs = describe.node.attributes ?? []
       const attrMap = new Map<string, string>()
@@ -136,7 +154,10 @@ export class ElementPicker {
         id: attrMap.get('id') || null,
         classes: (attrMap.get('class') ?? '').split(/\s+/).filter(Boolean),
         width: Math.round(box.model.width),
-        height: Math.round(box.model.height)
+        height: Math.round(box.model.height),
+        layout: parseLayout(styleMap),
+        typography: parseTypography(styleMap),
+        appearance: parseAppearance(styleMap)
       }
       this.onSelect(summary)
     } catch (err) {

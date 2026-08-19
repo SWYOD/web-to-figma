@@ -36,12 +36,46 @@ export interface ViewBounds {
   height: number
 }
 
+export interface ElementLayout {
+  display: string
+  position: string
+  /** Уже свёрнуто в CSS shorthand-подобную строку ("0", "0 16", "8 12 8 12"). */
+  padding: string
+  flexDirection: string | null
+  justifyContent: string | null
+  alignItems: string | null
+  gap: string | null
+}
+
+export interface ElementTypography {
+  fontFamily: string
+  fontSize: string
+  fontWeight: string
+  lineHeight: string
+  letterSpacing: string
+  textAlign: string
+  color: string
+}
+
+export interface ElementAppearance {
+  backgroundColor: string
+  /** null — border отсутствует (border-style: none / width 0). */
+  border: string | null
+  /** Свёрнуто аналогично padding; null — радиус нулевой. */
+  borderRadius: string | null
+  /** Сырое значение computed box-shadow; "none" — тени нет. */
+  boxShadow: string
+}
+
 export interface ElementSummary {
   tag: string
   id: string | null
   classes: string[]
   width: number
   height: number
+  layout: ElementLayout
+  typography: ElementTypography
+  appearance: ElementAppearance
 }
 
 export interface PickState {

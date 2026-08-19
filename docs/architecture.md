@@ -151,8 +151,13 @@ info-тултип Chromium прямо на странице, `DOM.describeNode`+
 CDP-вызовы (`DOM.enable`/`Overlay.enable`/`Overlay.setInspectMode`/cleanup)
 проверены live против реального Chromium через remote-debugging-port; сам
 клик по странице — не автоматизирован в этой сессии, стоит визуально
-проверить наведение/клик в приложении) → Phase 4 (property extraction) →
-Phase 5 (Design AST)
+проверить наведение/клик в приложении) → Phase 4 (property extraction:
+`CSS.getComputedStyleForNode` по allowlist из conversion-rules.md → Layout/
+Typography/Fill/Border/Radius/Shadow в Inspector Panel — **done**, вся цепочка
+`DOM.describeNode`/`DOM.getBoxModel`/`DOM.pushNodesByBackendIdsToFrontend`/
+`CSS.getComputedStyleForNode` проверена live на реальном `<h1>` example.com —
+все нужные computed-свойства присутствуют под ожидаемыми именами) → Phase 5
+(Design AST)
 → Phase 6 (Figma renderer) → Phase 7 (Flex→Auto Layout) → Phase 8 (nested trees)
 → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
 (warnings/confidence score) → далее расширение scope.

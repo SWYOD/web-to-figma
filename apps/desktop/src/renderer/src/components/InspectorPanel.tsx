@@ -4,6 +4,7 @@ import { Block, BlockHead, IconButton, Panel, PanelHead, PanelHeadActions, Panel
 import type { ElementSummary, PickState } from '../../../shared/types'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
+const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 
 export function InspectorPanel(): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
@@ -35,6 +36,8 @@ export function InspectorPanel(): JSX.Element {
     else window.api.inspectorStartPick()
   }
 
+  const showDetails = selection && !pick.active
+
   return (
     <Panel>
       <PanelHead>
@@ -54,8 +57,52 @@ export function InspectorPanel(): JSX.Element {
             Нажмите на иконку выше и кликните на элемент страницы, чтобы выбрать его.
           </div>
         )}
-        {selection && !pick.active && <SelectionCard element={selection} />}
+        {showDetails && <SelectionCard element={selection} />}
       </Block>
+      {showDetails && (
+        <>
+          <Block>
+            <BlockHead>Layout</BlockHead>
+            <PropRow label="Size" value={`${selection.width} × ${selection.height}`} />
+            <PropRow label="Display" value={selection.layout.display} />
+            <PropRow label="Position" value={selection.layout.position} />
+            <PropRow label="Padding" value={selection.layout.padding} />
+            {selection.layout.flexDirection && <PropRow label="Direction" value={selection.layout.flexDirection} />}
+            {selection.layout.gap && <PropRow label="Gap" value={selection.layout.gap} />}
+            {selection.layout.justifyContent && <PropRow label="Justify" value={selection.layout.justifyContent} />}
+            {selection.layout.alignItems && <PropRow label="Align" value={selection.layout.alignItems} />}
+          </Block>
+          <Block>
+            <BlockHead>Typography</BlockHead>
+            <PropRow label="Font" value={selection.typography.fontFamily} />
+            <PropRow label="Size / Line" value={`${selection.typography.fontSize} / ${selection.typography.lineHeight}`} />
+            <PropRow label="Weight" value={selection.typography.fontWeight} />
+            <PropRow label="Color" value={selection.typography.color} swatch={selection.typography.color} />
+          </Block>
+          <Block>
+            <BlockHead>Fill</BlockHead>
+            <PropRow label="Background" value={selection.appearance.backgroundColor} swatch={selection.appearance.backgroundColor} />
+          </Block>
+          {selection.appearance.border && (
+            <Block>
+              <BlockHead>Border</BlockHead>
+              <PropRow label="Border" value={selection.appearance.border} />
+            </Block>
+          )}
+          {selection.appearance.borderRadius && (
+            <Block>
+              <BlockHead>Radius</BlockHead>
+              <PropRow label="Radius" value={selection.appearance.borderRadius} />
+            </Block>
+          )}
+          {selection.appearance.boxShadow !== 'none' && (
+            <Block>
+              <BlockHead>Shadow</BlockHead>
+              <PropRow label="Shadow" value={selection.appearance.boxShadow} />
+            </Block>
+          )}
+        </>
+      )}
     </Panel>
   )
 }
@@ -65,9 +112,18 @@ function SelectionCard({ element }: { element: ElementSummary }): JSX.Element {
   return (
     <div className="element-summary">
       <div className="element-summary-selector">{selector}</div>
-      <div className="element-summary-size">
-        {element.width} × {element.height}
-      </div>
+    </div>
+  )
+}
+
+function PropRow({ label, value, swatch }: { label: string; value: string; swatch?: string }): JSX.Element {
+  return (
+    <div className="prop-row">
+      <span className="prop-label">{label}</span>
+      <span className="prop-value">
+        {swatch && !TRANSPARENT.test(swatch) && <span className="prop-swatch" style={{ background: swatch }} />}
+        {value}
+      </span>
     </div>
   )
 }

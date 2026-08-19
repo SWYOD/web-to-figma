@@ -532,4 +532,46 @@ bridge-protocol.md), настройка `AppSettings.useMatchedStyles`, пере
 шрифты (уже отдельная эвристика в `textNode.ts` до этой задачи, не менялась)
 и matching для градиентов/image paint.
 
+**Floating-bar попапы/модалки темы оказались перекрыты нативным browser
+view** (тот же день, скриншот пользователя: попап Import Settings обрезан
+снизу браузером). Ровно тот сценарий, который класс-docstring
+`BrowserController` предсказывал ещё в Phase 2 ("любой будущий UI, которому
+нужно визуально перекрыть браузер, должен либо не пересекать эту область,
+либо временно прятать view") — просто до этой задачи ни один popover не
+залезал в browser area. Первая версия фикса ставила нативному view нулевые
+bounds (`BrowserController.setHidden`) на время ЛЮБОГО popover/модалки —
+пользователь сразу поймал over-fix: "скрывать то тоже не надо, вот тут
+теперь пропадает всё" (скриншот — ImportSettingsPopover открыт, вся страница
+под ним чёрная). Исправлено разделением на два разных случая, а не одним
+молотком на все:
+- **Полноэкранные модалки** (`ThemesGalleryModal`/`ThemeEditorModal` —
+  `.modal-backdrop` это `position:fixed; inset:0`, накрывает всё окно с
+  затемнением) — здесь full-hide корректен и ожидаем: модалка и так
+  блокирует весь остальной UI, скрыть браузер под ней — не сюрприз для
+  пользователя. Остался `BrowserController.setHidden(hidden)` (нулевые
+  bounds, не трогая `lastBounds` — тот продолжает получать реальную
+  геометрию от `ResizeObserver`, на `setHidden(false)` view мгновенно
+  возвращается) + IPC `browser:set-hidden` + хук `usePopoverVisibility`
+  (модульный счётчик открытых модалок).
+- **Мелкие анкорные popover'ы** (`ImportSettingsPopover`/`ApplyToSelectionPopover`
+  — `placement="up"`, раскрываются из полосы над браузером) — full-hide для
+  них избыточен, они закрывают только небольшую область снизу-по-центру, а
+  вся остальная страница должна оставаться видна. `BridgePopover`/
+  `SettingsPopover` — вообще не нуждаются в спецобработке (первый в верхнем
+  toolbar над browser area, второй `placement="up-stretch"` ограничен
+  шириной колонки сайдбара, в browser area не заходит) — usePopoverVisibility
+  с них снят. Для двух реально нуждающихся сделан хирургический фикс —
+  новый `useBrowserBottomInset(open)` (`apps/desktop/src/renderer/src/hooks/`):
+  вместо IPC просто раздвигает CSS-переменную `--browser-bottom-inset`
+  (64px → 420px) на `.browser-viewport` — тот же уже существующий механизм
+  `BrowserViewport.tsx`'s `ResizeObserver` подхватывает уменьшившийся
+  реальный rect и сам шлёт новые (меньшие) bounds через уже работающий
+  `browserSetBounds`, без нового IPC вообще. В результате скрывается только
+  нижняя полоса под попапом, вся страница выше остаётся видимой и
+  интерактивной.
+Live-проверено: IPC round-trip `browserSetHidden(true)`→`(false)` не бросает
+и не ломает дальнейшие вызовы. Полный визуальный клик-тест — на пользователя,
+как и весь click-driven UI в этом проекте; именно так была поймана
+регрессия full-hide варианта.
+
 → далее расширение scope.

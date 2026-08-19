@@ -4,6 +4,7 @@ import { BUILTIN_THEMES, DEFAULT_THEME_ID } from '@web-to-figma/ui'
 import type { ThemeDef } from '@web-to-figma/ui'
 import { ThemeCard } from './ThemeCard'
 import { ThemeEditorModal } from './ThemeEditorModal'
+import { usePopoverVisibility } from '../hooks/usePopoverVisibility'
 
 interface Props {
   themeId: string
@@ -22,6 +23,9 @@ interface Props {
  */
 export function ThemesGalleryModal({ themeId, customThemes, onSelect, onCustomThemesChange, onClose }: Props): JSX.Element {
   const [editorOpen, setEditorOpen] = useState(false)
+  // Компонент существует в дереве, только пока модалка открыта (родитель
+  // рендерит условно) — mount сам по себе И ЕСТЬ "open" для этого хука.
+  usePopoverVisibility(true)
 
   useEffect(() => {
     function onKeyDown(e: KeyboardEvent): void {

@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Wand2 } from 'lucide-react'
 import { IconButton, Popover, Switch, ToolbarButton } from '@web-to-figma/ui'
 import type { ApplyStylesTargets } from '../../../shared/types'
+import { useBrowserBottomInset } from '../hooks/useBrowserBottomInset'
 
 const ALL_TARGETS: ApplyStylesTargets = {
   typography: true,
@@ -42,6 +43,7 @@ export function ApplyToSelectionPopover({ placement = 'down' }: { placement?: 'd
   const [hasSelection, setHasSelection] = useState(false)
   const [targets, setTargets] = useState<ApplyStylesTargets>(ALL_TARGETS)
   const [state, setState] = useState<ApplyUiState>({ kind: 'idle' })
+  useBrowserBottomInset(open)
 
   useEffect(() => {
     return window.api.onInspectorSelection(() => {

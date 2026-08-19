@@ -3,6 +3,7 @@ import { Save, X } from 'lucide-react'
 import { nanoid } from 'nanoid'
 import { Switch, THEME_VAR_KEYS } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeVars } from '@web-to-figma/ui'
+import { usePopoverVisibility } from '../hooks/usePopoverVisibility'
 
 const VAR_LABELS: Record<keyof ThemeVars, string> = {
   bg: 'Фон приложения',
@@ -55,6 +56,7 @@ export function ThemeEditorModal({ baseTheme, onClose, onSave }: Props): JSX.Ele
   const [primary, setPrimary] = useState<Variant>(() => cloneVariant(baseTheme.vars))
   const [hasAlt, setHasAlt] = useState(!!baseTheme.altVariant)
   const [alt, setAlt] = useState<Variant>(() => cloneVariant(baseTheme.altVariant?.vars ?? baseTheme.vars))
+  usePopoverVisibility(true)
 
   function updateVar(which: 'primary' | 'alt', key: keyof ThemeVars, value: string): void {
     const setter = which === 'primary' ? setPrimary : setAlt

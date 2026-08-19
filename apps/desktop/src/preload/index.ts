@@ -30,6 +30,7 @@ const api: Api = {
   browserReload: () => ipcRenderer.invoke('browser:reload'),
   browserStop: () => ipcRenderer.invoke('browser:stop'),
   browserSetBounds: (bounds: ViewBounds) => ipcRenderer.invoke('browser:set-bounds', bounds),
+  browserSetHidden: (hidden: boolean) => ipcRenderer.invoke('browser:set-hidden', hidden),
   browserGetState: () => ipcRenderer.invoke('browser:get-state'),
   onBrowserState: (cb: (state: BrowserState) => void) => {
     const listener = (_e: Electron.IpcRendererEvent, state: BrowserState): void => cb(state)

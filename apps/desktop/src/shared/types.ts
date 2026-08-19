@@ -178,6 +178,10 @@ export interface Api {
   browserReload: () => Promise<void>
   browserStop: () => Promise<void>
   browserSetBounds: (bounds: ViewBounds) => Promise<void>
+  /** Прячет нативный WebContentsView (нулевые bounds) на время, пока открыт
+   *  popover/модалка, которая визуально заходит в browser area — см.
+   *  usePopoverVisibility и main/browser.ts класс-docstring. */
+  browserSetHidden: (hidden: boolean) => Promise<void>
   browserGetState: () => Promise<BrowserState>
   onBrowserState: (cb: (state: BrowserState) => void) => () => void
 

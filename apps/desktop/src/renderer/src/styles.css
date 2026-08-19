@@ -134,7 +134,10 @@
 .browser-viewport {
   position: absolute;
   inset: 0;
-  bottom: 64px;
+  /* Раздвигается, пока открыт попап из PickerFloatBar (см. useBrowserBottomInset) —
+     нативный WebContentsView всегда рисуется НАД HTML, поэтому попап, который
+     раскрывается вверх из полосы над браузером, иначе окажется под ним. */
+  bottom: var(--browser-bottom-inset, 64px);
   background: var(--bg-canvas);
 }
 .picker-float-bar {

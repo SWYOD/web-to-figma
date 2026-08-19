@@ -221,6 +221,7 @@ function registerIpc(): void {
   ipcMain.handle('browser:reload', (): void => browserController?.reload())
   ipcMain.handle('browser:stop', (): void => browserController?.stop())
   ipcMain.handle('browser:set-bounds', (_e, bounds: ViewBounds): void => browserController?.setBounds(bounds))
+  ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
   ipcMain.handle('browser:get-state', () => browserController?.getState())
 
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())

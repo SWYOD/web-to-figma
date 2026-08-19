@@ -21,14 +21,20 @@ const ERR_ABORTED = -3
  * HTML renderer'а окна, а не DOM-элемент. Он всегда рисуется НАД HTML внутри
  * своего bounds-прямоугольника, независимо от z-index в React-дереве. Поэтому
  * bounds обязаны точно соответствовать области-"дырке" в layout (см.
- * BrowserViewport.tsx), и любой будущий UI (popover/tooltip), которому нужно
- * визуально перекрыть браузер, должен либо не пересекать эту область, либо
- * временно прятать view (`setBounds` в нулевой прямоугольник) — в Phase 2 это
- * не требуется, т.к. текущие popover'ы геометрически не заходят в browser area.
+ * BrowserViewport.tsx), и любой UI (popover/modal), которому нужно визуально
+ * перекрыть браузер, должен либо не пересекать эту область, либо временно
+ * прятать view через `setHidden(true)` (см. ниже) — понадобилось на практике
+ * после того, как floating-bar попапы (Import Settings/Apply to Selection) и
+ * модалки тем стали визуально залезать в browser area; renderer вызывает это
+ * через общий хук `usePopoverVisibility` на каждом popover/модалке.
  */
 export class BrowserController {
   private view: WebContentsView | null = null
   private lastBounds: Rectangle | null = null
+  /** См. класс-docstring — попап/модалка, которая визуально заходит в область
+   *  browser-viewport, обязана прятать нативный слой на время своей жизни
+   *  (setHidden(true)), иначе он всё равно нарисуется поверх неё. */
+  private hidden = false
   private state: BrowserState = {
     url: '',
     title: '',
@@ -91,7 +97,19 @@ export class BrowserController {
 
   setBounds(bounds: Rectangle): void {
     this.lastBounds = bounds
-    this.view?.setBounds(bounds)
+    if (!this.hidden) this.view?.setBounds(bounds)
+  }
+
+  /** Прячет/возвращает нативный view нулевыми bounds, НЕ трогая `lastBounds`
+   *  (тот продолжает отражать реальную геометрию `.browser-viewport`,
+   *  которую renderer шлёт через ResizeObserver независимо от этого флага) —
+   *  на `setHidden(false)` view мгновенно возвращается на последние присланные
+   *  реальные bounds, а не требует нового `setBounds` от renderer. */
+  setHidden(hidden: boolean): void {
+    if (this.hidden === hidden) return
+    this.hidden = hidden
+    if (hidden) this.view?.setBounds({ x: 0, y: 0, width: 0, height: 0 })
+    else if (this.lastBounds) this.view?.setBounds(this.lastBounds)
   }
 
   /** Bounds последнего setBounds, в системе координат окна (не экрана) —

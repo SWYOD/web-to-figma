@@ -2,6 +2,7 @@ import { useEffect, useState } from 'react'
 import { Palette } from 'lucide-react'
 import { IconButton, Popover, Switch } from '@web-to-figma/ui'
 import type { AppSettings } from '../../../shared/types'
+import { useBrowserBottomInset } from '../hooks/useBrowserBottomInset'
 
 /**
  * Настройки импорта — пока единственная опция ("стили проекта"), поэтому не
@@ -14,6 +15,7 @@ import type { AppSettings } from '../../../shared/types'
 export function ImportSettingsPopover(): JSX.Element {
   const [open, setOpen] = useState(false)
   const [useMatchedStyles, setUseMatchedStyles] = useState(false)
+  useBrowserBottomInset(open)
 
   useEffect(() => {
     window.api.getSettings().then((s: AppSettings) => setUseMatchedStyles(s.useMatchedStyles))

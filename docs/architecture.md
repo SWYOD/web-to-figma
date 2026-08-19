@@ -207,6 +207,18 @@ figma-plugin 7); (2) отдельный e2e-тест реальными `BridgeS
 элемента"/"плагин не подключён" в `inspector:import-as-frame` возвращают
 верный `ImportResult`. Не автоматизировано: реальный `figma.createFrame()` —
 нужен настоящий Figma, запущенный пользователем; сами CDP-вызовы renderer'а
-не задействованы (это Figma Plugin API, не CDP)) → Phase 7 (Flex→Auto Layout)
-→ Phase 8 (nested trees) → Phase 9 (asset engine) → Phase 10 (Apply to
-Selection) → Phase 11 (warnings/confidence score) → далее расширение scope.
+не задействованы (это Figma Plugin API, не CDP)) → Phase 7 (Flex→Auto Layout:
+`display:flex` → `layout.mode`/`gap` (по правильной оси — column-gap для
+row, row-gap для column)/`align`/`justify`, с approximation-диагностикой для
+`space-around`/`space-evenly` (нет аналога в Figma) в самом conversion-engine,
+а Figma-специфичный enum (`MIN`/`MAX`/`CENTER`/`SPACE_BETWEEN`/`BASELINE`,
+включая правило "BASELINE только для HORIZONTAL") — в рендерере плагина,
+не раньше — **done**. 22 новых unit-теста (8 conversion-engine + 7 renderer +
+существующие не сломались) и live-проверка: детерминированная `data:` flex-
+страница (не завязана на разметку внешнего сайта, которая может измениться)
+→ реальная навигация → реальный `convertElement` → mode/gap/padding/justify/
+align совпали с ожидаемыми. По пути поправлен реальный баг в
+`normalizeUrlInput`: схемы без `//` (`data:`, `about:`, `file:`, `blob:`) не
+распознавались как уже-URL и уезжали поисковым запросом) → Phase 8 (nested
+trees) → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
+(warnings/confidence score) → далее расширение scope.

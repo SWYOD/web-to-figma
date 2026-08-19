@@ -3,15 +3,16 @@ import type { ConversionWarning, CornerRadius, DesignNode, Paint, StrokeInfo, Ty
 import { isTransparent, parseColor } from './color.js'
 import { parseLength } from './length.js'
 import { parseBoxShadow } from './shadow.js'
+import { parseLayout } from './layout.js'
 import type { DomSnapshotNode } from './domSnapshot.js'
 
 /**
- * Один DOM-снапшот → один DesignNode (`type: 'frame'`). Phase 5 ("Design AST")
- * сознательно не выводит Auto Layout (`layout.mode` всегда `'none'`) и не
- * ходит по детям — это Phase 7 (Flex→Auto Layout) и Phase 8 (nested trees)
- * соответственно, см. docs/architecture.md §7 (roadmap). Здесь только
- * типизация: сырые computed-style строки → Paint/StrokeInfo/TypographyInfo/
- * CornerRadius по правилам docs/conversion-rules.md.
+ * Один DOM-снапшот → один DesignNode (`type: 'frame'`). Phase 7 добавляет
+ * вывод Auto Layout для `display:flex` (`layout.ts`) — по-прежнему без
+ * хождения по детям, это Phase 8 (nested trees), см. docs/architecture.md §7
+ * (roadmap). Остальное — типизация: сырые computed-style строки →
+ * Paint/StrokeInfo/TypographyInfo/CornerRadius по правилам
+ * docs/conversion-rules.md.
  *
  * Чистая функция — не трогает CDP/Electron, тестируется в изоляции.
  */
@@ -42,18 +43,7 @@ export function convertElement(snapshot: DomSnapshotNode): { node: DesignNode; d
     type: 'frame',
     name: buildName(snapshot),
     size: { width: Math.round(snapshot.box.width), height: Math.round(snapshot.box.height) },
-    layout: {
-      mode: 'none',
-      padding: {
-        top: parseLength(style['padding-top']),
-        right: parseLength(style['padding-right']),
-        bottom: parseLength(style['padding-bottom']),
-        left: parseLength(style['padding-left'])
-      },
-      widthSizing: 'fixed',
-      heightSizing: 'fixed',
-      positioning: 'auto'
-    },
+    layout: parseLayout(style, id, diagnostics),
     typography: parseTypography(style),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),

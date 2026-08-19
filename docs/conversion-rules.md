@@ -2,10 +2,12 @@
 
 **Статус: частично реализовано.** Описывает согласованные правила для
 `conversion-engine` (Phase 5-8) — решения фиксируются здесь до кода, не
-изобретаются по ходу дела. Phase 5 (done) реализует раздел про
-типизацию Fill/Stroke/Typography/CornerRadius/Effects из computed-style одного
-узла (`packages/conversion-engine/src/convertElement.ts`); разделы Flexbox/
-Grid/Absolute positioning/block-inline ниже — ещё направление, не код (Phase 7-8).
+изобретаются по ходу дела. Phase 5 (done) реализует раздел про типизацию
+Fill/Stroke/Typography/CornerRadius/Effects из computed-style одного узла
+(`convertElement.ts`); Phase 7 (done) реализует раздел "Flexbox → Auto
+Layout" ниже (`layout.ts`) — mode/gap/align/justify для одного `display:flex`
+узла, без учёта детей. Разделы CSS Grid/Absolute positioning/block-inline —
+ещё направление, не код (Phase 8).
 
 ## Главный принцип
 

@@ -2,15 +2,16 @@
 import type { CornerRadius, DesignNode } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toFigmaEffects } from './effects'
+import { applyLayout } from './layout'
 
 /**
- * DesignNode → FrameNode. Phase 6 — один узел, без Auto Layout (`layout.mode`
- * от conversion-engine сейчас всегда `'none'`, см. docs/architecture.md
- * roadmap Phase 7) и без детей (Phase 8). `node.type` в Phase 5 всегда
- * `'frame'` — ветки на другие типы не нужны, пока conversion-engine их не
- * производит (design-ast.md: "потребители обязаны иметь default-ветку на
- * неизвестный тип", но конкретную реализацию для text/image/vector добавляем
- * тогда, когда появится продюсер, не раньше).
+ * DesignNode → FrameNode. Auto Layout (Phase 7, `layout.ts`) применяется,
+ * когда conversion-engine распознал `display:flex`; иначе — обычный фрейм.
+ * Без детей (Phase 8). `node.type` в Phase 5 всегда `'frame'` — ветки на
+ * другие типы не нужны, пока conversion-engine их не производит
+ * (design-ast.md: "потребители обязаны иметь default-ветку на неизвестный
+ * тип", но конкретную реализацию для text/image/vector добавляем тогда,
+ * когда появится продюсер, не раньше).
  */
 export function renderDesignNode(node: DesignNode): FrameNode {
   const frame = figma.createFrame()
@@ -29,6 +30,7 @@ export function renderDesignNode(node: DesignNode): FrameNode {
   }
 
   applyCornerRadius(frame, node.cornerRadius)
+  applyLayout(frame, node.layout)
 
   if (node.opacity !== undefined) frame.opacity = node.opacity
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg

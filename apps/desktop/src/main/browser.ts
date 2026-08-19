@@ -142,9 +142,14 @@ export class BrowserController {
  * `localhost`/IP — `http://` (типичный dev-сценарий), остальное без признаков
  * URL/домена уходит поисковым запросом — как в обычном браузере.
  */
+// Не все валидные URL-схемы используют "://" (data:, about:, file: и т.п. —
+// без слэшей после двоеточия) — одного /^scheme:\/\// недостаточно, иначе
+// "data:text/html,..." ошибочно уходит поисковым запросом ниже по функции.
+const NON_SLASH_SCHEMES = /^(data|about|file|blob|javascript):/i
+
 export function normalizeUrlInput(input: string): string {
   const trimmed = input.trim()
-  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed)) return trimmed
+  if (/^[a-z][a-z0-9+.-]*:\/\//i.test(trimmed) || NON_SLASH_SCHEMES.test(trimmed)) return trimmed
   if (/^localhost(:\d+)?(\/.*)?$/i.test(trimmed) || /^\d{1,3}(\.\d{1,3}){3}(:\d+)?(\/.*)?$/.test(trimmed)) {
     return `http://${trimmed}`
   }

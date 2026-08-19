@@ -1,0 +1,12 @@
+{
+  "name": "Web Importer",
+  "api": "1.0.0",
+  "main": "dist/code.js",
+  "ui": "dist/ui.html",
+  "editorType": ["figma"],
+  "networkAccess": {
+    "allowedDomains": ["ws://127.0.0.1:52847"],
+    "devAllowedDomains": ["ws://127.0.0.1:52847", "ws://127.0.0.1:52848", "ws://127.0.0.1:52849"],
+    "reasoning": "Подключение к локальному Web → Figma desktop-приложению через WebSocket bridge на 127.0.0.1 для импорта элементов веб-сайтов в Figma."
+  }
+}

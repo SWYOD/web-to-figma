@@ -1,0 +1,227 @@
+import { z } from 'zod'
+
+/**
+ * Zod-схемы — источник истины для Design AST (см. docs/design-ast.md).
+ * Типы (design-ast.md) выводятся из схем через z.infer, чтобы модель и
+ * runtime-валидация на границе bridge не могли разойтись.
+ */
+
+export const SizeSchema = z.object({
+  width: z.number(),
+  height: z.number()
+})
+
+export const PaddingSchema = z.object({
+  top: z.number(),
+  right: z.number(),
+  bottom: z.number(),
+  left: z.number()
+})
+
+export const SizingModeSchema = z.enum(['fixed', 'hug', 'fill'])
+
+export const LayoutInfoSchema = z.object({
+  mode: z.enum(['horizontal', 'vertical', 'grid', 'none']),
+  gap: z.number().optional(),
+  rowGap: z.number().optional(),
+  columnGap: z.number().optional(),
+  padding: PaddingSchema.optional(),
+  align: z.enum(['start', 'center', 'end', 'baseline', 'stretch']).optional(),
+  justify: z.enum(['start', 'center', 'end', 'space-between', 'space-around']).optional(),
+  widthSizing: SizingModeSchema.optional(),
+  heightSizing: SizingModeSchema.optional(),
+  positioning: z.enum(['auto', 'absolute']).optional(),
+  absolute: z.object({ x: z.number(), y: z.number() }).optional(),
+  grid: z
+    .object({
+      columns: z.number(),
+      rows: z.number().optional(),
+      columnGap: z.number().optional(),
+      rowGap: z.number().optional()
+    })
+    .optional()
+})
+
+export const TypographyInfoSchema = z.object({
+  fontFamily: z.string(),
+  fontSize: z.number(),
+  fontWeight: z.number(),
+  lineHeight: z.union([z.number(), z.literal('normal')]).optional(),
+  letterSpacing: z.number().optional(),
+  textAlign: z.enum(['left', 'center', 'right', 'justify']).optional(),
+  textCase: z.enum(['none', 'upper', 'lower', 'title']).optional(),
+  textDecoration: z.enum(['none', 'underline', 'strikethrough']).optional()
+})
+
+export const ColorSchema = z.object({
+  r: z.number().min(0).max(1),
+  g: z.number().min(0).max(1),
+  b: z.number().min(0).max(1),
+  a: z.number().min(0).max(1)
+})
+
+export const PaintSchema: z.ZodType<
+  | { type: 'solid'; color: z.infer<typeof ColorSchema> }
+  | { type: 'linear-gradient'; angleDeg: number; stops: { offset: number; color: z.infer<typeof ColorSchema> }[] }
+  | { type: 'radial-gradient'; stops: { offset: number; color: z.infer<typeof ColorSchema> }[] }
+  | { type: 'image'; assetId: string; fit: 'fill' | 'fit' | 'crop' | 'tile' }
+> = z.discriminatedUnion('type', [
+  z.object({ type: z.literal('solid'), color: ColorSchema }),
+  z.object({
+    type: z.literal('linear-gradient'),
+    angleDeg: z.number(),
+    stops: z.array(z.object({ offset: z.number(), color: ColorSchema }))
+  }),
+  z.object({
+    type: z.literal('radial-gradient'),
+    stops: z.array(z.object({ offset: z.number(), color: ColorSchema }))
+  }),
+  z.object({
+    type: z.literal('image'),
+    assetId: z.string(),
+    fit: z.enum(['fill', 'fit', 'crop', 'tile'])
+  })
+])
+
+export const StrokeInfoSchema = z.object({
+  paints: z.array(PaintSchema),
+  weight: z.number()
+})
+
+export const EffectSchema = z.discriminatedUnion('type', [
+  z.object({
+    type: z.literal('drop-shadow'),
+    color: ColorSchema,
+    offsetX: z.number(),
+    offsetY: z.number(),
+    blur: z.number(),
+    spread: z.number().optional()
+  }),
+  z.object({
+    type: z.literal('inner-shadow'),
+    color: ColorSchema,
+    offsetX: z.number(),
+    offsetY: z.number(),
+    blur: z.number(),
+    spread: z.number().optional()
+  }),
+  z.object({ type: z.literal('layer-blur'), radius: z.number() }),
+  z.object({ type: z.literal('background-blur'), radius: z.number() })
+])
+
+export const CornerRadiusSchema = z.object({
+  topLeft: z.number(),
+  topRight: z.number(),
+  bottomRight: z.number(),
+  bottomLeft: z.number()
+})
+
+export const AssetReferenceSchema = z.object({
+  assetId: z.string()
+})
+
+export const NodeTypeSchema = z.enum(['frame', 'text', 'image', 'vector', 'group'])
+
+export interface DesignNode {
+  id: string
+  type: z.infer<typeof NodeTypeSchema>
+  name: string
+  size: z.infer<typeof SizeSchema>
+  layout?: z.infer<typeof LayoutInfoSchema>
+  typography?: z.infer<typeof TypographyInfoSchema>
+  text?: string
+  fills?: z.infer<typeof PaintSchema>[]
+  strokes?: z.infer<typeof StrokeInfoSchema>
+  effects?: z.infer<typeof EffectSchema>[]
+  cornerRadius?: number | z.infer<typeof CornerRadiusSchema>
+  opacity?: number
+  rotationDeg?: number
+  asset?: z.infer<typeof AssetReferenceSchema>
+  source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }
+  children?: DesignNode[]
+}
+
+export const DesignNodeSchema: z.ZodType<DesignNode> = z.lazy(() =>
+  z.object({
+    id: z.string(),
+    type: NodeTypeSchema,
+    name: z.string(),
+    size: SizeSchema,
+    layout: LayoutInfoSchema.optional(),
+    typography: TypographyInfoSchema.optional(),
+    text: z.string().optional(),
+    fills: z.array(PaintSchema).optional(),
+    strokes: StrokeInfoSchema.optional(),
+    effects: z.array(EffectSchema).optional(),
+    cornerRadius: z.union([z.number(), CornerRadiusSchema]).optional(),
+    opacity: z.number().min(0).max(1).optional(),
+    rotationDeg: z.number().optional(),
+    asset: AssetReferenceSchema.optional(),
+    source: z
+      .object({
+        tag: z.string(),
+        id: z.string().optional(),
+        classes: z.array(z.string()).optional(),
+        cssSelector: z.string().optional()
+      })
+      .optional(),
+    children: z.array(DesignNodeSchema).optional()
+  })
+)
+
+export const ConversionWarningSchema = z.object({
+  nodeId: z.string(),
+  code: z.string(),
+  severity: z.enum(['info', 'warning', 'error']),
+  message: z.string()
+})
+
+export const AssetKindSchema = z.enum(['raster', 'svg', 'background', 'icon'])
+
+export const AssetTransportSchema = z.discriminatedUnion('mode', [
+  z.object({ mode: z.literal('inline'), data: z.string() }),
+  z.object({ mode: z.literal('ref'), token: z.string() })
+])
+
+export const DesignAssetSchema = z.object({
+  id: z.string(),
+  kind: AssetKindSchema,
+  sourceUrl: z.string().optional(),
+  mimeType: z.string(),
+  width: z.number().optional(),
+  height: z.number().optional(),
+  hash: z.string(),
+  transport: AssetTransportSchema
+})
+
+export const DesignDocumentSchema = z.object({
+  version: z.literal(1),
+  root: DesignNodeSchema,
+  assets: z.record(z.string(), DesignAssetSchema),
+  diagnostics: z.array(ConversionWarningSchema),
+  metadata: z.object({
+    sourceUrl: z.string(),
+    capturedAt: z.string(),
+    viewport: SizeSchema,
+    userAgent: z.string().optional()
+  })
+})
+
+export type Size = z.infer<typeof SizeSchema>
+export type Padding = z.infer<typeof PaddingSchema>
+export type SizingMode = z.infer<typeof SizingModeSchema>
+export type LayoutInfo = z.infer<typeof LayoutInfoSchema>
+export type TypographyInfo = z.infer<typeof TypographyInfoSchema>
+export type Color = z.infer<typeof ColorSchema>
+export type Paint = z.infer<typeof PaintSchema>
+export type StrokeInfo = z.infer<typeof StrokeInfoSchema>
+export type Effect = z.infer<typeof EffectSchema>
+export type CornerRadius = z.infer<typeof CornerRadiusSchema>
+export type AssetReference = z.infer<typeof AssetReferenceSchema>
+export type NodeType = z.infer<typeof NodeTypeSchema>
+export type ConversionWarning = z.infer<typeof ConversionWarningSchema>
+export type AssetKind = z.infer<typeof AssetKindSchema>
+export type AssetTransport = z.infer<typeof AssetTransportSchema>
+export type DesignAsset = z.infer<typeof DesignAssetSchema>
+export type AssetManifest = Record<string, DesignAsset>
+export type DesignDocument = z.infer<typeof DesignDocumentSchema>

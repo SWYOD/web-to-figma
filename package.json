@@ -1,0 +1,23 @@
+{
+  "name": "web-to-figma",
+  "private": true,
+  "version": "0.1.0",
+  "description": "Desktop-инструмент переноса элементов реальных веб-сайтов в Figma (Electron + Chromium-инспектор + Figma Plugin bridge)",
+  "packageManager": "pnpm@9.15.0",
+  "engines": {
+    "node": ">=20"
+  },
+  "scripts": {
+    "dev": "turbo run dev --parallel",
+    "dev:desktop": "turbo run dev --filter=@web-to-figma/desktop",
+    "dev:plugin": "turbo run dev --filter=@web-to-figma/figma-plugin",
+    "build": "turbo run build",
+    "typecheck": "turbo run typecheck",
+    "lint": "turbo run lint",
+    "test": "turbo run test"
+  },
+  "devDependencies": {
+    "turbo": "^2.3.3",
+    "typescript": "^5.7.2"
+  }
+}

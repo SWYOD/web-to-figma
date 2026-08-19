@@ -1,0 +1,32 @@
+{
+  "name": "@web-to-figma/figma-plugin",
+  "version": "0.1.0",
+  "private": true,
+  "scripts": {
+    "build:code": "esbuild src/main/code.ts --bundle --outfile=dist/code.js --target=es2017 --format=iife",
+    "build:ui": "vite build",
+    "build": "npm run build:code && npm run build:ui",
+    "dev:code": "npm run build:code -- --watch",
+    "dev:ui": "npm run build:ui -- --watch",
+    "dev": "concurrently -n code,ui -c blue,magenta \"npm:dev:code\" \"npm:dev:ui\"",
+    "typecheck": "tsc --noEmit"
+  },
+  "dependencies": {
+    "@web-to-figma/bridge-protocol": "workspace:*",
+    "@web-to-figma/ui": "workspace:*",
+    "lucide-react": "^0.462.0",
+    "react": "^18.3.1",
+    "react-dom": "^18.3.1"
+  },
+  "devDependencies": {
+    "@figma/plugin-typings": "^1.104.0",
+    "@types/react": "^18.3.12",
+    "@types/react-dom": "^18.3.1",
+    "@vitejs/plugin-react": "^4.3.4",
+    "concurrently": "^9.1.0",
+    "esbuild": "^0.24.0",
+    "typescript": "^5.7.2",
+    "vite": "^5.4.11",
+    "vite-plugin-singlefile": "^2.1.0"
+  }
+}

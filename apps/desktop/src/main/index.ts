@@ -1,0 +1,143 @@
+import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { join, dirname } from 'path'
+import { promises as fs } from 'fs'
+import { nanoid } from 'nanoid'
+import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
+import { createConsoleLogger } from '@web-to-figma/shared'
+import type { AppSettings, BridgeInfo } from '../shared/types'
+
+// Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
+// "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
+// независимо от того, как запущен процесс (electron-vite dev / packaged build).
+app.setName('web-to-figma')
+
+const isDev = !app.isPackaged
+const log = createConsoleLogger('main')
+
+const DEFAULT_SETTINGS: AppSettings = {
+  themeMode: 'system'
+}
+
+interface BridgeSecret {
+  token: string
+  port: number | null
+}
+
+function settingsPath(): string {
+  return join(app.getPath('userData'), 'settings.json')
+}
+
+function bridgeSecretPath(): string {
+  return join(app.getPath('userData'), 'bridge.json')
+}
+
+async function readJson<T>(file: string): Promise<T | null> {
+  try {
+    const raw = await fs.readFile(file, 'utf-8')
+    return JSON.parse(raw) as T
+  } catch {
+    return null
+  }
+}
+
+async function writeJson(file: string, data: unknown): Promise<void> {
+  await fs.mkdir(dirname(file), { recursive: true })
+  await fs.writeFile(file, JSON.stringify(data, null, 2), 'utf-8')
+}
+
+/** Токен переживает перезапуски приложения — см. docs/bridge-protocol.md §Session token. */
+async function loadOrCreateBridgeSecret(): Promise<BridgeSecret> {
+  const existing = await readJson<BridgeSecret>(bridgeSecretPath())
+  if (existing?.token) return existing
+  const secret: BridgeSecret = { token: nanoid(24), port: null }
+  await writeJson(bridgeSecretPath(), secret)
+  return secret
+}
+
+let mainWindow: BrowserWindow | null = null
+let bridgeServer: BridgeServer | null = null
+let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
+
+function createWindow(): void {
+  mainWindow = new BrowserWindow({
+    width: 1400,
+    height: 900,
+    minWidth: 960,
+    minHeight: 600,
+    show: false,
+    backgroundColor: '#0a0a0c',
+    autoHideMenuBar: true,
+    title: 'Web → Figma',
+    webPreferences: {
+      preload: join(__dirname, '../preload/index.js'),
+      sandbox: false,
+      contextIsolation: true,
+      nodeIntegration: false
+    }
+  })
+
+  mainWindow.on('ready-to-show', () => mainWindow?.show())
+
+  mainWindow.webContents.setWindowOpenHandler((details) => {
+    shell.openExternal(details.url)
+    return { action: 'deny' }
+  })
+
+  if (isDev && process.env['ELECTRON_RENDERER_URL']) {
+    mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
+  } else {
+    mainWindow.loadFile(join(__dirname, '../renderer/index.html'))
+  }
+}
+
+async function startBridge(): Promise<void> {
+  const secret = await loadOrCreateBridgeSecret()
+
+  bridgeServer = new BridgeServer({
+    token: secret.token,
+    serverVersion: app.getVersion(),
+    onConnectionCountChange: (count) => {
+      bridgeInfo = { ...bridgeInfo, connectionCount: count }
+      mainWindow?.webContents.send('bridge:status', { connectionCount: count })
+    },
+    onMessage: (message) => {
+      // Phase 5+: диспетчеризация ImportNode/ImportAsset(s)/ApplyStyles/GetSelection.
+      log.debug('bridge message received', { kind: message.kind })
+    }
+  })
+
+  const { port } = await bridgeServer.start()
+  bridgeInfo = { port, pairingToken: secret.token, connectionCount: 0 }
+  await writeJson(bridgeSecretPath(), { token: secret.token, port })
+  log.info(`bridge listening on 127.0.0.1:${port}`)
+}
+
+function registerIpc(): void {
+  ipcMain.handle('settings:get', async (): Promise<AppSettings> => {
+    const saved = await readJson<Partial<AppSettings>>(settingsPath())
+    return { ...DEFAULT_SETTINGS, ...(saved ?? {}) }
+  })
+
+  ipcMain.handle('settings:save', async (_e, settings: AppSettings): Promise<void> => {
+    await writeJson(settingsPath(), settings)
+  })
+
+  ipcMain.handle('app:get-version', (): string => app.getVersion())
+
+  ipcMain.handle('bridge:get-info', (): BridgeInfo => bridgeInfo)
+}
+
+app.whenReady().then(async () => {
+  registerIpc()
+  await startBridge()
+  createWindow()
+
+  app.on('activate', () => {
+    if (BrowserWindow.getAllWindows().length === 0) createWindow()
+  })
+})
+
+app.on('window-all-closed', () => {
+  bridgeServer?.stop()
+  if (process.platform !== 'darwin') app.quit()
+})

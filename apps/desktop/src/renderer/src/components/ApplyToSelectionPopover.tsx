@@ -15,9 +15,10 @@ const WIDTH = 300
  * встроенного браузера (см. main/overlay.ts, OverlayRoot.tsx), чтобы попап
  * был визуально НАД браузером без hide/inset-компромиссов, которые не устроили
  * пользователя. Этот компонент только: (1) считает координаты, где должен
- * появиться попап (правый край попапа = правый край якоря — ширина фикс.,
- * реальную высоту и, соответственно, верх box'а досчитывает main по
- * `overlay:report-size` от самого overlay, см. index.ts `applyOverlayBounds`);
+ * появиться попап (центр попапа = центр всего `.picker-float-bar`, не
+ * центр/край иконки — по запросу пользователя; реальную высоту и,
+ * соответственно, верх box'а досчитывает main по `overlay:report-size` от
+ * самого overlay, см. index.ts `applyOverlayBounds`);
  * (2) шлёт `overlayOpen`/`overlayClose`; (3) знает, открыт ли ИМЕННО ЕГО попап
  * прямо сейчас — через `onOverlayContent` (общий канал, транслируется
  * ОБОИМ рендерерам на любое открытие/закрытие, включая закрытие изнутри
@@ -59,10 +60,14 @@ export function ApplyToSelectionPopover(): JSX.Element {
       window.api.overlayClose()
       return
     }
-    const rect = ref.current!.getBoundingClientRect()
+    // Центр ВСЕГО floating-бара, не иконки — иконка сидит с краю бара, а
+    // попап должен визуально смотреться центрированным на весь тулбар.
+    const toolbar = ref.current!.closest('.picker-float-bar') as HTMLElement | null
+    const rect = (toolbar ?? ref.current!).getBoundingClientRect()
+    const centerX = rect.left + rect.width / 2
     window.api.overlayOpen({
       kind: KIND,
-      x: Math.max(8, Math.round(rect.right - WIDTH)),
+      x: Math.max(8, Math.round(centerX - WIDTH / 2)),
       width: WIDTH,
       anchorTop: rect.top
     })

@@ -43,6 +43,14 @@ export function ApplyToSelectionContent(): JSX.Element {
   const [state, setState] = useState<ApplyUiState>({ kind: 'idle' })
 
   useEffect(() => {
+    // Компонент монтируется ЗАНОВО при каждом открытии попапа (условный
+    // рендер в OverlayRoot) — обычный порядок действий "выбрать элемент,
+    // потом открыть Apply to Selection" означает, что live-событие ниже уже
+    // произошло и пропущено. Подхватываем уже сделанный выбор явным
+    // запросом, тот же приём, что и в InspectorPanel.tsx.
+    window.api.inspectorGetLastSelection().then((result) => {
+      if (result) setHasSelection(true)
+    })
     return window.api.onInspectorSelection(() => {
       setHasSelection(true)
       setState({ kind: 'idle' })

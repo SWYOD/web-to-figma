@@ -127,3 +127,30 @@
   position: relative;
   background: var(--bg-canvas);
 }
+
+/* ── Inspector: element picker (Phase 3) ─────────────────────────────── */
+.inspector-error {
+  font-size: 11.5px;
+  color: var(--danger);
+  margin-bottom: 8px;
+  line-height: 1.5;
+}
+.element-summary {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  padding: 9px 11px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.element-summary-selector {
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 12.5px;
+  color: var(--accent);
+  word-break: break-all;
+}
+.element-summary-size {
+  font-size: 11.5px;
+  color: var(--text-faint);
+}

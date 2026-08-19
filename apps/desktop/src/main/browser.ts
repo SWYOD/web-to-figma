@@ -1,4 +1,4 @@
-import { WebContentsView, type BrowserWindow, type Rectangle } from 'electron'
+import { WebContentsView, type BrowserWindow, type Rectangle, type WebContents } from 'electron'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import type { BrowserState } from '../shared/types'
 
@@ -39,7 +39,10 @@ export class BrowserController {
 
   constructor(
     private readonly win: BrowserWindow,
-    private readonly onState: (state: BrowserState) => void
+    private readonly onState: (state: BrowserState) => void,
+    /** Именно top-level навигация (не любой patch стейта) — используется
+     *  ElementPicker (Phase 3), чтобы сбрасывать pick-режим на смене страницы. */
+    private readonly onNavigate?: () => void
   ) {}
 
   mount(): void {
@@ -61,13 +64,14 @@ export class BrowserController {
         canGoForward: wc.navigationHistory.canGoForward()
       })
     )
-    wc.on('did-navigate', (_e, url) =>
+    wc.on('did-navigate', (_e, url) => {
       this.patch({
         url,
         canGoBack: wc.navigationHistory.canGoBack(),
         canGoForward: wc.navigationHistory.canGoForward()
       })
-    )
+      this.onNavigate?.()
+    })
     wc.on('did-navigate-in-page', (_e, url) => this.patch({ url }))
     wc.on('page-title-updated', (_e, title) => this.patch({ title }))
     wc.on('page-favicon-updated', (_e, favicons) => this.patch({ faviconUrl: favicons[0] ?? null }))
@@ -83,6 +87,12 @@ export class BrowserController {
 
   setBounds(bounds: Rectangle): void {
     this.view?.setBounds(bounds)
+  }
+
+  /** Для ElementPicker (Phase 3) — CDP-инспекция идёт по webContents браузерной
+   *  страницы, не по webContents главного окна (там наш React UI, не сайт). */
+  getWebContents(): WebContents | null {
+    return this.view?.webContents ?? null
   }
 
   navigate(input: string): void {

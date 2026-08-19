@@ -144,8 +144,15 @@ Phase 0 (документация) → Phase 1 (monorepo + Electron shell + Figm
 shell + bridge + темы, **done**) → Phase 2 (встроенный браузер:
 `WebContentsView`, адресная строка, back/forward/reload, favicon/title/loading
 state — **done**, проверено live через CDP: реальная навигация на google.com
-→ example.com, корректные title/favicon/canGoBack) → Phase 3 (element
-picker) → Phase 4 (property extraction) → Phase 5 (Design AST)
+→ example.com, корректные title/favicon/canGoBack) → Phase 3 (element picker:
+`Overlay.setInspectMode('searchForNode')` — нативная hover-подсветка и
+info-тултип Chromium прямо на странице, `DOM.describeNode`+`DOM.getBoxModel`
+по клику → tag/id/classes/размеры в Inspector Panel, Esc отменяет — **done**,
+CDP-вызовы (`DOM.enable`/`Overlay.enable`/`Overlay.setInspectMode`/cleanup)
+проверены live против реального Chromium через remote-debugging-port; сам
+клик по странице — не автоматизирован в этой сессии, стоит визуально
+проверить наведение/клик в приложении) → Phase 4 (property extraction) →
+Phase 5 (Design AST)
 → Phase 6 (Figma renderer) → Phase 7 (Flex→Auto Layout) → Phase 8 (nested trees)
 → Phase 9 (asset engine) → Phase 10 (Apply to Selection) → Phase 11
 (warnings/confidence score) → далее расширение scope.

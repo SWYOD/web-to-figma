@@ -5,7 +5,8 @@ import { nanoid } from 'nanoid'
 import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
-import type { AppSettings, BridgeInfo, ViewBounds } from '../shared/types'
+import { ElementPicker } from './inspector'
+import type { AppSettings, BridgeInfo, ElementSummary, PickState, ViewBounds } from '../shared/types'
 
 // Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
@@ -59,6 +60,7 @@ let mainWindow: BrowserWindow | null = null
 let bridgeServer: BridgeServer | null = null
 let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
+let elementPicker: ElementPicker | null = null
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -85,8 +87,18 @@ function createWindow(): void {
     return { action: 'deny' }
   })
 
-  browserController = new BrowserController(mainWindow, (state) => mainWindow?.webContents.send('browser:state', state))
+  browserController = new BrowserController(
+    mainWindow,
+    (state) => mainWindow?.webContents.send('browser:state', state),
+    () => elementPicker?.stopIfActive()
+  )
   browserController.mount()
+
+  elementPicker = new ElementPicker(
+    () => browserController?.getWebContents() ?? null,
+    (element: ElementSummary) => mainWindow?.webContents.send('inspector:selection', element),
+    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
+  )
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     mainWindow.loadURL(process.env['ELECTRON_RENDERER_URL'])
@@ -138,6 +150,9 @@ function registerIpc(): void {
   ipcMain.handle('browser:stop', (): void => browserController?.stop())
   ipcMain.handle('browser:set-bounds', (_e, bounds: ViewBounds): void => browserController?.setBounds(bounds))
   ipcMain.handle('browser:get-state', () => browserController?.getState())
+
+  ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
+  ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
 }
 
 app.whenReady().then(async () => {

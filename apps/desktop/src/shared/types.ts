@@ -36,6 +36,19 @@ export interface ViewBounds {
   height: number
 }
 
+export interface ElementSummary {
+  tag: string
+  id: string | null
+  classes: string[]
+  width: number
+  height: number
+}
+
+export interface PickState {
+  active: boolean
+  error: string | null
+}
+
 export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
@@ -51,4 +64,9 @@ export interface Api {
   browserSetBounds: (bounds: ViewBounds) => Promise<void>
   browserGetState: () => Promise<BrowserState>
   onBrowserState: (cb: (state: BrowserState) => void) => () => void
+
+  inspectorStartPick: () => Promise<void>
+  inspectorStopPick: () => Promise<void>
+  onInspectorPickState: (cb: (state: PickState) => void) => () => void
+  onInspectorSelection: (cb: (element: ElementSummary) => void) => () => void
 }

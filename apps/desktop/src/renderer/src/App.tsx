@@ -1,10 +1,11 @@
 import { useEffect, useState } from 'react'
 import { Monitor, Moon, Sun } from 'lucide-react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle, Segmented, ThemeProvider, clamp, useResizer } from '@web-to-figma/ui'
+import { Segmented, ThemeProvider, clamp, useResizer } from '@web-to-figma/ui'
 import type { ThemeMode } from '@web-to-figma/ui'
 import type { AppSettings } from '../../shared/types'
 import { BridgePopover } from './components/BridgePopover'
 import { BrowserPane } from './components/BrowserPane'
+import { InspectorPanel } from './components/InspectorPanel'
 
 const THEME_OPTIONS: { value: ThemeMode; label: string; icon: JSX.Element }[] = [
   { value: 'light', label: 'Light', icon: <Sun size={13} /> },
@@ -69,17 +70,7 @@ function Workspace(): JSX.Element {
       </div>
       <div className="resizer" {...resizer} />
       <div className="col" style={{ width: rightWidth }}>
-        <Panel>
-          <PanelHead>
-            <PanelTitle>Inspector</PanelTitle>
-          </PanelHead>
-          <Block>
-            <BlockHead>Element picker</BlockHead>
-            <div className="placeholder-hint">
-              Появится в Phase 3 — наведение/выбор DOM-элемента через Chrome DevTools Protocol.
-            </div>
-          </Block>
-        </Panel>
+        <InspectorPanel />
       </div>
     </div>
   )

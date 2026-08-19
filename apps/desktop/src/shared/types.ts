@@ -1,4 +1,5 @@
 import type { ConversionWarning } from '@web-to-figma/design-ast'
+import type { ApplyStylesMessage } from '@web-to-figma/bridge-protocol'
 
 /** Дублирует ThemeMode из @web-to-figma/ui намеренно: main-процесс не должен
  *  тянуть React/JSX-пакет только ради одного union-типа (см. tsconfig.node.json,
@@ -140,6 +141,18 @@ export interface ImportResult {
   error?: string
 }
 
+/** bridge-protocol — обычный изоморфный пакет (не React/DOM-ориентированный,
+ *  в отличие от @web-to-figma/ui), main уже импортирует его типы напрямую
+ *  (см. index.ts) — здесь не дублируем форму, а берём как есть. */
+export type ApplyStylesTargets = ApplyStylesMessage['payload']['targets']
+
+export interface ApplyStylesResult {
+  ok: boolean
+  appliedTo?: number
+  skipped?: string[]
+  error?: string
+}
+
 /** Одна запись истории посещений встроенного браузера (см. main/recentSites.ts). */
 export interface RecentSite {
   url: string
@@ -170,6 +183,7 @@ export interface Api {
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
   inspectorImportAsFrame: () => Promise<ImportResult>
+  inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
 
   recentSitesGet: () => Promise<RecentSite[]>
   recentSitesRemove: (url: string) => Promise<void>

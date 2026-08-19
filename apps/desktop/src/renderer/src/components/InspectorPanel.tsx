@@ -1,18 +1,44 @@
 import { useEffect, useState } from 'react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle, ToolbarButton } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelTitle, Switch, ToolbarButton } from '@web-to-figma/ui'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
-import type { ElementSummary, PickState } from '../../../shared/types'
+import type { ApplyStylesTargets, ElementSummary, PickState } from '../../../shared/types'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 
+const ALL_TARGETS: ApplyStylesTargets = {
+  typography: true,
+  fill: true,
+  border: true,
+  radius: true,
+  effects: true,
+  layout: true,
+  dimensions: true
+}
+
+const TARGET_LABELS: { key: keyof ApplyStylesTargets; label: string }[] = [
+  { key: 'typography', label: 'Typography' },
+  { key: 'fill', label: 'Fill' },
+  { key: 'border', label: 'Border' },
+  { key: 'radius', label: 'Radius' },
+  { key: 'effects', label: 'Effects' },
+  { key: 'layout', label: 'Auto Layout' },
+  { key: 'dimensions', label: 'Dimensions' }
+]
+
 type ImportUiState = { kind: 'idle' | 'loading' } | { kind: 'ok' } | { kind: 'error'; message: string }
+type ApplyUiState =
+  | { kind: 'idle' | 'loading' }
+  | { kind: 'ok'; appliedTo: number; skipped: string[] }
+  | { kind: 'error'; message: string }
 
 export function InspectorPanel(): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [selection, setSelection] = useState<ElementSummary | null>(null)
   const [diagnostics, setDiagnostics] = useState<ConversionWarning[]>([])
   const [importState, setImportState] = useState<ImportUiState>({ kind: 'idle' })
+  const [applyTargets, setApplyTargets] = useState<ApplyStylesTargets>(ALL_TARGETS)
+  const [applyState, setApplyState] = useState<ApplyUiState>({ kind: 'idle' })
 
   useEffect(() => {
     const offPick = window.api.onInspectorPickState(setPick)
@@ -21,6 +47,7 @@ export function InspectorPanel(): JSX.Element {
       setDiagnostics(result.diagnostics)
       setPick(EMPTY_PICK)
       setImportState({ kind: 'idle' })
+      setApplyState({ kind: 'idle' })
     })
     return () => {
       offPick()
@@ -32,6 +59,16 @@ export function InspectorPanel(): JSX.Element {
     setImportState({ kind: 'loading' })
     const result = await window.api.inspectorImportAsFrame()
     setImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
+  }
+
+  const handleApply = async (): Promise<void> => {
+    setApplyState({ kind: 'loading' })
+    const result = await window.api.inspectorApplyStyles(applyTargets)
+    setApplyState(
+      result.ok
+        ? { kind: 'ok', appliedTo: result.appliedTo ?? 0, skipped: result.skipped ?? [] }
+        : { kind: 'error', message: result.error ?? 'Не удалось применить стили' }
+    )
   }
 
   useEffect(() => {
@@ -70,6 +107,36 @@ export function InspectorPanel(): JSX.Element {
           </>
         )}
       </Block>
+      {showDetails && (
+        <Block>
+          <BlockHead>Apply to Selection</BlockHead>
+          <div className="placeholder-hint" style={{ marginBottom: 8 }}>
+            Перенести выбранные категории стилей на уже выделенные слои в Figma (не создаёт новых нод).
+          </div>
+          {TARGET_LABELS.map(({ key, label }) => (
+            <div key={key} className="target-row">
+              <span>{label}</span>
+              <Switch checked={applyTargets[key]} onChange={(v) => setApplyTargets((t) => ({ ...t, [key]: v }))} />
+            </div>
+          ))}
+          <ToolbarButton primary disabled={applyState.kind === 'loading'} onClick={handleApply}>
+            {applyState.kind === 'loading' ? 'Применение…' : 'Apply to Selection'}
+          </ToolbarButton>
+          {applyState.kind === 'ok' && (
+            <div className="import-status ok">
+              Применено к {applyState.appliedTo} слоям.
+              {applyState.skipped.length > 0 && (
+                <ul className="apply-skipped-list">
+                  {applyState.skipped.map((s, i) => (
+                    <li key={i}>{s}</li>
+                  ))}
+                </ul>
+              )}
+            </div>
+          )}
+          {applyState.kind === 'error' && <div className="import-status error">{applyState.message}</div>}
+        </Block>
+      )}
       {showDetails && (
         <>
           <Block>

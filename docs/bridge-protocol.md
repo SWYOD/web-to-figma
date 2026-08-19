@@ -49,11 +49,13 @@ type BridgeMessage =
   | ErrorMessage                            // структурированная ошибка вместо ResponseMessage
 ```
 
-Phase 1 реализует и реально гоняет по сети: `Hello*`, `Ping`/`Pong`,
-`Response`/`Error`. Остальные (`ImportNode`, `ImportAsset(s)`, `ApplyStyles`,
-`GetSelection`) объявлены как типы/Zod-схемы уже сейчас (контракт зафиксирован
-для Phase 5-10), но продюсеров/обработчиков для них ещё нет — будут добавлены
-вертикальными срезами вместе с conversion-engine/asset-engine.
+Phase 1 реализовала и реально гоняла по сети только `Hello*`, `Ping`/`Pong`,
+`Response`/`Error` — остальные были объявлены как типы/Zod-схемы заранее
+(контракт зафиксирован для Phase 5-10), без продюсеров/обработчиков. С тех
+пор добавлены: `ImportNode` (Phase 6, "Import as Frame") и `ApplyStyles`
+(Phase 10, "Apply to Selection" — `apps/figma-plugin/src/main/renderers/applyStyles.ts`).
+`ImportAsset(s)` (доставка ref-транспорта >256KB по требованию) и
+`GetSelection` — по-прежнему только контракт, без реализации.
 
 ## Handshake
 

@@ -1,9 +1,10 @@
 /// <reference types="@figma/plugin-typings" />
-import type { AssetManifest, CornerRadius, DesignNode } from '@web-to-figma/design-ast'
+import type { AssetManifest, DesignNode } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
 import { createImagePaint, createVectorFromAsset } from './asset'
+import { applyCornerRadius } from './cornerRadius'
 
 /**
  * DesignNode → FrameNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
@@ -71,18 +72,6 @@ function buildFrame(node: DesignNode, assets: AssetManifest): FrameNode {
   }
 
   return frame
-}
-
-function applyCornerRadius(frame: FrameNode, radius: number | CornerRadius | undefined): void {
-  if (radius === undefined) return
-  if (typeof radius === 'number') {
-    frame.cornerRadius = radius
-    return
-  }
-  frame.topLeftRadius = radius.topLeft
-  frame.topRightRadius = radius.topRight
-  frame.bottomRightRadius = radius.bottomRight
-  frame.bottomLeftRadius = radius.bottomLeft
 }
 
 /** Ставит фрейм рядом с текущим viewport и подводит взгляд к нему — см. ТЗ §17. */

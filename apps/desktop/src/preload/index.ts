@@ -2,6 +2,8 @@ import { contextBridge, ipcRenderer } from 'electron'
 import type {
   Api,
   AppSettings,
+  ApplyStylesResult,
+  ApplyStylesTargets,
   BridgeStatusEvent,
   BrowserState,
   ImportResult,
@@ -48,6 +50,8 @@ const api: Api = {
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
   inspectorImportAsFrame: (): Promise<ImportResult> => ipcRenderer.invoke('inspector:import-as-frame'),
+  inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
+    ipcRenderer.invoke('inspector:apply-styles', targets),
 
   recentSitesGet: () => ipcRenderer.invoke('recent-sites:get'),
   recentSitesRemove: (url: string) => ipcRenderer.invoke('recent-sites:remove', url),

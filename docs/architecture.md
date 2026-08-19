@@ -320,4 +320,48 @@ asset-ссылки, корректный hash-дедуп (3 идентичные
 панель Asset Inspector (просмотр/copy-to-clipboard ассетов вне единичного
 инспектируемого элемента), доставка по требованию для ref-транспорта
 (ассеты >256KB), детекция CSS `background-image`) → Phase 10 (Apply to
-Selection) → Phase 11 (warnings/confidence score) → далее расширение scope.
+Selection: перенос выбранных категорий стилей (typography/fill/border/radius/
+effects/layout/dimensions) с последнего инспектированного DOM-элемента на уже
+выделенные ноды в Figma, без создания новых — **готово**. `ApplyStylesMessage`
+существовал в bridge-protocol с Phase 1, реализация появилась только теперь:
+`apps/figma-plugin/src/main/renderers/applyStyles.ts` — единственное место,
+трогающее `figma.currentPage.selection` для этой операции; multi-selection
+поддержан (применяется к каждой выбранной ноде), несовместимость
+категория/тип-ноды (напр. `layout` не для TextNode, `typography` не для
+Frame) не роняет всю операцию, а копится в `skipped[]` и возвращается вместе
+с `appliedTo`. Новые общие хелперы: `cornerRadius.ts` (был приватным в
+designNode.ts, вынесен — переиспользуется обеими операциями; принимает
+широкий `SceneNode`, а не пытается сузить его на вызывающей стороне, т.к. TS
+не резолвит структурное сужение через весь `SceneNode` union из-за нескольких
+типов с несовместимой формой поля `cornerRadius`, напр. `ConnectorNode`),
+`typography.ts` (font-size/line-height/letter-spacing/align/case/decoration на
+`TextNode`; `loadFontAsync` вызывается всегда перед любой мутацией текстовых
+свойств, как требует Figma API). Подбор font-family/weight под шрифты,
+установленные в Figma (font matching), сознательно не реализован — эвристика
+без надёжного способа проверить, что угаданный `{family,style}` существует и
+не уронит `loadFontAsync`, это риск уронить всю операцию ради необязательной
+части; typography применяется поверх ТЕКУЩЕГО шрифта слоя. `layout.ts`'s
+`applyLayout` расширен с чистого `FrameNode` до `FrameNode | ComponentNode |
+InstanceNode` — Apply to Selection может целить в Component/Instance, не
+только Frame, как раньше умел только рендер новых нод.
+
+Пейринг плагина с desktop заменён с ручного ввода кода на автообнаружение
+(см. `docs/bridge-protocol.md` §Discovery) — сделано в этом же срезе по
+запросу пользователя, т.к. блокировало практическое использование связки.
+
+Верификация Apply to Selection: unit-тесты не добавлены для `applyStyles.ts`/
+`typography.ts`/`cornerRadius.ts` — они (как и `asset.ts` в Phase 9) напрямую
+используют `figma.*` глобалы, недоступные вне реальной Figma; типизация
+(`tsc --noEmit`) и существующие 14 тестов рендереров (paint/effects/layout)
+проходят без изменений. Live-проверка: полный bridge round-trip
+(discovery → hello → hello-ack → keepalive ping) подтверждён внешним
+mock-клиентом на реально запущенном приложении; IPC-обработчик
+`inspector:apply-styles` подтверждён на error-path ("Сначала выберите
+элемент" при пустом выделении). Попытка синтетически эмулировать клик через
+`Input.dispatchMouseEvent` на второй CDP-сессии для полной проверки
+success-пути (нужен реальный pick, чтобы `elementPicker.buildDocument()`
+вернул документ) не сработала — как и в Phase 3, реальный click-driven pick
+через `Overlay.setInspectMode` не поддаётся надёжной внешней эмуляции; полный
+success-путь (реальный pick в Figma + реальный `figma.currentPage.selection`)
+не автоматизирован, нужна ручная проверка в самой Figma.
+→ Phase 11 (warnings/confidence score) → далее расширение scope.

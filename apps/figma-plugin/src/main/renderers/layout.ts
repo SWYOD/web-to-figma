@@ -1,6 +1,11 @@
 /// <reference types="@figma/plugin-typings" />
 import type { LayoutInfo } from '@web-to-figma/design-ast'
 
+/** Типы нод, у которых есть Auto Layout API (`layoutMode`/`primaryAxis...` и
+ *  т.д.) — расширено с чистого `FrameNode` в Phase 10 (Apply to Selection),
+ *  где целевая нода может быть Component/Instance, не только Frame. */
+export type AutoLayoutCapable = FrameNode | ComponentNode | InstanceNode
+
 /**
  * LayoutInfo → Auto Layout Figma-свойства (Phase 7). `mode:'none'` — обычный
  * фрейм, ничего не трогаем (padding/itemSpacing/align на не-auto-layout
@@ -8,7 +13,7 @@ import type { LayoutInfo } from '@web-to-figma/design-ast'
  * т.к. conversion-engine пока всегда отдаёт `widthSizing/heightSizing:
  * 'fixed'` — hug/fill появятся вместе с child-aware sizing (Phase 8+).
  */
-export function applyLayout(frame: FrameNode, layout: LayoutInfo | undefined): void {
+export function applyLayout(frame: AutoLayoutCapable, layout: LayoutInfo | undefined): void {
   if (!layout || layout.mode === 'none') return
 
   frame.layoutMode = layout.mode === 'horizontal' ? 'HORIZONTAL' : 'VERTICAL'

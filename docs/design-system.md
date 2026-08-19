@@ -126,7 +126,7 @@ bounds для нативного `WebContentsView`, см. `architecture.md` §6.
 | `.segmented` / `.seg` | `styles.css` | Перенесено как `Segmented` — нужен для переключателя Light/Dark/System и для будущих режимов (Element/Assets) |
 | `.col` / `.panel` / `.panel-head` / `.panel-title` | `styles.css` | Перенесено как `Panel`/`PanelHeader` — основа Inspector Panel |
 | `.settings-popup` (floating popover у кнопки, не modal) | `styles.css`, `SettingsPanel.tsx` | Перенесено как `Popover` — под меню темы/настроек в toolbar |
-| `.modal` / `.modal-backdrop` | `styles.css` | Перенесено как `Modal` — под будущие диалоги (Apply to Selection, Import Quality detail) |
+| `.modal` / `.modal-backdrop` | `styles.css` | Перенесено как `Modal` — используется галереей/редактором тем (`ThemesGalleryModal`/`ThemeEditorModal`); Apply to Selection (Phase 10) обошёлся без диалога — это инлайн-блок в Inspector Panel, не отдельное модальное окно, под будущий Import Quality detail остаётся свободным |
 | Scrollbar styling (`*::-webkit-scrollbar`) | `styles.css` | Перенесено дословно (тонкий скролл, `--border-strong`/`--text-faint`) |
 | `resizer` (pointer-capture drag) | `App.tsx` | Перенесено как хук `useResizer` в `packages/ui` |
 

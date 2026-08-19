@@ -4,12 +4,22 @@ import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
 import { nanoid } from 'nanoid'
 import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
-import { createMessage, type ErrorMessage, type ImportNodeMessage } from '@web-to-figma/bridge-protocol'
+import { createMessage, type ApplyStylesMessage, type ErrorMessage, type ImportNodeMessage, type ResponseMessage } from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
-import type { AppSettings, BridgeInfo, ImportResult, PickState, RecentSite, SelectionResult, ViewBounds } from '../shared/types'
+import type {
+  AppSettings,
+  ApplyStylesResult,
+  ApplyStylesTargets,
+  BridgeInfo,
+  ImportResult,
+  PickState,
+  RecentSite,
+  SelectionResult,
+  ViewBounds
+} from '../shared/types'
 
 // Явно, а не полагаясь на автоопределение по package.json (у scoped-имени
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
@@ -235,6 +245,27 @@ function registerIpc(): void {
       const response = await bridgeServer.request(message)
       if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
       return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('inspector:apply-styles', async (_e, targets: ApplyStylesTargets): Promise<ApplyStylesResult> => {
+    const document = elementPicker?.buildDocument(
+      browserController?.getState().url ?? '',
+      browserController?.getViewportSize() ?? { width: 0, height: 0 }
+    )
+    if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+    if (!bridgeServer || bridgeServer.connectionCount === 0) {
+      return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+    }
+
+    const message = createMessage<ApplyStylesMessage>('apply-styles', { document, targets })
+    try {
+      const response = await bridgeServer.request(message)
+      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+      const payload = (response as ResponseMessage).payload as { appliedTo?: number; skipped?: string[] }
+      return { ok: true, appliedTo: payload.appliedTo, skipped: payload.skipped }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
     }

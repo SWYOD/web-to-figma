@@ -18,6 +18,8 @@ const DISCOVERY_RETRY_MS = 2500
 type MainToUiMessage =
   | { type: 'import-result'; requestId: string; ok: true; nodeId: string }
   | { type: 'import-result'; requestId: string; ok: false; error: string }
+  | { type: 'apply-result'; requestId: string; ok: true; appliedTo: number; skipped: string[] }
+  | { type: 'apply-result'; requestId: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
@@ -70,24 +72,48 @@ interface LastImport {
   detail: string
 }
 
+interface LastApply {
+  ok: boolean
+  detail: string
+}
+
 function Plugin(): JSX.Element {
   const [pairing, setPairing] = useState<Pairing | 'searching'>('searching')
   const [retryNonce, setRetryNonce] = useState(0)
   const [state, setState] = useState<BridgeConnectionState>('disconnected')
   const [authError, setAuthError] = useState<'AUTH_FAILED' | 'VERSION_UNSUPPORTED' | null>(null)
   const [lastImport, setLastImport] = useState<LastImport | null>(null)
+  const [lastApply, setLastApply] = useState<LastApply | null>(null)
   const clientRef = useRef<BridgeClient | null>(null)
 
-  // Main sandbox → UI: результат импорта.
+  // Main sandbox → UI: результат импорта/apply-styles.
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
       const msg = event.data?.pluginMessage as MainToUiMessage | undefined
-      if (!msg || msg.type !== 'import-result') return
-      setLastImport(msg.ok ? { ok: true, detail: msg.nodeId } : { ok: false, detail: msg.error })
-      if (msg.ok) {
-        clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
-      } else {
-        clientRef.current?.send(createResponse<ErrorMessage>('error', msg.requestId, { code: 'IMPORT_FAILED', message: msg.error }))
+      if (!msg) return
+      if (msg.type === 'import-result') {
+        setLastImport(msg.ok ? { ok: true, detail: msg.nodeId } : { ok: false, detail: msg.error })
+        if (msg.ok) {
+          clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
+        } else {
+          clientRef.current?.send(createResponse<ErrorMessage>('error', msg.requestId, { code: 'IMPORT_FAILED', message: msg.error }))
+        }
+      } else if (msg.type === 'apply-result') {
+        if (msg.ok) {
+          const detail =
+            msg.skipped.length > 0
+              ? `Применено к ${msg.appliedTo} слоям, пропущено: ${msg.skipped.join('; ')}`
+              : `Применено к ${msg.appliedTo} слоям`
+          setLastApply({ ok: true, detail })
+          clientRef.current?.send(
+            createResponse<ResponseMessage>('response', msg.requestId, { appliedTo: msg.appliedTo, skipped: msg.skipped })
+          )
+        } else {
+          setLastApply({ ok: false, detail: msg.error })
+          clientRef.current?.send(
+            createResponse<ErrorMessage>('error', msg.requestId, { code: 'APPLY_STYLES_FAILED', message: msg.error })
+          )
+        }
       }
     }
     window.addEventListener('message', onMessage)
@@ -136,10 +162,18 @@ function Plugin(): JSX.Element {
         }
       },
       onMessage: (message) => {
-        // ImportNodeMessage инициирует desktop (не запрос этого клиента) — main
-        // sandbox — единственное место с доступом к figma.*, поэтому релеим.
+        // ImportNodeMessage/ApplyStylesMessage инициирует desktop (не запрос
+        // этого клиента) — main sandbox — единственное место с доступом к
+        // figma.*, поэтому релеим.
         if (message.kind === 'import-node') {
           postToMain({ type: 'import-node', requestId: message.id, document: message.payload.document as DesignDocument, as: message.payload.as })
+        } else if (message.kind === 'apply-styles') {
+          postToMain({
+            type: 'apply-styles',
+            requestId: message.id,
+            document: message.payload.document as DesignDocument,
+            targets: message.payload.targets
+          })
         }
       }
     })
@@ -180,8 +214,8 @@ function Plugin(): JSX.Element {
       </div>
       <div className="plugin-section">
         <div className="plugin-hint">
-          Выбор элемента и импорт запускаются из desktop-приложения (Inspector → Select element →
-          Import as Frame).
+          Выбор элемента, импорт и Apply to Selection запускаются из desktop-приложения
+          (Inspector → Select element → Import as Frame / Apply to Selection).
         </div>
       </div>
       {lastImport && (
@@ -190,6 +224,12 @@ function Plugin(): JSX.Element {
           <div className={`selected-tag${lastImport.ok ? '' : ' import-error'}`}>
             {lastImport.ok ? `Frame создан (${lastImport.detail})` : lastImport.detail}
           </div>
+        </div>
+      )}
+      {lastApply && (
+        <div className="plugin-section">
+          <div className="plugin-hint">Последний Apply to Selection:</div>
+          <div className={`selected-tag${lastApply.ok ? '' : ' import-error'}`}>{lastApply.detail}</div>
         </div>
       )}
     </>

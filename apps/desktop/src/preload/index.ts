@@ -5,6 +5,7 @@ import type {
   ApplyStylesResult,
   ApplyStylesTargets,
   BridgeStatusEvent,
+  ColorMatchSource,
   ImportResult,
   OverlayOpenPayload,
   OverlaySize,
@@ -66,8 +67,12 @@ const api: Api = {
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
   inspectorGetLastSelection: (): Promise<SelectionResult | null> => ipcRenderer.invoke('inspector:get-last-selection'),
-  inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> =>
-    ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles),
+  inspectorImportAsFrame: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ): Promise<ImportResult> =>
+    ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
     ipcRenderer.invoke('inspector:apply-styles', targets),
 

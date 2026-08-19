@@ -1,6 +1,10 @@
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { ApplyStylesMessage } from '@web-to-figma/bridge-protocol'
 
+/** Дублирует ColorMatchSource из apps/figma-plugin/renderers/styleMatching.ts —
+ *  main-процесс desktop не импортирует код Figma-плагина, только этот union. */
+export type ColorMatchSource = 'style' | 'variable'
+
 /** Дублирует ThemeMode из @web-to-figma/ui намеренно: main-процесс не должен
  *  тянуть React/JSX-пакет только ради одного union-типа (см. tsconfig.node.json,
  *  которому не нужны jsx/DOM lib). */
@@ -57,6 +61,9 @@ export interface AppSettings {
    *  style) — см. apps/figma-plugin/renderers/styleMatching.ts. */
   useMatchedTextStyles: boolean
   useMatchedColorStyles: boolean
+  /** Только когда useMatchedColorStyles включён — 'style' (Paint Style,
+   *  легаси) или 'variable' (Figma Variable) как источник для подбора цвета. */
+  colorMatchSource: ColorMatchSource
 }
 
 export interface BridgeInfo {
@@ -243,7 +250,11 @@ export interface Api {
   /** Текущий/последний выбор — для гидратации панели, если она была закрыта
    *  в момент клика пикером (см. main/inspector.ts getLastSelection). */
   inspectorGetLastSelection: () => Promise<SelectionResult | null>
-  inspectorImportAsFrame: (useMatchedTextStyles: boolean, useMatchedColorStyles: boolean) => Promise<ImportResult>
+  inspectorImportAsFrame: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ) => Promise<ImportResult>
   inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
 
   recentSitesGet: () => Promise<RecentSite[]>

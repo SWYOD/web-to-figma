@@ -67,6 +67,13 @@ Phase 1 реализовала и реально гоняла по сети то
 `InspectorPanel.tsx` (не popover — живёт в правой панели как обычная
 настройка, читается заново в момент клика на Import as Frame).
 
+`ImportNodeMessage.payload.colorMatchSource?: 'style' | 'variable'` —
+источник для цветового матчинга, когда `useMatchedColorStyles` включён:
+`'style'` (Paint Style, легаси, дефолт при отсутствии поля) или `'variable'`
+(Figma Variable). `AppSettings.colorMatchSource` + `Segmented`-переключатель
+в том же блоке "Стили проекта при импорте", видимый только когда "Цвета"
+включены.
+
 ## Handshake
 
 ```

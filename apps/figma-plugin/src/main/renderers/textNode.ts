@@ -2,7 +2,7 @@
 import type { DesignNode } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toTextAlign, toTextCase, toTextDecoration } from './typography'
-import { matchNearestSolidPaintStyle, matchNearestTextStyle, NO_STYLE_MATCHING, type StyleMatchOptions } from './styleMatching'
+import { matchColor, matchNearestTextStyle, NO_STYLE_MATCHING, weightToStyle, type StyleMatchOptions } from './styleMatching'
 
 /** Гарантированно доступен в любом Figma-файле — безопасный откат, если
  *  запрошенный шрифт/начертание не установлены (см. createTextNode). */
@@ -68,7 +68,7 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
   // привязываем узел к нему (`setTextStyleIdAsync`/`fillStyleId`), иначе
   // тихо остаёмся на raw.
   if (styleMatch.matchText && styleMatch.catalog && typography) {
-    const textStyle = matchNearestTextStyle(typography.fontSize, styleMatch.catalog.textStyles)
+    const textStyle = matchNearestTextStyle(typography.fontSize, typography.fontWeight, styleMatch.catalog.textStyles)
     if (textStyle) {
       try {
         await textNode.setTextStyleIdAsync(textStyle.id)
@@ -79,12 +79,14 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
   }
 
   const firstSolidFill = node.fills?.find((p) => p.type === 'solid')
-  const matchedPaintStyle =
+  const matchedColor =
     styleMatch.matchColor && styleMatch.catalog && firstSolidFill
-      ? matchNearestSolidPaintStyle(firstSolidFill.color, styleMatch.catalog.solidPaintStyles)
+      ? matchColor(firstSolidFill.color, styleMatch.catalog, styleMatch.colorMatchSource)
       : null
-  if (matchedPaintStyle) {
-    textNode.fillStyleId = matchedPaintStyle.id
+  if (matchedColor?.kind === 'style') {
+    textNode.fillStyleId = matchedColor.styleId
+  } else if (matchedColor?.kind === 'variable') {
+    textNode.fills = [matchedColor.paint]
   } else if (node.fills) {
     textNode.fills = toFigmaPaints(node.fills)
   }
@@ -99,13 +101,4 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
   if (node.rotationDeg !== undefined) textNode.rotation = node.rotationDeg
 
   return { textNode, fontFallback }
-}
-
-function weightToStyle(weight: number): string {
-  if (weight >= 800) return 'Black'
-  if (weight >= 700) return 'Bold'
-  if (weight >= 600) return 'SemiBold'
-  if (weight >= 500) return 'Medium'
-  if (weight <= 300) return 'Light'
-  return 'Regular'
 }

@@ -2,6 +2,7 @@
 import type { DesignDocument } from '@web-to-figma/design-ast'
 import { placeNearViewport, renderDesignNode } from './renderers/designNode'
 import { applyStylesToSelection, type ApplyStylesTargets } from './renderers/applyStyles'
+import type { ColorMatchSource } from './renderers/styleMatching'
 
 /**
  * Main sandbox плагина — максимально тонкий (см. docs/architecture.md §3,
@@ -30,6 +31,7 @@ type UiToMainMessage =
       as: 'frame' | 'component'
       useMatchedTextStyles?: boolean
       useMatchedColorStyles?: boolean
+      colorMatchSource?: ColorMatchSource
     }
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
 
@@ -49,7 +51,8 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
         msg.document.root,
         msg.document.assets,
         msg.useMatchedTextStyles ?? false,
-        msg.useMatchedColorStyles ?? false
+        msg.useMatchedColorStyles ?? false,
+        msg.colorMatchSource ?? 'style'
       )
       placeNearViewport(created)
       figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: created.id })

@@ -74,7 +74,11 @@ export const ImportNodeMessageSchema = z.object({
      *  явно попросил раздельные переключатели, не один общий. Optional для
      *  обратной совместимости со старым desktop-клиентом; отсутствие == false. */
     useMatchedTextStyles: z.boolean().optional(),
-    useMatchedColorStyles: z.boolean().optional()
+    useMatchedColorStyles: z.boolean().optional(),
+    /** Цвет матчится на Paint Style ('style', легаси) или на Figma Variable
+     *  ('variable') — пользователь явно попросил выбор. Optional/дефолт
+     *  'style' для обратной совместимости. */
+    colorMatchSource: z.enum(['style', 'variable']).optional()
   })
 })
 

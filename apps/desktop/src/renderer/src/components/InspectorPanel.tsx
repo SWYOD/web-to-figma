@@ -1,6 +1,6 @@
 import { useEffect, useMemo, useState } from 'react'
 import { Check, Copy } from 'lucide-react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle, Switch } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelTitle, Segmented, Switch } from '@web-to-figma/ui'
 import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { AppSettings, ElementSummary, PickState } from '../../../shared/types'
@@ -157,7 +157,9 @@ function ImportStylesBlock(): JSX.Element | null {
 
   if (!settings) return null
 
-  const update = (patch: Partial<Pick<AppSettings, 'useMatchedTextStyles' | 'useMatchedColorStyles'>>): void => {
+  const update = (
+    patch: Partial<Pick<AppSettings, 'useMatchedTextStyles' | 'useMatchedColorStyles' | 'colorMatchSource'>>
+  ): void => {
     const next = { ...settings, ...patch }
     setSettings(next)
     window.api.saveSettings(next)
@@ -174,9 +176,20 @@ function ImportStylesBlock(): JSX.Element | null {
         <span className="prop-label">Цвета</span>
         <Switch checked={settings.useMatchedColorStyles} onChange={(v) => update({ useMatchedColorStyles: v })} />
       </div>
+      {settings.useMatchedColorStyles && (
+        <Segmented
+          value={settings.colorMatchSource}
+          onChange={(v) => update({ colorMatchSource: v })}
+          options={[
+            { value: 'style', label: 'Style' },
+            { value: 'variable', label: 'Variable' }
+          ]}
+        />
+      )}
       <div className="placeholder-hint">
-        Вместо исходных значений — ближайший локальный text/paint style файла (шрифт — по кеглю, цвет — по расстоянию в
-        RGBA). Если подходящего стиля нет — используется исходное значение.
+        Вместо исходных значений — ближайший локальный text style файла (шрифт — по кеглю и весу начертания) и{' '}
+        {settings.colorMatchSource === 'variable' ? 'color variable' : 'paint style'} для цвета (по расстоянию в
+        RGBA). Если подходящего кандидата нет — используется исходное значение.
       </div>
     </Block>
   )

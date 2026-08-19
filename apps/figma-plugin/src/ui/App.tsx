@@ -175,7 +175,8 @@ function Plugin(): JSX.Element {
             document: message.payload.document as DesignDocument,
             as: message.payload.as,
             useMatchedTextStyles: message.payload.useMatchedTextStyles,
-            useMatchedColorStyles: message.payload.useMatchedColorStyles
+            useMatchedColorStyles: message.payload.useMatchedColorStyles,
+            colorMatchSource: message.payload.colorMatchSource
           })
         } else if (message.kind === 'apply-styles') {
           postToMain({

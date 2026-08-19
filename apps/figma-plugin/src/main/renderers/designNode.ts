@@ -6,7 +6,7 @@ import { applyLayout } from './layout'
 import { createImagePaint, createVectorFromAsset } from './asset'
 import { applyCornerRadius } from './cornerRadius'
 import { createTextNode } from './textNode'
-import { loadStyleCatalog, matchNearestSolidPaintStyle, NO_STYLE_MATCHING, type StyleMatchOptions } from './styleMatching'
+import { loadStyleCatalog, matchColor, NO_STYLE_MATCHING, type ColorMatchSource, type StyleMatchOptions } from './styleMatching'
 
 /**
  * DesignNode → SceneNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
@@ -27,10 +27,13 @@ export async function renderDesignNode(
   node: DesignNode,
   assets: AssetManifest,
   matchText = false,
-  matchColor = false
+  matchColorEnabled = false,
+  colorMatchSource: ColorMatchSource = 'style'
 ): Promise<SceneNode> {
   const styleMatch: StyleMatchOptions =
-    matchText || matchColor ? { catalog: await loadStyleCatalog(), matchText, matchColor } : NO_STYLE_MATCHING
+    matchText || matchColorEnabled
+      ? { catalog: await loadStyleCatalog({ matchText, matchColor: matchColorEnabled, colorMatchSource }), matchText, matchColor: matchColorEnabled, colorMatchSource }
+      : NO_STYLE_MATCHING
   return buildFrame(node, assets, styleMatch)
 }
 
@@ -58,17 +61,21 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: S
   frame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
 
   const imagePaint = node.type === 'image' && node.asset ? createImagePaint(node.asset.assetId, assets) : null
-  const matchedFillStyle = !imagePaint ? matchSolidFillStyle(node.fills, styleMatch) : null
-  if (matchedFillStyle) {
-    frame.fillStyleId = matchedFillStyle.id
+  const matchedFill = !imagePaint ? matchSolidColor(node.fills, styleMatch) : null
+  if (matchedFill?.kind === 'style') {
+    frame.fillStyleId = matchedFill.styleId
+  } else if (matchedFill?.kind === 'variable') {
+    frame.fills = [matchedFill.paint]
   } else {
     frame.fills = imagePaint ? [imagePaint] : node.fills ? toFigmaPaints(node.fills) : []
   }
 
   if (node.strokes) {
-    const matchedStrokeStyle = matchSolidFillStyle(node.strokes.paints, styleMatch)
-    if (matchedStrokeStyle) {
-      frame.strokeStyleId = matchedStrokeStyle.id
+    const matchedStroke = matchSolidColor(node.strokes.paints, styleMatch)
+    if (matchedStroke?.kind === 'style') {
+      frame.strokeStyleId = matchedStroke.styleId
+    } else if (matchedStroke?.kind === 'variable') {
+      frame.strokes = [matchedStroke.paint]
     } else {
       frame.strokes = toFigmaPaints(node.strokes.paints)
     }
@@ -121,12 +128,13 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: S
   return frame
 }
 
-/** Первый solid paint массива → ближайший локальный paint style (или null — цветовой матчинг выключен/нет каталога/подходящих стилей/solid-заливок). */
-function matchSolidFillStyle(paints: DesignNode['fills'], styleMatch: StyleMatchOptions): PaintStyle | null {
+/** Первый solid paint массива → ближайший локальный paint style/color variable
+ *  (или null — цветовой матчинг выключен/нет каталога/подходящих кандидатов/solid-заливок). */
+function matchSolidColor(paints: DesignNode['fills'], styleMatch: StyleMatchOptions): ReturnType<typeof matchColor> {
   if (!styleMatch.matchColor || !styleMatch.catalog) return null
   const firstSolid = paints?.find((p) => p.type === 'solid')
   if (!firstSolid) return null
-  return matchNearestSolidPaintStyle(firstSolid.color, styleMatch.catalog.solidPaintStyles)
+  return matchColor(firstSolid.color, styleMatch.catalog, styleMatch.colorMatchSource)
 }
 
 /** node.layout.widthSizing/heightSizing:'fill' → layoutSizingHorizontal/Vertical:'FILL' на реальном Auto Layout ребёнке; иначе 'FIXED' (явно, не полагаясь на дефолт API). */

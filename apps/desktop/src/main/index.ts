@@ -15,6 +15,7 @@ import type {
   ApplyStylesResult,
   ApplyStylesTargets,
   BridgeInfo,
+  ColorMatchSource,
   ImportResult,
   OverlayOpenPayload,
   OverlaySize,
@@ -39,7 +40,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   themeId: 'default',
   customThemes: [],
   useMatchedTextStyles: false,
-  useMatchedColorStyles: false
+  useMatchedColorStyles: false,
+  colorMatchSource: 'style'
 }
 
 interface BridgeSecret {
@@ -330,7 +332,12 @@ function registerIpc(): void {
 
   ipcMain.handle(
     'inspector:import-as-frame',
-    async (_e, useMatchedTextStyles: boolean, useMatchedColorStyles: boolean): Promise<ImportResult> => {
+    async (
+      _e,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource
+    ): Promise<ImportResult> => {
       // См. inspector.ts CAPTURE_MIN_WIDTH — desktop-ширина применяется здесь,
       // один раз перед реальным импортом, а не на каждом клике пикера
       // (это раньше вызывало заметный "дёрг" видимой страницы на каждый клик).
@@ -348,7 +355,8 @@ function registerIpc(): void {
         document,
         as: 'frame',
         useMatchedTextStyles,
-        useMatchedColorStyles
+        useMatchedColorStyles,
+        colorMatchSource
       })
       try {
         const response = await bridgeServer.request(message)

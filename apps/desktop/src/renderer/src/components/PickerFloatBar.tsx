@@ -45,7 +45,11 @@ export function PickerFloatBar(): JSX.Element {
   const handleImport = async (): Promise<void> => {
     setImportState({ kind: 'loading' })
     const settings = await window.api.getSettings()
-    const result = await window.api.inspectorImportAsFrame(settings.useMatchedTextStyles, settings.useMatchedColorStyles)
+    const result = await window.api.inspectorImportAsFrame(
+      settings.useMatchedTextStyles,
+      settings.useMatchedColorStyles,
+      settings.colorMatchSource
+    )
     setImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 

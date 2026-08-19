@@ -194,12 +194,15 @@ Figma TextNode нет фона — непрозрачный `background-color` �
 
 **"Стили проекта" (`useMatchedTextStyles`/`useMatchedColorStyles`, раздельно) —
 необязательный второй проход поверх raw-рендера.** `renderers/styleMatching.ts`
-подбирает ближайший локальный text style (по fontSize) / solid paint style
-(по RGBA-расстоянию) и привязывает узел к нему (`setTextStyleIdAsync`/
-`fillStyleId`/`strokeStyleId`) вместо raw-значения — независимо для шрифтов и
-для цветов, только когда соответствующий флаг `ImportNodeMessage.payload`
-включён (desktop-настройка), и только если подходящий стиль реально нашёлся,
-иначе raw-значение остаётся как есть. См. `docs/architecture.md`,
+подбирает ближайший локальный text style (по fontSize И весу начертания —
+вес доминирует подбор, fontSize только tie-breaker среди кандидатов одного
+начертания) / цвет — Paint Style ИЛИ Figma Variable (`colorMatchSource`,
+переключатель у пользователя) по RGBA-расстоянию — и привязывает узел к нему
+(`setTextStyleIdAsync`/`fillStyleId`/`strokeStyleId`/`setBoundVariableForPaint`)
+вместо raw-значения — независимо для шрифтов и для цветов, только когда
+соответствующий флаг `ImportNodeMessage.payload` включён (desktop-настройка),
+и только если подходящий кандидат реально нашёлся, иначе raw-значение
+остаётся как есть. См. `docs/architecture.md`,
 `docs/bridge-protocol.md`.
 
 **Auto Layout `fill`-sizing (`widthSizing`/`heightSizing`) — реализовано.**

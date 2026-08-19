@@ -445,4 +445,44 @@ transform был красной селёдкой, реальная причин�
 не обсуждавшейся области (`overflow`/`clipsContent`), которую уже
 документировали как "⏳ не реализовано", просто не связывали с этим багом.
 
+**Auto Layout "fill" sizing** (тот же день, ответ на "не подтягивает адаптив
+... + не autolayout"). Реализовано `widthSizing`/`heightSizing:'fill'` в
+`convertElement.ts`: новый `resolveSizing(layout, style, parentContext)` —
+главная ось родителя (`row`→width, `column`→height) заполняется при
+`flex-grow > 0`; поперечная ось — при `align-items:stretch` родителя (в т.ч.
+CSS-дефолт `normal`, уже корректно маппился в `mapAlignItems` до этой задачи),
+если `align-self` самого ребёнка явно не переопределяет. Рекурсия
+`convertNode` теперь передаёт вниз `ParentContext{mode, align}` вместо голого
+`parentLayoutMode`. На стороне Figma Plugin — `designNode.ts`/
+`applyChildSizing()`: `layoutSizingHorizontal`/`Vertical` выставляются
+ТОЛЬКО для не-absolute детей реального Auto Layout родителя (`layoutMode !==
+'NONE'`) — вне этого условия `'FILL'`/явный `'FIXED'` кидает runtime-ошибку в
+Figma API. **"hug" сознательно не реализован** в этом срезе — отличить
+"`width:auto`, значит обнять контент" от "ширина явно задана и просто
+совпала с контентом" по одному computed-style нельзя, нужен
+`CSS.getMatchedStylesForNode` (authored CSS), это отдельная задача. 8 новых
+unit-тестов (`fillSizing.test.ts`) + не сломано ни одного из 53 существующих.
+
+**Живая проверка вскрыла отдельную, более фундаментальную причину, почему на
+`/standardization` до этой задачи вообще не было Auto Layout** — не баг в
+коде конвертера, а следствие того, ПРИ КАКОЙ ширине viewport берётся снапшот.
+У сайта кастомный Tailwind-брейкпоинт `layout` = `min-width:900px`, который
+переключает `.paper`-карточку с `display:block` на `display:flex;
+flex-direction:column`. Встроенный браузер-пейн приложения (реальный размер
+`WebContentsView`, он же `DesignDocument.metadata.viewport`) на момент
+проверки был 871px шириной — **уже уже брейкпоинта**, поэтому снапшот
+честно захватывал мобильную/block-раскладку сайта, а не ту desktop-flex,
+которую пользователь видит в своём обычном браузере. Проверено live: то же
+дерево, эмулированное через CDP `Emulation.setDeviceMetricsOverride` на
+1200px, действительно даёт `display:flex; flex-direction:column;
+align-items:normal`, и `resolveSizing` на таком дереве корректно
+проставляет `widthSizing:'fill'` детям карточки (h3/p/a растягиваются на
+473.5px = внутренняя ширина карточки, ровно как в браузере). **Вывод: fill
+sizing реализован и работает корректно, но виден только когда браузер-пейн
+приложения достаточно широк для нужного брейкпоинта сайта** — сузить окно
+приложения/раздвинуть панели перед импортом адаптивных карточек, либо (если
+понадобится) отдельная фича "захват при кастомной ширине viewport" через
+`Emulation.setDeviceMetricsOverride` — не реализована, не запрошена в этом
+срезе, зафиксирована здесь как готовый следующий шаг.
+
 → далее расширение scope.

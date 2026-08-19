@@ -16,16 +16,25 @@ export function convertElement(snapshot: DomSnapshotNode): { node: DesignNode; d
   return { node, diagnostics }
 }
 
+/** Часть родительского `LayoutInfo`, нужная ребёнку для решений о позиции
+ *  (`mode`) и о fill-sizing (`align`, см. `resolveSizing`) — не весь объект,
+ *  чтобы не тащить gap/padding/justify, которые ребёнку не нужны. */
+interface ParentContext {
+  mode: LayoutInfo['mode']
+  align: LayoutInfo['align']
+}
+
 /**
- * `parentLayoutMode: null` — это корень (нет родителя, positioning не имеет
- * смысла). Иначе — режим родителя решает, остаётся ли ребёнок в обычном
- * flow (Auto Layout родителя сам разложит) или получает явные координаты:
- * CSS `position:absolute/fixed` — всегда; а если у родителя вообще нет
- * Auto Layout (`mode:'none'`, обычный block-flow) — тоже, это осознанный
- * fallback по факту захваченных координат, см. docs/conversion-rules.md
- * §block/inline (не пытаемся вывести устойчивый межэлементный margin).
+ * `parentContext: null` — это корень (нет родителя, positioning/sizing
+ * относительно родителя не имеют смысла). Иначе — режим родителя решает,
+ * остаётся ли ребёнок в обычном flow (Auto Layout родителя сам разложит)
+ * или получает явные координаты: CSS `position:absolute/fixed` — всегда; а
+ * если у родителя вообще нет Auto Layout (`mode:'none'`, обычный
+ * block-flow) — тоже, это осознанный fallback по факту захваченных
+ * координат, см. docs/conversion-rules.md §block/inline (не пытаемся
+ * вывести устойчивый межэлементный margin).
  */
-function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[], parentLayoutMode: LayoutInfo['mode'] | null): DesignNode {
+function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[], parentContext: ParentContext | null): DesignNode {
   const id = nanoid()
   const style = snapshot.computedStyle
 
@@ -69,7 +78,11 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   const strokes = parseBorder(style)
   const cornerRadius = parseCornerRadius(style)
   const clipsContent = isTextLeaf ? false : parseClipsContent(style)
-  const layout = resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentLayoutMode, id, diagnostics)
+  const layout = resolveSizing(
+    resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentContext?.mode ?? null, id, diagnostics),
+    style,
+    parentContext
+  )
 
   // Чистый translate() на абсолютно спозиционированном узле НЕ нуждается в
   // отдельном diagnostic: box-модель (CDP DOM.getBoxModel), из которой мы
@@ -89,7 +102,9 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     })
   }
 
-  const children = isTextLeaf ? undefined : snapshot.children?.map((child) => convertNode(child, diagnostics, layout.mode))
+  const children = isTextLeaf
+    ? undefined
+    : snapshot.children?.map((child) => convertNode(child, diagnostics, { mode: layout.mode, align: layout.align }))
 
   const node: DesignNode = {
     id,
@@ -144,6 +159,44 @@ function resolvePositioning(
     return { ...layout, positioning: 'absolute', absolute: absoluteCoords }
   }
   return layout // родитель — Auto Layout, ребёнок в обычном flow остаётся positioning:'auto'
+}
+
+/**
+ * Fill-sizing (Figma `layoutSizingHorizontal`/`Vertical: 'FILL'`) для детей
+ * Auto-Layout родителя — "hug" сознательно НЕ реализован в этом срезе:
+ * отличить "ширина не задана явно, должна hug-аться по контенту" от
+ * "ширина задана как `100%`/blocklevel-дефолт" требует АВТОРСКОГО значения
+ * CSS-свойства (что реально написано в правиле), а не computed (которое
+ * ВСЕГДА резолвится в px и не говорит, было ли это explicit или auto) — у
+ * нас сейчас нет доступа к authored-значениям (нужен `CSS.getMatchedStylesForNode`,
+ * не только `getComputedStyleForNode`). Fill, наоборот, вычисляется из
+ * сигналов, которые ДОСТОВЕРНЫ уже на computed-уровне:
+ *  - главная ось (совпадает с `flex-direction` родителя): computed
+ *    `flex-grow` > 0 → fill (`flex-grom` всегда резолвится в конкретное
+ *    число, авторство тут не важно — 0 и "not set" неотличимы, и это ок,
+ *    оба означают "не расти").
+ *  - поперечная ось: computed `align-self` (если не `auto`/`normal`) или,
+ *    иначе, `align-items` родителя (уже смаплено в layout.align, дефолт CSS
+ *    — 'stretch', см. `layout.ts` mapAlignItems) — `'stretch'` → fill, это
+ *    ровно то поведение браузера по умолчанию, что и создаёт эффект
+ *    "текст не ужимается уже своей ширины, а тянется на всю ширину
+ *    родителя" (см. п.21 находка "не autolayout" в architecture.md).
+ */
+function resolveSizing(layout: LayoutInfo, style: Record<string, string>, parentContext: ParentContext | null): LayoutInfo {
+  if (!parentContext || (parentContext.mode !== 'horizontal' && parentContext.mode !== 'vertical')) return layout
+
+  const mainAxisFill = parseLength(style['flex-grow'], 0) > 0
+
+  const alignSelf = style['align-self']
+  const crossAxisFill = alignSelf && alignSelf !== 'auto' && alignSelf !== 'normal' ? alignSelf === 'stretch' : parentContext.align === 'stretch'
+
+  const [widthFill, heightFill] = parentContext.mode === 'horizontal' ? [mainAxisFill, crossAxisFill] : [crossAxisFill, mainAxisFill]
+
+  return {
+    ...layout,
+    widthSizing: widthFill ? 'fill' : layout.widthSizing,
+    heightSizing: heightFill ? 'fill' : layout.heightSizing
+  }
 }
 
 function buildName(snapshot: DomSnapshotNode): string {

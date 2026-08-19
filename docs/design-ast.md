@@ -192,4 +192,12 @@ Figma TextNode нет фона — непрозрачный `background-color` �
 `loadFontAsync` бросает (шрифт/начертание не установлены в Figma) — весь
 рендер-пайплайн (`designNode.ts`) поэтому асинхронный.
 
+**Auto Layout `fill`-sizing (`widthSizing`/`heightSizing`) — реализовано.**
+`convertElement`'s `resolveSizing()` вычисляет `'fill'` из `flex-grow > 0`
+(главная ось родителя) и `align-items:stretch`/CSS-дефолт (поперечная ось,
+если `align-self` ребёнка не переопределяет) — см. `conversion-rules.md`.
+`'hug'` сознательно не реализован (нужен authored CSS, не только
+computed-style). На стороне Figma Plugin `layoutSizingHorizontal`/`Vertical`
+выставляются только для не-absolute детей реального Auto Layout родителя.
+
 CSS Grid — только направление в conversion-rules.md, не код.

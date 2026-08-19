@@ -1,5 +1,5 @@
 /// <reference types="@figma/plugin-typings" />
-import type { AssetManifest, DesignNode } from '@web-to-figma/design-ast'
+import type { AssetManifest, DesignNode, LayoutInfo } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
@@ -83,10 +83,24 @@ async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<Scen
       if (frame.layoutMode !== 'NONE') (childNode as FrameNode).layoutPositioning = 'ABSOLUTE'
       childNode.x = child.layout.absolute.x
       childNode.y = child.layout.absolute.y
+    } else if (frame.layoutMode !== 'NONE') {
+      // FILL только валиден на детях Auto Layout родителя (см. designNode.ts
+      // JSDoc выше и plugin-typings) — 'absolute' дети выше уже выведены из
+      // потока через layoutPositioning:'ABSOLUTE' и сюда не попадают. 'hug'
+      // conversion-engine намеренно не производит (см. resolveSizing в
+      // convertElement.ts — нужен authored CSS, не только computed), поэтому
+      // здесь только fill/fixed.
+      applyChildSizing(childNode as FrameNode | TextNode, child.layout)
     }
   }
 
   return frame
+}
+
+/** node.layout.widthSizing/heightSizing:'fill' → layoutSizingHorizontal/Vertical:'FILL' на реальном Auto Layout ребёнке; иначе 'FIXED' (явно, не полагаясь на дефолт API). */
+function applyChildSizing(childNode: FrameNode | TextNode, layout: LayoutInfo | undefined): void {
+  childNode.layoutSizingHorizontal = layout?.widthSizing === 'fill' ? 'FILL' : 'FIXED'
+  childNode.layoutSizingVertical = layout?.heightSizing === 'fill' ? 'FILL' : 'FIXED'
 }
 
 /** Ставит новый узел рядом с текущим viewport и подводит взгляд к нему — см. ТЗ §17. */

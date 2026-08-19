@@ -14,6 +14,8 @@
 | `padding` | ✅ | 1, 2 | Собирается с Phase 5 (для любого узла), в Auto Layout применяется с Phase 7 |
 | `justify-content` | ✅ / ⚠️ | 1 | `flex-start/center/flex-end/space-between` — ✅; `space-around`/`space-evenly` — ⚠️ приближено к `start` с diagnostic (нет аналога в Figma Auto Layout) |
 | `align-items` | ✅ | 1 | `baseline` только для HORIZONTAL layoutMode (ограничение Figma API) |
+| `flex-grow`/`align-items:stretch` (в т.ч. дефолт) → `widthSizing`/`heightSizing:'fill'` | ✅ | — | `resolveSizing()` в `convertElement.ts`; `align-self` ребёнка приоритетнее `align-items` родителя; на Figma-стороне применяется только к не-absolute детям реального Auto Layout родителя |
+| `width:auto` → `hug` | ⏳ (по дизайну) | — | Нужен authored CSS (`CSS.getMatchedStylesForNode`), не только computed-style — не реализовано, не спутано с `fixed` |
 | `display: grid` | ⏳ | — | Не реализовано, только "ровные" сетки планируются — ✅, иначе ⚠️ |
 | `position: absolute` | ✅ | 3 | Phase 8, дети Auto Layout через `layoutPositioning:'ABSOLUTE'`; родитель без Auto Layout — тоже явные координаты (fallback с diagnostic `block-layout-approximated`) |
 | Nested flex (несколько уровней) | ✅ | 4 | Phase 8, рекурсивный обход через CDP + `convertElement` |

@@ -33,9 +33,18 @@ Layout структура" — побеждает вторая. Источник
 | `align-items` | `counterAxisAlignItems` прямое соответствие (`stretch→STRETCH`, `center→CENTER`, ...) |
 | `flex-grow > 0` на ребёнке | `layoutGrow: 1` |
 | `flex-wrap: wrap` | `layoutWrap: 'WRAP'` (если целевая Figma API версия поддерживает); иначе warning + без wrap |
-| Явные `width`/`height` (px) | `widthSizing:'fixed'`/`heightSizing:'fixed'` |
-| `width: auto` при flex-child, размер определяется контентом | `hug` |
-| `width: 100%`/`flex: 1` относительно родителя-flex | `fill` |
+| Явные `width`/`height` (px), нет сигналов fill | `widthSizing:'fixed'`/`heightSizing:'fixed'` |
+| `flex-grow > 0` на flex-ребёнке | `fill` по главной оси родителя (`widthSizing` для row, `heightSizing` для column) — реализовано, `resolveSizing()` в `convertElement.ts` |
+| `align-items:stretch` родителя (в т.ч. дефолт `normal`/не задано) без переопределяющего `align-self` на ребёнке | `fill` по поперечной оси (`heightSizing` для row, `widthSizing` для column) — реализовано, тот же `resolveSizing()`; `align-self` на самом ребёнке (`stretch`/иное) имеет приоритет над `align-items` родителя |
+| `width: auto` / контент определяет размер (`hug`) | **Не реализовано.** Нужен доступ к authored CSS (`CSS.getMatchedStylesForNode`), а не только computed-style — иначе неотличимо от "width явно указан и просто совпал с содержимым". См. `docs/architecture.md` |
+
+`layoutSizingHorizontal`/`layoutSizingVertical` на стороне Figma Plugin
+(`apps/figma-plugin/src/main/renderers/designNode.ts`, `applyChildSizing()`)
+выставляются **только** для детей родителя с реальным Auto Layout
+(`frame.layoutMode !== 'NONE'`) и только для НЕ-absolute детей — `'FILL'`
+вне auto-layout родителя или на absolute-позиционированном ребёнке кидает
+runtime-исключение в Figma API (см. JSDoc `LayoutMixin.layoutSizingHorizontal`
+в `@figma/plugin-typings`).
 
 ## CSS Grid
 

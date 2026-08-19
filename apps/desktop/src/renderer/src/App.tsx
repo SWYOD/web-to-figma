@@ -3,7 +3,6 @@ import { PanelLeft, PanelRight } from 'lucide-react'
 import { clamp, isValidThemeDef, ThemeProvider, useResizer } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
 import type { AppSettings } from '../../shared/types'
-import { ApplyToSelectionPopover } from './components/ApplyToSelectionPopover'
 import { BridgePopover } from './components/BridgePopover'
 import { BrowserPane } from './components/BrowserPane'
 import { InspectorPanel } from './components/InspectorPanel'
@@ -74,7 +73,6 @@ function Shell({
           <span className="brand">Web To Figma</span>
         </div>
         <div className="toolbar-right">
-          <ApplyToSelectionPopover />
           <BridgePopover />
           <div className="tb-sep" />
           <button

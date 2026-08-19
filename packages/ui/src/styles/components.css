@@ -379,6 +379,15 @@
   min-width: 0;
 }
 
+/* ── Popover placement variant (opens up, natural width) ────────────────
+   Для кнопок в нижнем floating-баре над браузером (PickerFloatBar) —
+   раскрываться вниз некуда, но якорь — не колонка на всю ширину, поэтому
+   'up-stretch' не подходит (растянул бы попап на всю ширину бара). */
+.popover.popover-up {
+  top: auto;
+  bottom: calc(100% + 6px);
+}
+
 /* ── Settings anchor/toggle/popup (сайдбар — кнопка "Настройки") ────────
    Портировано из .settings-anchor/.settings-toggle/.settings-popup Skill-tree. */
 .settings-anchor {

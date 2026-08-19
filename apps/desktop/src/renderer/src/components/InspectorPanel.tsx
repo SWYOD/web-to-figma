@@ -1,18 +1,15 @@
 import { useEffect, useState } from 'react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle, ToolbarButton } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelTitle } from '@web-to-figma/ui'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { ElementSummary, PickState } from '../../../shared/types'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 
-type ImportUiState = { kind: 'idle' | 'loading' } | { kind: 'ok' } | { kind: 'error'; message: string }
-
 export function InspectorPanel(): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [selection, setSelection] = useState<ElementSummary | null>(null)
   const [diagnostics, setDiagnostics] = useState<ConversionWarning[]>([])
-  const [importState, setImportState] = useState<ImportUiState>({ kind: 'idle' })
 
   useEffect(() => {
     const offPick = window.api.onInspectorPickState(setPick)
@@ -20,19 +17,12 @@ export function InspectorPanel(): JSX.Element {
       setSelection(result.element)
       setDiagnostics(result.diagnostics)
       setPick(EMPTY_PICK)
-      setImportState({ kind: 'idle' })
     })
     return () => {
       offPick()
       offSelection()
     }
   }, [])
-
-  const handleImport = async (): Promise<void> => {
-    setImportState({ kind: 'loading' })
-    const result = await window.api.inspectorImportAsFrame()
-    setImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
-  }
 
   useEffect(() => {
     if (!pick.active) return
@@ -59,16 +49,7 @@ export function InspectorPanel(): JSX.Element {
             Нажмите на иконку picker'а над браузерной областью и кликните на элемент страницы, чтобы выбрать его.
           </div>
         )}
-        {showDetails && (
-          <>
-            <SelectionCard element={selection} />
-            <ToolbarButton primary disabled={importState.kind === 'loading'} onClick={handleImport}>
-              {importState.kind === 'loading' ? 'Импорт…' : 'Import as Frame'}
-            </ToolbarButton>
-            {importState.kind === 'ok' && <div className="import-status ok">Frame создан в Figma.</div>}
-            {importState.kind === 'error' && <div className="import-status error">{importState.message}</div>}
-          </>
-        )}
+        {showDetails && <SelectionCard element={selection} />}
       </Block>
       {showDetails && (
         <>

@@ -37,7 +37,7 @@ type ApplyUiState =
  * тот же `onInspectorSelection`-листенер, что и InspectorPanel (несколько
  * подписчиков на одно IPC-событие — штатно, см. preload/index.ts).
  */
-export function ApplyToSelectionPopover(): JSX.Element {
+export function ApplyToSelectionPopover({ placement = 'down' }: { placement?: 'down' | 'up' | 'up-stretch' }): JSX.Element {
   const [open, setOpen] = useState(false)
   const [hasSelection, setHasSelection] = useState(false)
   const [targets, setTargets] = useState<ApplyStylesTargets>(ALL_TARGETS)
@@ -64,6 +64,7 @@ export function ApplyToSelectionPopover(): JSX.Element {
     <Popover
       open={open}
       onClose={() => setOpen(false)}
+      placement={placement}
       anchor={
         <IconButton active={open} disabled={!hasSelection} onClick={() => setOpen((v) => !v)} title="Apply to Selection">
           <Wand2 size={16} />

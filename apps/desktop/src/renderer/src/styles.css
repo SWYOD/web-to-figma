@@ -157,6 +157,9 @@
   padding-right: 4px;
   white-space: nowrap;
 }
+.picker-float-bar-label.error {
+  color: var(--danger);
+}
 
 /* ── Левый сайдбар: история недавних сайтов ──────────────────────────── */
 .recent-scroll {

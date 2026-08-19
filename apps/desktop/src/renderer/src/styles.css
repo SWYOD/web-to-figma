@@ -121,11 +121,107 @@
   border-top: 1px solid var(--border);
 }
 
-.browser-viewport {
+/* Обёртка резервирует полосу внизу под .picker-float-bar — сам
+   .browser-viewport (источник bounds для нативного WebContentsView, см.
+   BrowserViewport.tsx) намеренно НЕ доходит до низа контейнера, чтобы бар
+   лежал на HTML-фоне, а не был перекрыт нативным слоем браузера (тот всегда
+   рисуется НАД HTML в своих bounds, см. main/browser.ts). */
+.browser-viewport-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-height: 0;
-  position: relative;
+}
+.browser-viewport {
+  position: absolute;
+  inset: 0;
+  bottom: 64px;
   background: var(--bg-canvas);
+}
+.picker-float-bar {
+  position: absolute;
+  left: 50%;
+  bottom: 16px;
+  transform: translateX(-50%);
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 6px 8px;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow);
+}
+.picker-float-bar-label {
+  font-size: 12px;
+  color: var(--text-dim);
+  padding-right: 4px;
+  white-space: nowrap;
+}
+
+/* ── Левый сайдбар: история недавних сайтов ──────────────────────────── */
+.recent-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 0 8px 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.recent-empty {
+  padding: 8px;
+}
+.recent-row {
+  display: flex;
+  align-items: center;
+  gap: 9px;
+  width: 100%;
+  padding: 8px;
+  border-radius: 8px;
+  text-align: left;
+  color: var(--text);
+  transition: background 0.14s;
+}
+.recent-row:hover {
+  background: var(--hover);
+}
+.recent-row:hover .recent-row-remove {
+  display: inline-flex;
+}
+.recent-row-favicon {
+  flex: 0 0 auto;
+  width: 15px;
+  height: 15px;
+  border-radius: 3px;
+  object-fit: contain;
+}
+.recent-row-favicon-fallback {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.recent-row-text {
+  flex: 1 1 auto;
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+}
+.recent-row-title {
+  font-size: 12.5px;
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-row-host {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.recent-row-remove {
+  display: none;
+  flex: 0 0 auto;
 }
 
 /* ── Inspector: element picker (Phase 3) + свойства (Phase 4) ────────── */

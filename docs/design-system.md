@@ -5,6 +5,15 @@
 `web-to-figma`, что из него переиспользуется буквально, что адаптируется, и что
 сделано иначе — и почему.
 
+> **Реверс решения (см. §7.1–7.2).** Изначально §3 и §7 этого документа
+> фиксировали решение НЕ иметь левый сайдбар и НЕ иметь галерею/редактор тем
+> ("web-to-figma — инструмент с фиксированной темой, кастомизация не
+> продуктовая ценность"). Пользователь явно попросил обратное — левый сайдбар
+> с историей посещённых сайтов и кнопкой настроек внизу, плюс галерея и
+> редактор тем, портированные из Skill-tree. Это осознанный реверс по прямому
+> запросу пользователя (не пересмотр решения "по факту" самим агентом) — §3 и
+> §7 ниже обновлены и объясняют текущее состояние и причину изменения.
+
 ## 1. Стек, на котором построен Skill-tree
 
 - **electron-vite** (не webpack) — main/preload/renderer в одной конфигурации,
@@ -76,10 +85,11 @@ mode)` возвращает `vars`/`branchColors` в зависимости от
 .app (flex column, 100vh)
  ├─ .toolbar (52px, flex row, justify-between, border-bottom)
  └─ .workspace (flex row, flex:1, padding:10px, gap:0)
-     ├─ .col (карточка: border + border-radius-lg + surface + shadow)
+     ├─ .col (левый сайдбар — LeftSidebar, resizable 200–480, по умолчанию 260)
      ├─ .resizer (10px, drag через pointer capture)
-     ├─ .col.center-col (flex:1, фоном bg-graph, а не surface)
-     └─ .col (правая панель)
+     ├─ .col.center-col (flex:1, фоном bg-canvas, а не surface)
+     ├─ .resizer
+     └─ .col (правая панель — Inspector, resizable 260–560, по умолчанию 360)
 ```
 
 Панели — не сплошной сайдбар на весь экран (как в вебе), а **карточки с
@@ -88,11 +98,21 @@ Claude Desktop", дословно из комментария в styles.css). Э
 визуальная подпись Skill-tree, которую стоит унаследовать буквально.
 
 **Как это переносится**: `web-to-figma` использует ту же структуру —
-`Toolbar` (адресная строка вместо brand/дерева) + `.workspace` с тремя
-колонками: `LeftRail`/browser-панель нет как таковой (левая панель не нужна —
-нет дерева), центр — `.col.center-col` с браузером (в Phase 2), справа —
-`.col` с Inspector Panel, шириной по умолчанию 360px, resizable в тех же
-границах (`260–560`).
+`Toolbar` (brand + сворачивание левой/правой панели слева/справа от секций,
+`BridgePopover` в `toolbar-right`) + `.workspace` с ТРЕМЯ колонками: слева
+`LeftSidebar` (реверс §7.1 — история недавних сайтов + настройки, добавлено
+по прямому запросу пользователя), центр — `.col.center-col` с браузером,
+справа — `.col` с Inspector Panel. Обе боковые панели сворачиваются кнопками
+`PanelLeft`/`PanelRight` в toolbar (тот же паттерн, что `leftOpen`/`rightOpen`
+в `App.tsx` Skill-tree), центр всегда занимает освободившееся место.
+
+Element picker запускается не кнопкой в шапке Inspector Panel, а плавающим
+пилл-тулбаром (`PickerFloatBar`) поверх браузерной области снизу-по-центру, в
+духе Figma — см. `.browser-viewport-wrap`/`.picker-float-bar` в
+`apps/desktop/src/renderer/src/styles.css`: `.browser-viewport` (источник
+bounds для нативного `WebContentsView`, см. `architecture.md` §6.8) намеренно
+не доходит до низа контейнера, оставляя HTML-полосу под бар, иначе нативный
+слой браузера перекрыл бы его.
 
 ## 4. Переиспользуемые компоненты — что взято как есть
 
@@ -143,44 +163,101 @@ Claude Desktop", дословно из комментария в styles.css). Э
 
 ## 7. Явные отличия `web-to-figma` от Skill-tree (и почему)
 
-1. **Нет пользовательской галереи тем / кастомных шрифтов.** Skill-tree — это
-   персонализируемый личный инструмент, `web-to-figma` — рабочий инструмент
-   разработчика/дизайнера с фиксированной, предсказуемой темой (Light/Dark +
-   System). Кастомизация здесь не продуктовая ценность, а лишняя поверхность.
-2. **Нет отдельной "AMOLED"/"Synthwave"/"Discord" палитры.** Взята только
-   структура токенов и *одна* пара light/dark, спроектированная заново под
-   рабочий инструмент (нейтральная, низкий шум, акцент — фиолетовый `#8b5cf6`,
-   тот же, что дефолтный accent Skill-tree — для визуальной преемственности
-   "той же экосистемы").
-3. **Нет `branchColors`.** Это специфика скилл-дерева (цвет ветки), в
-   `web-to-figma` есть свой набор семантических цветов (info/warning/error для
-   Import Quality diagnostics), не связанный с этим механизмом.
-4. **Toolbar = адресная строка браузера**, а не brand+дерево — по смыслу
-   продукта, но высота (52px), паддинги и `.tb-btn`/`.tb-sep` — те же.
+1. **Галерея тем и редактор темы — ЕСТЬ** (реверс исходного решения "нет
+   пользовательской галереи тем", см. врезку в начале документа). Пользователь
+   явно попросил перенести `ThemesPopup`/`ThemeCard`/`ThemeEditor` Skill-tree в
+   `web-to-figma`, трактуя приложение как более персонализируемое, чем
+   изначально заложено в scope — "рабочий инструмент с фиксированной темой"
+   было продуктовым решением на момент Phase 1, а не техническим ограничением,
+   и пользователь вправе его пересмотреть. Перенесено:
+   - `packages/ui/src/theme/tokens.ts` — `ThemeDef`/`ThemeVariant` (реестр тем),
+     без `branchColors`/`font`/graph-полей (см. п.3 ниже — этой специфики
+     по-прежнему нет и не появилось).
+   - `packages/ui/src/theme/builtins.ts` — `BUILTIN_THEMES`: прежняя
+     единственная пара `DARK_VARS`/`LIGHT_VARS` (`palette.ts`) стала первой
+     записью реестра (`id: 'default'`), плюс 4 темы, портированные из
+     Skill-tree (GitHub Dark, Dracula, Linear, Discord) — остальные
+     (Synthwave, Nuxt UI, Claude Desktop) сознательно не портированы, не
+     показались явно уместными для дев-инструмента. `bg-graph` (нет графа в
+     этом продукте) ремаппнут на `bg-canvas` (фон браузерной области — тот же
+     смысл "холста"). `warning`/`info`/`success` — токенов, которых не было у
+     Skill-tree (не диагностический инструмент) — у каждой встроенной темы НЕ
+     подобраны индивидуально, а взяты из одной общей пары (диагностические
+     цвета дефолтной темы), т.к. это цвета северности диагностики Import
+     Quality, а не брендовые цвета темы, и не должны скакать при смене темы.
+   - `apps/desktop/src/renderer/src/components/ThemeCard.tsx`,
+     `ThemesGalleryModal.tsx`, `ThemeEditorModal.tsx` — портированы из
+     `ThemeCard.tsx`/`ThemesPopup.tsx`/`ThemeEditor.tsx` Skill-tree. Превью
+     (карточка и полный `ThemePreviewMock` в редакторе) НЕ рисуют
+     `MiniSkillGraph` (нет графа) — вместо этого мини-макет РЕАЛЬНОГО shell'а
+     этого приложения (toolbar + сайдбар + браузерная область + панель), та же
+     идея "каждый токен виден на узнаваемом элементе", другой силуэт.
+   - **Отложено, не перенесено**: JSON-импорт/экспорт темы (`window.api.importJson`/
+     `exportJson` в Skill-tree) — потребовал бы Electron `dialog`+fs-плечо ради
+     редкого сценария, сознательно вне scope этой итерации. `isValidThemeDef`
+     (валидация формы темы) при этом перенесена и используется — защищает
+     `customThemes` из `settings.json` от порчи вручную/при миграции, не только
+     от файлового импорта.
+2. **Один общий набор темы, без `branchColors`.** Взята структура токенов
+   Skill-tree, но у `web-to-figma` собственный набор семантических цветов
+   (`warning`/`info`/`success`/`danger` для Import Quality diagnostics),
+   не связанный с механизмом веток (которых у продукта нет — см. п.3).
+3. **Нет `branchColors` и кастомных шрифтов.** Это специфика скилл-дерева
+   (цвет ветки) и системы шрифтов Skill-tree — ни то, ни другое не появилось
+   при переносе галереи тем; `ThemeEditorModal` сознательно не имеет поля
+   шрифта.
+4. **Toolbar = brand + сворачивание боковых панелей**, а не adress-bar
+   Skill-tree'шного дерева — по смыслу продукта, но высота (52px), паддинги и
+   `.tb-btn`/`.tb-sep` — те же. Light/Dark/System (`Segmented`) раньше жил в
+   toolbar — теперь перенесён в попап настроек (`SettingsPopover`) левого
+   сайдбара, вместе с выбором темы (см. п.1) — `toolbar-right` держит только
+   `BridgePopover` и переключатель правой панели.
+5. **Левый сайдбар — ЕСТЬ** (реверс исходного решения "нет сайдбара", см.
+   врезку в начале документа). Аналога в Skill-tree нет (там дерево навыков) —
+   спроектирован с нуля под смысл ЭТОГО продукта: история недавно посещённых
+   сайтов embedded-браузера (клик — навигация назад на этот URL), персистится
+   в `recent-sites.json` (userData, тот же паттерн, что `settings.json`), живёт
+   в отдельном `main/recentSites.ts` (fs/IPC-агностик, как `BrowserController`/
+   `ElementPicker`) и обновляется live через `recent-sites:updated`. Визуальная
+   форма (`.panel.left-panel` → шапка → скроллящийся список →
+   `.settings-anchor` внизу) взята буквально из `LeftPanel.tsx` Skill-tree —
+   именно этот структурный паттерн, не конкретное дерево-содержимое.
 
 ## 8. Итог: что конкретно лежит в `packages/ui`
 
 ```
 packages/ui/src/
   theme/
-    tokens.ts        — ThemeVars (типы токенов), перенос ThemeVars из Skill-tree
-    palette.ts        — light/dark палитра web-to-figma (аналог builtins.ts, одна пара)
-    ThemeProvider.tsx  — Light/Dark/System, matchMedia-подписка, applyThemeVars
-    apply.ts           — applyThemeVars/effectiveVariant, портировано из themes/apply.ts
+    tokens.ts        — ThemeVars/ThemeVariant/ThemeDef (типы токенов + реестр тем)
+    palette.ts        — DARK_VARS/LIGHT_VARS — исходная пара, теперь vars темы 'default'
+    builtins.ts        — BUILTIN_THEMES/DEFAULT_THEME(_ID) — реестр встроенных тем (см. §7.1)
+    ThemeProvider.tsx  — Light/Dark/System + themeId/customThemes, applyThemeVars
+    apply.ts           — resolveTheme/effectiveVariant/applyThemeVars/isValidThemeDef
   primitives/
     Switch.tsx
     IconButton.tsx
     ToolbarButton.tsx
     Segmented.tsx
     Panel.tsx           (Panel/PanelHeader/PanelTitle/Block/BlockHead)
-    Popover.tsx
+    Popover.tsx          (placement: 'down' | 'up-stretch' — см. §7.5)
     Modal.tsx
   hooks/
     useResizer.ts
   styles/
     tokens.css          — :root дефолты (аналог верхнего блока styles.css)
     base.css             — сброс, scrollbar, типографика
-    components.css        — .tb-btn/.icon-btn/.segmented/.panel/... классы
+    components.css        — .tb-btn/.icon-btn/.segmented/.panel/.settings-*/.theme-*/... классы
+
+apps/desktop/src/renderer/src/components/  (специфично для этого приложения, не в packages/ui)
+  LeftSidebar.tsx      — левый сайдбар: история сайтов + SettingsPopover (см. §7.5)
+  SettingsPopover.tsx   — попап настроек (Темы + Light/Dark/System), см. §7.4
+  ThemeCard.tsx         — карточка темы в галерее, превью-макет этого shell'а (см. §7.1)
+  ThemesGalleryModal.tsx — модалка "Темы" (грид карточек + кнопка редактора)
+  ThemeEditorModal.tsx  — редактор темы (форма по токену + живой превью-макет)
+  PickerFloatBar.tsx    — плавающий пилл над браузерной областью (запуск picker'а, см. §3)
+
+apps/desktop/src/main/
+  recentSites.ts        — RecentSitesStore: история сайтов, fs-персистенция, live-обновления
 ```
 
 Компонентная библиотека — обычные CSS-классы + инлайн CSS-переменные (та же

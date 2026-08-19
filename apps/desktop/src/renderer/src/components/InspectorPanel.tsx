@@ -1,6 +1,5 @@
 import { useEffect, useState } from 'react'
-import { MousePointerClick } from 'lucide-react'
-import { Block, BlockHead, IconButton, Panel, PanelHead, PanelHeadActions, PanelTitle, ToolbarButton } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelTitle, ToolbarButton } from '@web-to-figma/ui'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { ElementSummary, PickState } from '../../../shared/types'
 
@@ -44,22 +43,12 @@ export function InspectorPanel(): JSX.Element {
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [pick.active])
 
-  const togglePick = (): void => {
-    if (pick.active) window.api.inspectorStopPick()
-    else window.api.inspectorStartPick()
-  }
-
   const showDetails = selection && !pick.active
 
   return (
     <Panel>
       <PanelHead>
         <PanelTitle>Inspector</PanelTitle>
-        <PanelHeadActions>
-          <IconButton active={pick.active} onClick={togglePick} title="Select element (Esc — отмена)">
-            <MousePointerClick size={15} />
-          </IconButton>
-        </PanelHeadActions>
       </PanelHead>
       <Block>
         <BlockHead>Element picker</BlockHead>
@@ -67,7 +56,7 @@ export function InspectorPanel(): JSX.Element {
         {pick.active && <div className="placeholder-hint">Наведите на элемент на странице и кликните. Esc — отмена.</div>}
         {!pick.active && !selection && (
           <div className="placeholder-hint">
-            Нажмите на иконку выше и кликните на элемент страницы, чтобы выбрать его.
+            Нажмите на иконку picker'а над браузерной областью и кликните на элемент страницы, чтобы выбрать его.
           </div>
         )}
         {showDetails && (

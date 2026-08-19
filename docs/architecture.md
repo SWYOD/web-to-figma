@@ -187,6 +187,24 @@ API.
     CDP-скрипт, напрямую вызывающий `DOM.getNodeForLocation`/`describeNode`/
     `getBoxModel`/`Accessibility.getPartialAXTree` на реальном элементе и
     сверяющий результат с тем, что строит tooltip-pipeline).
+12. **Реверс продуктового решения: левый сайдбар + галерея/редактор тем добавлены
+    по прямому запросу пользователя** (см. `design-system.md` §7, врезка в начале
+    документа) — Phase 1 явно фиксировала обратное ("web-to-figma — инструмент с
+    фиксированной темой, без сайдбара"). Технически это не потребовало ломать
+    существующие границы из §3 (`conversion-engine`/`asset-engine`/`bridge-protocol`
+    по-прежнему не знают про UI) — реестр тем (`ThemeDef`, `BUILTIN_THEMES`)
+    целиком в `packages/ui`, ничего не утекло в `apps/desktop/src/main`. Один
+    новый нюанс инвертировал существующее ограничение из п.8 выше: `WebContentsView`
+    всегда рисуется НАД HTML своего bounds-прямоугольника — плавающий бар
+    запуска element picker'а (`PickerFloatBar`, замена кнопки в шапке Inspector
+    Panel) решает эту же задачу, что предсказывал п.8, явно исключая полосу
+    внизу `.browser-viewport` из bounds (`bottom: 64px` в CSS), а не перекрывая
+    WebContentsView оверлеем — ровно тот путь, что п.8 называл рабочим.
+    Персистентная история сайтов (`RecentSitesStore`, `recent-sites.json` в
+    userData) следует тому же паттерну fs-хранения, что и `settings.json`/
+    `bridge.json`, и тому же принципу изоляции (`BrowserController`/`ElementPicker`
+    не знают про fs/IPC — `main/index.ts` подписывается на их колбэки и сам
+    решает, что персистить).
 
 ## 7. Roadmap (вертикальные срезы, из исходного ТЗ, без изменений порядка)
 

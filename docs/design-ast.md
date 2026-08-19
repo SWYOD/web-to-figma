@@ -167,8 +167,26 @@ interface DesignDocument {
 (`convertElement`) — типизированные Paint/StrokeInfo/TypographyInfo/
 CornerRadius/Effect[] из сырых computed-style значений (Phase 5), Auto Layout
 inference для `display:flex` (Phase 7), рекурсия по `children` + absolute
-positioning + материализация `::before`/`::after` (Phase 8) — всё done. Ещё
-не реализовано: реальные `type:'text'` узлы с содержимым (сейчас текстовые
-элементы — просто `'frame'` с typography-метаданными, без самого текста) и
-`type:'image'`/`'vector'` (нужен asset-engine, Phase 9); CSS Grid — только
-направление в conversion-rules.md, не код.
+positioning + материализация `::before`/`::after` (Phase 8), `type:'image'`/
+`'vector'` через asset-engine (Phase 9) — всё done.
+
+**`type:'text'` — реальные текстовые узлы с содержимым, реализовано.**
+`apps/desktop/src/main/domSnapshot.ts` при обходе CDP-дерева помечает
+"чистый текстовый лист" (все прямые дети — DOM-текстовые узлы, ни одного
+вложенного элемента) полем `text` на `DomSnapshotNode`; `convertElement`
+превращает такой узел в `type:'text'` вместо `'frame'`, `node.fills` для
+такого узла — это CSS `color` (цвет глифов), а не `background-color` (у
+Figma TextNode нет фона — непрозрачный `background-color` на текстовом
+листе даёт diagnostic `text-background-dropped`, а не тихо теряется).
+Смешанный контент (текст вперемешку с вложенными тегами, напр.
+`<p>Some <b>x</b> text</p>`) намеренно НЕ материализуется как единый текст
+со стилизованными диапазонами (отдельная, более сложная задача) — вложенные
+элементы конвертируются как обычно каждый сам по себе, а "голый" текст
+вокруг них теряется с diagnostic `mixed-inline-text-not-captured`, не молча.
+На стороне Figma Plugin — `renderers/textNode.ts`: создаёт `figma.createText()`
+с подобранным начертанием под CSS font-weight (эвристика по общепринятым
+именам стилей — "Bold"/"SemiBold"/...), с фолбэком на Inter Regular, если
+`loadFontAsync` бросает (шрифт/начертание не установлены в Figma) — весь
+рендер-пайплайн (`designNode.ts`) поэтому асинхронный.
+
+CSS Grid — только направление в conversion-rules.md, не код.

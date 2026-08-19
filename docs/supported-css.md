@@ -27,7 +27,9 @@
 | `background-image` | ⏳ | — | Не реализовано |
 | `box-shadow` | ✅ | — | Phase 5, множественные/inset тени тоже (см. `shadow.ts`) |
 | `border-radius` (в т.ч. по углам) | ✅ | — | Phase 5 |
-| `font-family`/`font-size`/`font-weight`/`line-height` | ✅ | — | Phase 5; недоступные в Figma шрифты → warning + configurable fallback (п.21 ТЗ) — ещё не реализовано, нужен реальный `<text>`-узел (Phase 8) |
+| `font-family`/`font-size`/`font-weight`/`line-height` | ✅ | — | Phase 5 (значения) + текстовый узел (см. ниже) — подбор начертания под installed-в-Figma шрифты эвристический (по имени стиля от font-weight), не "нашёл точное совпадение" — фолбэк Inter Regular, если `loadFontAsync` не находит шрифт; конфигурируемый пользователем font-mapping (п.21 ТЗ) всё ещё не реализован |
+| Реальный текст (`type:'text'`, не пустой frame) | ✅ | — | Чистый текстовый лист (все прямые дети — DOM-текстовые узлы) → `figma.createText()` с содержимым; `fills` — CSS `color`, не `background-color` (см. design-ast.md) |
+| Смешанный inline-контент (текст + вложенные теги, напр. `<p>x <b>y</b> z</p>`) | ⚠️ (по дизайну) | — | Вложенные элементы конвертируются сами по себе (напр. `<b>` → свой текстовый узел), "голый" текст вокруг них теряется с diagnostic `mixed-inline-text-not-captured` — стилизованные диапазоны внутри одного текстового узла не поддержаны |
 | `overflow: hidden` | ⏳ | — | `clipsContent`, ещё не реализовано |
 | `canvas`/WebGL контент | ⏳ → raster snapshot (по дизайну) | — | Phase 9, обязательный warning |
 | CSS `calc()` | ✅ (по дизайну, "бесплатно") | — | Всегда читаем computed-значение через CDP, calc() никогда не долетает до engine |

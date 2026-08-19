@@ -39,24 +39,58 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     })
   }
 
+  // Текстовый лист (snapshot.text задан только для чистого текста без вложенных
+  // элементов, см. domSnapshot.ts extractDirectText) обходит asset ТОЛЬКО когда
+  // asset не задан — приоритет image/vector сохраняется, если оба сигнала пришли.
+  const isTextLeaf = !snapshot.asset && snapshot.text !== undefined
+  const type = snapshot.asset ? (snapshot.asset.kind === 'svg' ? 'vector' : 'image') : isTextLeaf ? 'text' : 'frame'
+
+  // Для текстового узла Figma-поле `fills` — это цвет ГЛИФОВ (CSS `color`),
+  // а не заливка фона, в отличие от фрейма (см. docs/design-ast.md). Если у
+  // текстового листа при этом задан непрозрачный background-color, он молча
+  // потерялся бы (TextNode фона не имеет) — явный diagnostic вместо тишины.
+  const textColor = parseColor(style['color'] ?? 'rgb(0, 0, 0)')
   const bg = parseColor(style['background-color'] ?? 'rgba(0, 0, 0, 0)')
-  const fills: Paint[] | undefined = isTransparent(bg) ? undefined : [{ type: 'solid', color: bg }]
+  const bgIsOpaque = !isTransparent(bg)
+  const fills: Paint[] | undefined = isTextLeaf
+    ? [{ type: 'solid', color: textColor }]
+    : bgIsOpaque
+      ? [{ type: 'solid', color: bg }]
+      : undefined
+  if (isTextLeaf && bgIsOpaque) {
+    diagnostics.push({
+      nodeId: id,
+      code: 'text-background-dropped',
+      severity: 'info',
+      message: 'У текстового узла был непрозрачный background-color — у Figma TextNode нет фона, цвет отброшен (оберните в родительский frame, если фон важен).'
+    })
+  }
+  if (snapshot.droppedInlineText) {
+    diagnostics.push({
+      nodeId: id,
+      code: 'mixed-inline-text-not-captured',
+      severity: 'warning',
+      message: 'Текст вперемешку с вложенными тегами (напр. "текст <b>жирный</b> ещё текст") — захвачены только вложенные элементы, "голый" текст между ними потерян (стилизованные диапазоны внутри одного текстового узла пока не поддержаны).'
+    })
+  }
+
   const effects = parseBoxShadow(style['box-shadow'] ?? 'none')
   const opacity = parseLength(style['opacity'], 1)
   const strokes = parseBorder(style)
   const cornerRadius = parseCornerRadius(style)
   const layout = resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentLayoutMode, id, diagnostics)
 
-  const children = snapshot.children?.map((child) => convertNode(child, diagnostics, layout.mode))
+  const children = isTextLeaf ? undefined : snapshot.children?.map((child) => convertNode(child, diagnostics, layout.mode))
 
   const node: DesignNode = {
     id,
-    type: snapshot.asset ? (snapshot.asset.kind === 'svg' ? 'vector' : 'image') : 'frame',
+    type,
     name: buildName(snapshot),
     size: { width: Math.round(snapshot.box.width), height: Math.round(snapshot.box.height) },
     layout,
     typography: parseTypography(style),
     ...(snapshot.asset ? { asset: { assetId: snapshot.asset.assetId } } : {}),
+    ...(isTextLeaf ? { text: snapshot.text } : {}),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),
     ...(effects.length > 0 ? { effects } : {}),

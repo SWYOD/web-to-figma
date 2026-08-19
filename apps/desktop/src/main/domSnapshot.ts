@@ -12,6 +12,7 @@ const log = createConsoleLogger('domSnapshot')
 const MAX_NODES = 400
 
 const ELEMENT_NODE = 1
+const TEXT_NODE = 3
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'LINK', 'META', 'NOSCRIPT'])
 
 /** figma.createImage() принимает только эти форматы — см. Figma Plugin API. */
@@ -21,6 +22,7 @@ interface CdpNode {
   backendNodeId: number
   nodeType: number
   nodeName: string
+  nodeValue?: string
   attributes?: string[]
   children?: CdpNode[]
   pseudoElements?: CdpNode[]
@@ -53,6 +55,38 @@ export interface SnapshotResult {
   /** true — поддерево было больше MAX_NODES, часть узлов не вошла в дерево. */
   truncated: boolean
   assets: Record<string, DesignAsset>
+}
+
+/**
+ * Прямой текст элемента — только когда он "чистый текстовый лист" (все
+ * прямые дети — DOM-текстовые узлы, ни одного дочернего элемента). Смешанный
+ * контент (текст + вложенные теги, напр. `<p>Some <b>x</b> text</p>`)
+ * намеренно не материализуется как текст целиком (нужны стилизованные
+ * диапазоны внутри одного TextNode — отдельная, более сложная задача) —
+ * вложенные элементы (здесь `<b>`) конвертируются как обычно сами по себе,
+ * а потерянный "голый" текст вокруг них помечается `droppedInlineText` для
+ * diagnostic, а не тихо пропадает без следа. Пробелы нормализуются как в
+ * CSS `white-space:normal` (частый случай, а не точный расчёт per-node
+ * computed white-space — упрощение, задокументировано в conversion-rules.md).
+ */
+function extractDirectText(cdpNode: CdpNode): { text?: string; droppedInlineText?: boolean } {
+  let hasElementChild = false
+  let rawText = ''
+  let hasNonWhitespaceText = false
+
+  for (const child of cdpNode.children ?? []) {
+    if (child.nodeType === ELEMENT_NODE && !SKIP_TAGS.has(child.nodeName)) {
+      hasElementChild = true
+    } else if (child.nodeType === TEXT_NODE) {
+      const value = child.nodeValue ?? ''
+      rawText += value
+      if (value.trim() !== '') hasNonWhitespaceText = true
+    }
+  }
+
+  if (!hasNonWhitespaceText) return {}
+  if (hasElementChild) return { droppedInlineText: true }
+  return { text: rawText.replace(/\s+/g, ' ').trim() }
 }
 
 function getAttr(node: CdpNode, name: string): string | undefined {
@@ -256,6 +290,8 @@ function buildNode(
     }
   }
 
+  const directText = asset ? {} : extractDirectText(cdpNode)
+
   return {
     tag: pseudoType ? `::${pseudoType}` : cdpNode.nodeName.toLowerCase(),
     id: attrMap.get('id') || null,
@@ -264,7 +300,8 @@ function buildNode(
     box: { width: data.box.width, height: data.box.height, x: Math.round(rel.x), y: Math.round(rel.y) },
     ...(children.length > 0 ? { children } : {}),
     ...(pseudoType ? { pseudoType } : {}),
-    ...(asset ? { asset } : {})
+    ...(asset ? { asset } : {}),
+    ...directText
   }
 }
 

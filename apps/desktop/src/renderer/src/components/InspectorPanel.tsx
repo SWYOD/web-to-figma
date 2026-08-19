@@ -1,7 +1,10 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useMemo, useState } from 'react'
 import { Block, BlockHead, Panel, PanelHead, PanelTitle } from '@web-to-figma/ui'
+import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { ElementSummary, PickState } from '../../../shared/types'
+
+const LEVEL_LABEL: Record<ConfidenceLevel, string> = { high: 'высокая', medium: 'средняя', low: 'низкая' }
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
@@ -34,6 +37,8 @@ export function InspectorPanel(): JSX.Element {
   }, [pick.active])
 
   const showDetails = selection && !pick.active
+  const confidence = useMemo(() => computeConfidenceScore(diagnostics), [diagnostics])
+  const level = confidenceLevel(confidence)
 
   return (
     <Panel>
@@ -51,6 +56,28 @@ export function InspectorPanel(): JSX.Element {
         )}
         {showDetails && <SelectionCard element={selection} />}
       </Block>
+      {showDetails && (
+        <Block>
+          <BlockHead>Import Quality</BlockHead>
+          <div className="confidence-row">
+            <div className="confidence-bar">
+              <div className={`confidence-bar-fill ${level}`} style={{ width: `${confidence}%` }} />
+            </div>
+            <span className={`confidence-value ${level}`}>
+              {confidence}% · {LEVEL_LABEL[level]}
+            </span>
+          </div>
+          {diagnostics.length === 0 ? (
+            <div className="placeholder-hint">Диагностик нет — элемент конвертируется без известных приближений.</div>
+          ) : (
+            diagnostics.map((d, i) => (
+              <div key={i} className={`diagnostic-row ${d.severity}`}>
+                {d.message}
+              </div>
+            ))
+          )}
+        </Block>
+      )}
       {showDetails && (
         <>
           <Block>
@@ -91,16 +118,6 @@ export function InspectorPanel(): JSX.Element {
             <Block>
               <BlockHead>Shadow</BlockHead>
               <PropRow label="Shadow" value={selection.appearance.boxShadow} />
-            </Block>
-          )}
-          {diagnostics.length > 0 && (
-            <Block>
-              <BlockHead>Diagnostics</BlockHead>
-              {diagnostics.map((d, i) => (
-                <div key={i} className={`diagnostic-row ${d.severity}`}>
-                  {d.message}
-                </div>
-              ))}
             </Block>
           )}
         </>

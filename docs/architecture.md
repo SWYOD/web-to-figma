@@ -364,4 +364,53 @@ success-пути (нужен реальный pick, чтобы `elementPicker.bu
 через `Overlay.setInspectMode` не поддаётся надёжной внешней эмуляции; полный
 success-путь (реальный pick в Figma + реальный `figma.currentPage.selection`)
 не автоматизирован, нужна ручная проверка в самой Figma.
-→ Phase 11 (warnings/confidence score) → далее расширение scope.
+
+**Реальные текстовые узлы (`type:'text'`) — сделано вне очереди, не Phase 11**
+(2026-08-19, тот же день, что Phase 10/pairing/toolbar): после первого
+реального импорта пользователь обнаружил, что "Import as Frame" даёт только
+пустые вложенные фреймы (`H3`/`P`/`link-accent` как имена слоёв) без самого
+текста — conversion-engine никогда не производил `type:'text'` (Design AST
+зарезервировал это значение ещё в Phase 1, но продюсера не было). Это было
+явно задокументированной, но недооценённой по приоритету дырой — как
+выяснилось на практике, критично блокирует реальное использование, поэтому
+сделано немедленно, а не по очереди roadmap. Реализация: `apps/desktop/
+src/main/domSnapshot.ts` при обходе CDP-дерева определяет "чистый текстовый
+лист" (все прямые дети — DOM text-узлы, `nodeType:3`, ни одного вложенного
+элемента) и кладёт нормализованный (`white-space:normal`-подобно) текст в
+новое поле `DomSnapshotNode.text`; `convertElement` превращает такой узел в
+`type:'text'`, используя CSS `color` (не `background-color`) как `fills`
+(Figma TextNode = цвет глифов, не фон); `figma-plugin/renderers/textNode.ts`
+создаёт `figma.createText()` с подбором начертания под font-weight
+(эвристика по именам стилей) и фолбэком на Inter Regular при неудаче
+`loadFontAsync` — весь рендер-пайплайн плагина (`designNode.ts`) поэтому стал
+асинхронным (`SceneNode`, а не всегда `FrameNode`). Смешанный inline-контент
+(`<p>text <b>x</b> text</p>`) намеренно не собирается в один текстовый узел
+со стилизованными диапазонами — только вложенный `<b>` конвертируется как
+свой узел, потерянный "голый" текст помечается diagnostic
+`mixed-inline-text-not-captured`, а не молча теряется. Проверено: 12 новых
+unit-тестов в conversion-engine (текстовые листы, смешанный контент,
+text-color vs background-color, diagnostic на потерянный inline-текст) +
+live-проверка `extractDirectText` на реальных CDP-данных (чистый текст,
+смешанный контент, whitespace-only div, вложенный `<b>` внутри `<p>`) — все
+5 сценариев совпали с ожиданиями. Не проверено автоматически: сам
+`figma.createText()`/`loadFontAsync` вызов — нужна реальная Figma (тот же
+класс ограничения, что и raster/vector assets в Phase 9).
+
+Phase 11 (warnings/confidence score, **done**, тот же день): `packages/
+conversion-engine/src/confidence.ts` — `computeConfidenceScore(diagnostics)`
+(100 минус штраф по severity: info −2, warning −8, error −20, clamp [0,100])
+и `confidenceLevel(score)` (high ≥80 / medium ≥50 / low <50). Не научная
+формула точности — быстрый сигнал "насколько доверять результату", без
+открытия списка диагностик. Desktop UI: блок "Import Quality" в Inspector
+Panel — полоска-индикатор + процент, над объединённым списком диагностик
+(старый отдельный блок "Diagnostics" слит в этот же). 5 unit-тестов.
+
+Явно отложено по запросу пользователя (для будущей фазы, не сейчас): подбор
+СУЩЕСТВУЮЩИХ в Figma-файле text/color styles (а не создание сырых raw-значений
+каждый раз) — пользователь предложил анализировать существующие в проекте
+стили по параметрам (напр. font-size) и подбирать ближайший, с настройкой
+"вставить голым / применить существующий стиль" в UI импорта. Требует
+`figma.getLocalTextStylesAsync()`/`getLocalPaintStylesAsync()` + алгоритм
+ближайшего соответствия — самостоятельная задача, не часть этого среза.
+
+→ далее расширение scope.

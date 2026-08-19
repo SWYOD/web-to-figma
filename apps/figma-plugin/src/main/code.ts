@@ -38,9 +38,9 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
   }
   if (msg.type === 'import-node') {
     try {
-      const frame = renderDesignNode(msg.document.root, msg.document.assets)
-      placeNearViewport(frame)
-      figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: frame.id })
+      const created = await renderDesignNode(msg.document.root, msg.document.assets)
+      placeNearViewport(created)
+      figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: created.id })
     } catch (err) {
       figma.ui.postMessage({
         type: 'import-result',

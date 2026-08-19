@@ -5,21 +5,27 @@ import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
 import { createImagePaint, createVectorFromAsset } from './asset'
 import { applyCornerRadius } from './cornerRadius'
+import { createTextNode } from './textNode'
 
 /**
- * DesignNode → FrameNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
+ * DesignNode → SceneNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
  * (Phase 7, `layout.ts`) применяется, когда conversion-engine распознал
  * `display:flex`; иначе — обычный фрейм. `type:'image'`/`'vector'` (Phase 9)
  * рендерятся из `assets` манифеста DesignDocument — `asset.ts` изолирует
- * работу с `figma.createImage`/`createNodeFromSvg`. Остальные типы
- * (`'text'`) conversion-engine пока не производит — default-ветка не нужна
- * раньше появления продюсера (design-ast.md).
+ * работу с `figma.createImage`/`createNodeFromSvg`. `type:'text'` (реальные
+ * текстовые узлы с содержимым) — через `createTextNode` (`textNode.ts`,
+ * требует `figma.loadFontAsync`, поэтому весь рендер асинхронный).
  */
-export function renderDesignNode(node: DesignNode, assets: AssetManifest): FrameNode {
+export async function renderDesignNode(node: DesignNode, assets: AssetManifest): Promise<SceneNode> {
   return buildFrame(node, assets)
 }
 
-function buildFrame(node: DesignNode, assets: AssetManifest): FrameNode {
+async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<SceneNode> {
+  if (node.type === 'text') {
+    const { textNode } = await createTextNode(node)
+    return textNode
+  }
+
   if (node.type === 'vector' && node.asset) {
     const svgFrame = createVectorFromAsset(node.asset.assetId, assets)
     if (svgFrame) {
@@ -56,8 +62,8 @@ function buildFrame(node: DesignNode, assets: AssetManifest): FrameNode {
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
 
   for (const child of node.children ?? []) {
-    const childFrame = buildFrame(child, assets)
-    frame.appendChild(childFrame)
+    const childNode = await buildFrame(child, assets)
+    frame.appendChild(childNode)
 
     // positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout
     // родителя. positioning:'absolute' — либо реальный CSS absolute, либо
@@ -65,19 +71,23 @@ function buildFrame(node: DesignNode, assets: AssetManifest): FrameNode {
     // resolvePositioning) — в обоих случаях нужны явные координаты;
     // layoutPositioning — только если у родителя ЕСТЬ что "покидать".
     if (child.layout?.positioning === 'absolute' && child.layout.absolute) {
-      if (frame.layoutMode !== 'NONE') childFrame.layoutPositioning = 'ABSOLUTE'
-      childFrame.x = child.layout.absolute.x
-      childFrame.y = child.layout.absolute.y
+      // childNode здесь никогда не StickyNode/ConnectorNode (мы сами его
+      // только что создали через createFrame/createText/createNodeFromSvg) —
+      // у полного SceneNode union'а есть члены без layoutPositioning
+      // (FigJam-специфика), поэтому явный cast, а не сужение на месте.
+      if (frame.layoutMode !== 'NONE') (childNode as FrameNode).layoutPositioning = 'ABSOLUTE'
+      childNode.x = child.layout.absolute.x
+      childNode.y = child.layout.absolute.y
     }
   }
 
   return frame
 }
 
-/** Ставит фрейм рядом с текущим viewport и подводит взгляд к нему — см. ТЗ §17. */
-export function placeNearViewport(frame: FrameNode): void {
-  frame.x = Math.round(figma.viewport.center.x - frame.width / 2)
-  frame.y = Math.round(figma.viewport.center.y - frame.height / 2)
-  figma.currentPage.selection = [frame]
-  figma.viewport.scrollAndZoomIntoView([frame])
+/** Ставит новый узел рядом с текущим viewport и подводит взгляд к нему — см. ТЗ §17. */
+export function placeNearViewport(node: SceneNode): void {
+  node.x = Math.round(figma.viewport.center.x - node.width / 2)
+  node.y = Math.round(figma.viewport.center.y - node.height / 2)
+  figma.currentPage.selection = [node]
+  figma.viewport.scrollAndZoomIntoView([node])
 }

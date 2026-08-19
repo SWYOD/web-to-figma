@@ -30,7 +30,7 @@ export async function applyTypography(node: TextNode, typography: TypographyInfo
   return null
 }
 
-function toTextAlign(align: TypographyInfo['textAlign']): TextNode['textAlignHorizontal'] {
+export function toTextAlign(align: TypographyInfo['textAlign']): TextNode['textAlignHorizontal'] {
   switch (align) {
     case 'center':
       return 'CENTER'
@@ -43,7 +43,7 @@ function toTextAlign(align: TypographyInfo['textAlign']): TextNode['textAlignHor
   }
 }
 
-function toTextCase(textCase: TypographyInfo['textCase']): TextNode['textCase'] {
+export function toTextCase(textCase: TypographyInfo['textCase']): TextNode['textCase'] {
   switch (textCase) {
     case 'upper':
       return 'UPPER'
@@ -56,7 +56,7 @@ function toTextCase(textCase: TypographyInfo['textCase']): TextNode['textCase'] 
   }
 }
 
-function toTextDecoration(decoration: TypographyInfo['textDecoration']): TextNode['textDecoration'] {
+export function toTextDecoration(decoration: TypographyInfo['textDecoration']): TextNode['textDecoration'] {
   switch (decoration) {
     case 'underline':
       return 'UNDERLINE'

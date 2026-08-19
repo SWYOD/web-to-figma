@@ -57,6 +57,12 @@ Phase 1 реализовала и реально гоняла по сети то
 `ImportAsset(s)` (доставка ref-транспорта >256KB по требованию) и
 `GetSelection` — по-прежнему только контракт, без реализации.
 
+`ImportNodeMessage.payload.useMatchedStyles?: boolean` (добавлено вместе со
+"стилями проекта" — см. `apps/figma-plugin/src/main/renderers/styleMatching.ts`)
+— optional для обратной совместимости, отсутствие трактуется как `false`.
+Управляется настройкой `AppSettings.useMatchedStyles` в desktop (переключатель
+в `ImportSettingsPopover`, попап рядом с "Import as Frame" в floating bar).
+
 ## Handshake
 
 ```

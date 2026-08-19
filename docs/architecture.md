@@ -485,4 +485,51 @@ sizing реализован и работает корректно, но вид�
 `Emulation.setDeviceMetricsOverride` — не реализована, не запрошена в этом
 срезе, зафиксирована здесь как готовый следующий шаг.
 
+**Захват независимо от размера browser pane — реализовано следующим же
+запросом** ("хочу чтобы при любом размере подхватывалось"), закрывает ровно
+тот "готовый следующий шаг" выше. `ElementPicker.withDesktopViewport()`
+(`apps/desktop/src/main/inspector.ts`) оборачивает `buildSnapshotTree`: перед
+снапшотом читает текущий CDP viewport (`Page.getLayoutMetrics`), и если он
+уже `CAPTURE_MIN_WIDTH×CAPTURE_MIN_HEIGHT` (1440×900 — стандартный desktop
+reference-размер), временно раздвигает его через
+`Emulation.setDeviceMetricsOverride` (`deviceScaleFactor:0` — не трогает DPI,
+`mobile:false` — не меняет UA/touch-эмуляцию), даёт странице 100мс на
+пересчёт media-query-зависимого CSS, снимает снапшот, снимает override в
+`finally`. НИКОГДА не сужает — если реальный pane и так шире 1440px, override
+не применяется вообще. `backendNodeId` клика остаётся валиден через relayout
+(идентичность DOM-узла не зависит от раскладки). Не автоматизировано в этой
+сессии: сам клик-триггер `Overlay.inspectNodeRequested` (та же, давно
+известная граница — см. Phase 3) нельзя одновременно драйвить второй внешней
+CDP-сессией, пока `wc.debugger` приложения уже подключён к тому же target
+(Electron допускает только одного remote-debugging клиента на webContents) —
+логика проверена вручную теми же CDP-вызовами, что и в живой диагностике
+бага, но полный клик-триггер end-to-end путь остаётся на ручную проверку
+пользователем, как и раньше.
+
+**"Стили проекта" (п.21/28 ТЗ) — реализовано** (тот же запрос, "давай делай
+поддержку стилей"). Новый `apps/figma-plugin/src/main/renderers/styleMatching.ts`:
+`loadStyleCatalog()` грузит `figma.getLocalTextStylesAsync()`/
+`getLocalPaintStylesAsync()` ОДИН раз на весь импорт (не на узел), фильтрует
+paint styles до однослойных `SOLID` (сравнивать "ближайший" градиент/image
+style бессмысленно). `matchNearestTextStyle(fontSize, styles)` — ближайший по
+`|fontSize - target|` (единственная ось, которую предложил пользователь: "по
+кеглю шрифтов"). `matchNearestSolidPaintStyle(color, styles)` — ближайший по
+евклидову расстоянию в RGBA (нет другой разумной метрики для произвольных
+цветов). Оба — чистые функции, покрыты unit-тестами (`styleMatching.test.ts`,
+6 тестов, не трогают `figma.*`). Применяется как ВТОРОЙ проход поверх уже
+установленных raw-значений: `textNode.ts` сначала грузит и применяет
+raw-шрифт/цвет как раньше (нужно в любом случае — `figma.createText()`
+требует загруженный шрифт до `characters`), и только если каталог передан
+(`useMatchedStyles`) — пробует `setTextStyleIdAsync`/`fillStyleId` поверх;
+если подходящего стиля нет или `setTextStyleIdAsync` бросает (стиль
+ссылается на недоступный шрифт) — тихо остаётся на raw, как и было. Та же
+логика для фонов/обводок фреймов в `designNode.ts` (`fillStyleId`/
+`strokeStyleId` вместо `fills`/`strokes`, если нашёлся match). Контракт:
+`ImportNodeMessage.payload.useMatchedStyles?: boolean` (см.
+bridge-protocol.md), настройка `AppSettings.useMatchedStyles`, переключатель
+в новом `ImportSettingsPopover` рядом с Import as Frame в floating bar.
+Не реализовано намеренно: подбор НАЧЕРТАНИЯ шрифта под installed-в-Figma
+шрифты (уже отдельная эвристика в `textNode.ts` до этой задачи, не менялась)
+и matching для градиентов/image paint.
+
 → далее расширение scope.

@@ -29,6 +29,21 @@ const log = createConsoleLogger('inspector')
 // оставляем "latest", чтобы поведение не менялось молча между версиями Chromium.
 const CDP_PROTOCOL_VERSION = '1.3'
 
+// Снапшот берётся при ТЕКУЩЕМ размере встроенного browser pane, который
+// часто уже стандартных desktop-брейкпоинтов сайтов (панели/сайдбар отъедают
+// ширину) — из-за этого адаптивные сайты (напр. Tailwind `min-width:900px`)
+// отдают мобильную/узкую раскладку вместо desktop-flex, который видит
+// пользователь в обычном браузере (см. docs/architecture.md, живая проверка
+// на ris.pxls-cdn.ru/standardization). Перед снапшотом временно расширяем
+// CDP-viewport хотя бы до этого reference-размера через
+// Emulation.setDeviceMetricsOverride (реальный layout страницы пересчитывается,
+// backendNodeId остаётся валиден — идентичность DOM-узла не зависит от
+// раскладки), захват идёт уже по desktop-раскладке независимо от того, каким
+// узким сейчас видим сам pane. Никогда не СУЖАЕМ — если реальный viewport и
+// так шире (пользователь развернул окно на большом экране), используем его.
+const CAPTURE_MIN_WIDTH = 1440
+const CAPTURE_MIN_HEIGHT = 900
+
 // // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — опрос позиции курсора (50мс), см. hoverTooltip.ts.
 // const HOVER_POLL_MS = 50
 
@@ -300,12 +315,47 @@ export class ElementPicker {
     this.onStateChange({ active: false, error: null })
   }
 
+  /**
+   * Временно раздвигает CDP-viewport страницы до `CAPTURE_MIN_WIDTH`×`CAPTURE_MIN_HEIGHT`
+   * (не сужая, если реальный viewport и так шире) на время `fn`, потом снимает
+   * override — см. комментарий у констант выше про причину и живую проверку.
+   */
+  private async withDesktopViewport<T>(dbg: WebContents['debugger'], fn: () => Promise<T>): Promise<T> {
+    let overridden = false
+    try {
+      const metrics = (await dbg.sendCommand('Page.getLayoutMetrics')) as {
+        cssVisualViewport?: { clientWidth: number; clientHeight: number }
+      }
+      const current = metrics.cssVisualViewport
+      if (current) {
+        const width = Math.max(current.clientWidth, CAPTURE_MIN_WIDTH)
+        const height = Math.max(current.clientHeight, CAPTURE_MIN_HEIGHT)
+        if (width > current.clientWidth || height > current.clientHeight) {
+          await dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
+            width: Math.round(width),
+            height: Math.round(height),
+            deviceScaleFactor: 0,
+            mobile: false
+          })
+          overridden = true
+          // Даём странице пересчитать layout/media-query-зависимый CSS перед снятием box-модели.
+          await new Promise((resolve) => setTimeout(resolve, 100))
+        }
+      }
+      return await fn()
+    } finally {
+      if (overridden) await dbg.sendCommand('Emulation.clearDeviceMetricsOverride').catch(() => {})
+    }
+  }
+
   private async handleInspectNodeRequested(params: InspectNodeRequestedParams): Promise<void> {
     const wc = this.getWebContents()
     if (!wc) return
 
     try {
-      const { tree: snapshot, truncated, assets } = await buildSnapshotTree(wc, params.backendNodeId)
+      const { tree: snapshot, truncated, assets } = await this.withDesktopViewport(wc.debugger, () =>
+        buildSnapshotTree(wc, params.backendNodeId)
+      )
       this.lastAssets = assets
       const styleMap = toComputedStyleMap(
         Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value }))

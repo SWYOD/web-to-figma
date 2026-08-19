@@ -1,4 +1,5 @@
 import { useEffect, useMemo, useState } from 'react'
+import { Check, Copy } from 'lucide-react'
 import { Block, BlockHead, Panel, PanelHead, PanelTitle } from '@web-to-figma/ui'
 import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
@@ -126,22 +127,47 @@ export function InspectorPanel(): JSX.Element {
   )
 }
 
+function useCopy(value: string): { copied: boolean; copy: () => void } {
+  const [copied, setCopied] = useState(false)
+  const copy = (): void => {
+    navigator.clipboard.writeText(value).then(() => {
+      setCopied(true)
+      setTimeout(() => setCopied(false), 1200)
+    }).catch(() => {})
+  }
+  return { copied, copy }
+}
+
 function SelectionCard({ element }: { element: ElementSummary }): JSX.Element {
-  const selector = `${element.tag}${element.id ? `#${element.id}` : ''}${element.classes.map((c) => `.${c}`).join('')}`
+  const tagAndId = `${element.tag}${element.id ? `#${element.id}` : ''}`
+  const fullSelector = `${tagAndId}${element.classes.map((c) => `.${c}`).join('')}`
+  const { copied, copy } = useCopy(fullSelector)
   return (
-    <div className="element-summary">
-      <div className="element-summary-selector">{selector}</div>
+    <div className="element-summary" onClick={copy} title="Скопировать селектор" role="button">
+      <div className="element-summary-head">
+        <span className="element-summary-tag">{tagAndId}</span>
+        {copied ? <Check size={13} className="copy-icon copied" /> : <Copy size={13} className="copy-icon" />}
+      </div>
+      {element.classes.length > 0 && (
+        <div className="element-summary-classes">
+          {element.classes.map((c, i) => (
+            <span key={i} className="class-pill">.{c}</span>
+          ))}
+        </div>
+      )}
     </div>
   )
 }
 
 function PropRow({ label, value, swatch }: { label: string; value: string; swatch?: string }): JSX.Element {
+  const { copied, copy } = useCopy(value)
   return (
-    <div className="prop-row">
+    <div className="prop-row" onClick={copy} title="Скопировать значение" role="button">
       <span className="prop-label">{label}</span>
       <span className="prop-value">
         {swatch && !TRANSPARENT.test(swatch) && <span className="prop-swatch" style={{ background: swatch }} />}
-        {value}
+        <span className="prop-value-text">{value}</span>
+        {copied ? <Check size={12} className="copy-icon copied" /> : <Copy size={12} className="copy-icon" />}
       </span>
     </div>
   )

@@ -49,7 +49,8 @@ const api: Api = {
     ipcRenderer.on('inspector:selection', listener)
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
-  inspectorImportAsFrame: (): Promise<ImportResult> => ipcRenderer.invoke('inspector:import-as-frame'),
+  inspectorImportAsFrame: (useMatchedStyles: boolean): Promise<ImportResult> =>
+    ipcRenderer.invoke('inspector:import-as-frame', useMatchedStyles),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
     ipcRenderer.invoke('inspector:apply-styles', targets),
 

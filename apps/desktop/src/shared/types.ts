@@ -52,6 +52,9 @@ export interface AppSettings {
   themeId: string
   /** Темы, созданные пользователем в редакторе темы (см. ThemeEditorModal). */
   customThemes: ThemeDef[]
+  /** Import as Frame: подбирать ближайший локальный text/paint style проекта
+   *  вместо "голых" значений — см. apps/figma-plugin/renderers/styleMatching.ts. */
+  useMatchedStyles: boolean
 }
 
 export interface BridgeInfo {
@@ -182,7 +185,7 @@ export interface Api {
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
   onInspectorSelection: (cb: (result: SelectionResult) => void) => () => void
-  inspectorImportAsFrame: () => Promise<ImportResult>
+  inspectorImportAsFrame: (useMatchedStyles: boolean) => Promise<ImportResult>
   inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
 
   recentSitesGet: () => Promise<RecentSite[]>

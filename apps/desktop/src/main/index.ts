@@ -33,7 +33,8 @@ const log = createConsoleLogger('main')
 const DEFAULT_SETTINGS: AppSettings = {
   themeMode: 'system',
   themeId: 'default',
-  customThemes: []
+  customThemes: [],
+  useMatchedStyles: false
 }
 
 interface BridgeSecret {
@@ -230,7 +231,7 @@ function registerIpc(): void {
     await recentSites.remove(url)
   })
 
-  ipcMain.handle('inspector:import-as-frame', async (): Promise<ImportResult> => {
+  ipcMain.handle('inspector:import-as-frame', async (_e, useMatchedStyles: boolean): Promise<ImportResult> => {
     const document = elementPicker?.buildDocument(
       browserController?.getState().url ?? '',
       browserController?.getViewportSize() ?? { width: 0, height: 0 }
@@ -240,7 +241,7 @@ function registerIpc(): void {
       return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
     }
 
-    const message = createMessage<ImportNodeMessage>('import-node', { document, as: 'frame' })
+    const message = createMessage<ImportNodeMessage>('import-node', { document, as: 'frame', useMatchedStyles })
     try {
       const response = await bridgeServer.request(message)
       if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }

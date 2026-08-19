@@ -169,7 +169,13 @@ function Plugin(): JSX.Element {
         // этого клиента) — main sandbox — единственное место с доступом к
         // figma.*, поэтому релеим.
         if (message.kind === 'import-node') {
-          postToMain({ type: 'import-node', requestId: message.id, document: message.payload.document as DesignDocument, as: message.payload.as })
+          postToMain({
+            type: 'import-node',
+            requestId: message.id,
+            document: message.payload.document as DesignDocument,
+            as: message.payload.as,
+            useMatchedStyles: message.payload.useMatchedStyles
+          })
         } else if (message.kind === 'apply-styles') {
           postToMain({
             type: 'apply-styles',

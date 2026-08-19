@@ -6,6 +6,7 @@ import { applyLayout } from './layout'
 import { createImagePaint, createVectorFromAsset } from './asset'
 import { applyCornerRadius } from './cornerRadius'
 import { createTextNode } from './textNode'
+import { loadStyleCatalog, matchNearestSolidPaintStyle, type StyleCatalog } from './styleMatching'
 
 /**
  * DesignNode → SceneNode, рекурсивно (Phase 8 — "nested trees"). Auto Layout
@@ -15,14 +16,20 @@ import { createTextNode } from './textNode'
  * работу с `figma.createImage`/`createNodeFromSvg`. `type:'text'` (реальные
  * текстовые узлы с содержимым) — через `createTextNode` (`textNode.ts`,
  * требует `figma.loadFontAsync`, поэтому весь рендер асинхронный).
+ *
+ * `useMatchedStyles` (см. styleMatching.ts) — грузим каталог локальных
+ * text/paint styles ОДИН раз на весь импорт (не на узел — `getLocalTextStylesAsync`/
+ * `getLocalPaintStylesAsync` не привязаны к конкретному узлу), дальше просто
+ * пробрасываем вниз по рекурсии.
  */
-export async function renderDesignNode(node: DesignNode, assets: AssetManifest): Promise<SceneNode> {
-  return buildFrame(node, assets)
+export async function renderDesignNode(node: DesignNode, assets: AssetManifest, useMatchedStyles = false): Promise<SceneNode> {
+  const catalog = useMatchedStyles ? await loadStyleCatalog() : null
+  return buildFrame(node, assets, catalog)
 }
 
-async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<SceneNode> {
+async function buildFrame(node: DesignNode, assets: AssetManifest, catalog: StyleCatalog | null): Promise<SceneNode> {
   if (node.type === 'text') {
-    const { textNode } = await createTextNode(node)
+    const { textNode } = await createTextNode(node, catalog)
     return textNode
   }
 
@@ -44,10 +51,20 @@ async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<Scen
   frame.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
 
   const imagePaint = node.type === 'image' && node.asset ? createImagePaint(node.asset.assetId, assets) : null
-  frame.fills = imagePaint ? [imagePaint] : node.fills ? toFigmaPaints(node.fills) : []
+  const matchedFillStyle = !imagePaint ? matchSolidFillStyle(node.fills, catalog) : null
+  if (matchedFillStyle) {
+    frame.fillStyleId = matchedFillStyle.id
+  } else {
+    frame.fills = imagePaint ? [imagePaint] : node.fills ? toFigmaPaints(node.fills) : []
+  }
 
   if (node.strokes) {
-    frame.strokes = toFigmaPaints(node.strokes.paints)
+    const matchedStrokeStyle = matchSolidFillStyle(node.strokes.paints, catalog)
+    if (matchedStrokeStyle) {
+      frame.strokeStyleId = matchedStrokeStyle.id
+    } else {
+      frame.strokes = toFigmaPaints(node.strokes.paints)
+    }
     frame.strokeWeight = node.strokes.weight
   }
 
@@ -67,7 +84,7 @@ async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<Scen
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
 
   for (const child of node.children ?? []) {
-    const childNode = await buildFrame(child, assets)
+    const childNode = await buildFrame(child, assets, catalog)
     frame.appendChild(childNode)
 
     // positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout
@@ -95,6 +112,14 @@ async function buildFrame(node: DesignNode, assets: AssetManifest): Promise<Scen
   }
 
   return frame
+}
+
+/** Первый solid paint массива → ближайший локальный paint style (или null — нет каталога/подходящих стилей/solid-заливок). */
+function matchSolidFillStyle(paints: DesignNode['fills'], catalog: StyleCatalog | null): PaintStyle | null {
+  if (!catalog) return null
+  const firstSolid = paints?.find((p) => p.type === 'solid')
+  if (!firstSolid) return null
+  return matchNearestSolidPaintStyle(firstSolid.color, catalog.solidPaintStyles)
 }
 
 /** node.layout.widthSizing/heightSizing:'fill' → layoutSizingHorizontal/Vertical:'FILL' на реальном Auto Layout ребёнке; иначе 'FIXED' (явно, не полагаясь на дефолт API). */

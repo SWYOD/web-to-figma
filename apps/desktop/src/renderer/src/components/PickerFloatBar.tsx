@@ -3,6 +3,7 @@ import { Frame as FrameIcon, MousePointerClick } from 'lucide-react'
 import { IconButton } from '@web-to-figma/ui'
 import type { PickState } from '../../../shared/types'
 import { ApplyToSelectionPopover } from './ApplyToSelectionPopover'
+import { ImportSettingsPopover } from './ImportSettingsPopover'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 
@@ -44,7 +45,8 @@ export function PickerFloatBar(): JSX.Element {
 
   const handleImport = async (): Promise<void> => {
     setImportState({ kind: 'loading' })
-    const result = await window.api.inspectorImportAsFrame()
+    const settings = await window.api.getSettings()
+    const result = await window.api.inspectorImportAsFrame(settings.useMatchedStyles)
     setImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 
@@ -65,6 +67,7 @@ export function PickerFloatBar(): JSX.Element {
       <IconButton disabled={!hasSelection || importState.kind === 'loading'} onClick={handleImport} title="Import as Frame">
         <FrameIcon size={16} />
       </IconButton>
+      <ImportSettingsPopover />
       <ApplyToSelectionPopover placement="up" />
       {label && <span className={`picker-float-bar-label${importState.kind === 'error' ? ' error' : ''}`}>{label}</span>}
     </div>

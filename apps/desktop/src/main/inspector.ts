@@ -116,6 +116,34 @@ const HIGHLIGHT_CONFIG = {
   marginColor: { r: 246, g: 178, b: 107, a: 0.35 }
 }
 
+// `Overlay.setInspectMode('none')`/detach debugger'а (см. stop()) убирают
+// CDP-нарисованную hover-подсветку СРАЗУ — визуально "выбор пропадает" сразу
+// после клика (реальный баг, поймал пользователь). CDP-оверлеи не переживают
+// отсоединение debugger'а в принципе, поэтому "персистентная" подсветка
+// выбранного элемента сделана ПРОСТЫМ инлайн-`outline` на самой странице
+// (переживает detach), а не через Overlay — помечается атрибутом-маркером
+// (не held object reference — тот тоже не переживает detach/повторный
+// attach между отдельными кликами пикера).
+const PICK_HIGHLIGHT_ATTR = 'data-w2f-picked'
+const APPLY_PICK_HIGHLIGHT_FUNCTION = `function() {
+  this.setAttribute('${PICK_HIGHLIGHT_ATTR}', JSON.stringify({ outline: this.style.outline, outlineOffset: this.style.outlineOffset }))
+  this.style.outline = '2px solid #8b5cf6'
+  this.style.outlineOffset = '-2px'
+}`
+// Снимает подсветку с ЛЮБОГО ранее помеченного элемента по атрибуту (не по
+// held reference) — вызывается в начале каждого нового start(), чтобы старая
+// подсветка не оставалась висеть, когда пользователь выбирает следующий элемент.
+const CLEAR_PICK_HIGHLIGHT_SCRIPT = `(() => {
+  document.querySelectorAll('[${PICK_HIGHLIGHT_ATTR}]').forEach((el) => {
+    try {
+      const prev = JSON.parse(el.getAttribute('${PICK_HIGHLIGHT_ATTR}') || '{}')
+      el.style.outline = prev.outline || ''
+      el.style.outlineOffset = prev.outlineOffset || ''
+    } catch {}
+    el.removeAttribute('${PICK_HIGHLIGHT_ATTR}')
+  })
+})()`
+
 /**
  * Element picker — Phase 3. Изолирован от IPC/React, как и BrowserController.
  * Debugger подключается лениво (только на время активного pick-режима), чтобы
@@ -195,6 +223,10 @@ export class ElementPicker {
       await dbg.sendCommand('Overlay.enable')
       // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
       // await dbg.sendCommand('Accessibility.enable')
+      // Снимает outline-подсветку с ранее выбранного элемента (см. константы
+      // выше) — новый pick начинается "с чистого листа". Не критично, если
+      // страница уже ушла/элемент исчез — тихо игнорируем.
+      await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
       await dbg.sendCommand('Overlay.setInspectMode', { mode: 'searchForNode', highlightConfig: HIGHLIGHT_CONFIG })
       // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
       // this.tooltipMode = await this.getEffectiveTheme()
@@ -414,11 +446,36 @@ export class ElementPicker {
       const result = await this.captureAndConvert(wc, params.backendNodeId)
       this.lastSelectionResult = result
       this.onSelect(result)
+      // ДО stop() — тот отсоединяет debugger, а CDP-подсветка (Overlay) в
+      // любом случае не переживает отсоединение. Инлайн-outline на самой
+      // странице переживает, поэтому подсветка ставится именно так — иначе
+      // выбор визуально "пропадает" сразу после клика (см. константы выше).
+      await this.applyPickHighlight(wc, params.backendNodeId)
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
     } finally {
       // Клик фиксирует выбор — как в реальном "Inspect element", pick-режим сам выключается.
       await this.stop()
+    }
+  }
+
+  /** Ставит персистентный (переживающий detach debugger'а) outline на
+   *  выбранный элемент — см. константы APPLY_PICK_HIGHLIGHT_FUNCTION/
+   *  CLEAR_PICK_HIGHLIGHT_SCRIPT выше. Не критично, если резолв узла не
+   *  удался (напр. страница уже начала уходить) — тихо игнорируем, это
+   *  косметика, не должно ронять сам pick. */
+  private async applyPickHighlight(wc: WebContents, backendNodeId: number): Promise<void> {
+    try {
+      const { object } = (await wc.debugger.sendCommand('DOM.resolveNode', { backendNodeId })) as {
+        object: { objectId?: string }
+      }
+      if (!object.objectId) return
+      await wc.debugger.sendCommand('Runtime.callFunctionOn', {
+        functionDeclaration: APPLY_PICK_HIGHLIGHT_FUNCTION,
+        objectId: object.objectId
+      })
+    } catch (err) {
+      log.debug('applyPickHighlight failed', { message: (err as Error).message })
     }
   }
 

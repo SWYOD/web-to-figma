@@ -451,7 +451,18 @@ app.whenReady().then(async () => {
   registerIpc()
   registerAutoUpdater()
   await recentSites.load()
-  await startBridge()
+  try {
+    // Провал старта bridge (порт занят даже во ВСЁМ fallback-диапазоне —
+    // см. PORT_FALLBACK_RANGE, зафиксировано живьём: за долгую сессию с
+    // множеством перезапусков dev-режима скопились зависшие процессы,
+    // державшие все 10 портов подряд) НЕ должен ронять весь app.whenReady()
+    // и оставлять пользователя без единого окна и без единой ошибки на
+    // экране — окно должно открыться в любом случае, просто индикатор
+    // Bridge покажет "не подключено".
+    await startBridge()
+  } catch (err) {
+    log.error('bridge failed to start — window will still open', { message: (err as Error).message })
+  }
   createWindow()
   scheduleUpdateChecks()
 
@@ -463,4 +474,14 @@ app.whenReady().then(async () => {
 app.on('window-all-closed', () => {
   bridgeServer?.stop()
   if (process.platform !== 'darwin') app.quit()
+})
+
+// Дублирует остановку bridge из window-all-closed — эта ветка не всегда
+// срабатывает (напр. programmatic app.quit() без предварительного закрытия
+// окна, или macOS Cmd+Q через меню), а держащийся порт мешает следующему
+// запуску (см. docs/architecture.md — по этой причине port-fallback
+// исчерпывался за долгую сессию). stop() безопасно вызывать повторно —
+// внутри уже проверяет null.
+app.on('before-quit', () => {
+  bridgeServer?.stop()
 })

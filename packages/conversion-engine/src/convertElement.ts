@@ -85,7 +85,8 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   const layout = resolveSizing(
     resolvePositioning(parseLayout(style, id, diagnostics), snapshot, style, parentContext?.mode ?? null, id, diagnostics),
     style,
-    parentContext
+    parentContext,
+    snapshot.authoredSizing
   )
 
   // Чистый translate() на абсолютно спозиционированном узле НЕ нуждается в
@@ -179,17 +180,12 @@ function resolvePositioning(
 }
 
 /**
- * Fill-sizing (Figma `layoutSizingHorizontal`/`Vertical: 'FILL'`) для детей
- * Auto-Layout родителя — "hug" сознательно НЕ реализован в этом срезе:
- * отличить "ширина не задана явно, должна hug-аться по контенту" от
- * "ширина задана как `100%`/blocklevel-дефолт" требует АВТОРСКОГО значения
- * CSS-свойства (что реально написано в правиле), а не computed (которое
- * ВСЕГДА резолвится в px и не говорит, было ли это explicit или auto) — у
- * нас сейчас нет доступа к authored-значениям (нужен `CSS.getMatchedStylesForNode`,
- * не только `getComputedStyleForNode`). Fill, наоборот, вычисляется из
- * сигналов, которые ДОСТОВЕРНЫ уже на computed-уровне:
+ * Fill/hug-sizing (Figma `layoutSizingHorizontal`/`Vertical`) для детей
+ * Auto-Layout родителя.
+ *
+ * Fill вычисляется из сигналов, которые ДОСТОВЕРНЫ уже на computed-уровне:
  *  - главная ось (совпадает с `flex-direction` родителя): computed
- *    `flex-grow` > 0 → fill (`flex-grom` всегда резолвится в конкретное
+ *    `flex-grow` > 0 → fill (`flex-grow` всегда резолвится в конкретное
  *    число, авторство тут не важно — 0 и "not set" неотличимы, и это ок,
  *    оба означают "не расти").
  *  - поперечная ось: computed `align-self` (если не `auto`/`normal`) или,
@@ -198,8 +194,26 @@ function resolvePositioning(
  *    ровно то поведение браузера по умолчанию, что и создаёт эффект
  *    "текст не ужимается уже своей ширины, а тянется на всю ширину
  *    родителя" (см. п.21 находка "не autolayout" в architecture.md).
+ *
+ * Hug — раньше был сознательно НЕ реализован (см. git-историю этого
+ * комментария): отличить "ширина не задана явно, должна hug-аться по
+ * контенту" от "ширина задана как `100%`/blocklevel-дефолт" требует
+ * АВТОРСКОГО значения CSS-свойства (что реально написано в правиле), а не
+ * computed (которое ВСЕГДА резолвится в px и не говорит, было ли это
+ * explicit или auto). Теперь этот сигнал доступен — `authoredSizing`
+ * (заполняется в apps/desktop/src/main/domSnapshot.ts через
+ * `CSS.getMatchedStylesForNode`, см. докстринг там же): если по оси НЕТ
+ * fill И свойство `width`/`height` НЕ было явно задано ни одним правилом
+ * автора страницы — узел hug-ается по контенту. `authoredSizing` может
+ * отсутствовать (не все вызывающие стороны его собирают, напр. тесты) —
+ * тогда ось остаётся 'fixed', как раньше (безопасный дефолт, не HUG наугад).
  */
-function resolveSizing(layout: LayoutInfo, style: Record<string, string>, parentContext: ParentContext | null): LayoutInfo {
+function resolveSizing(
+  layout: LayoutInfo,
+  style: Record<string, string>,
+  parentContext: ParentContext | null,
+  authoredSizing: DomSnapshotNode['authoredSizing']
+): LayoutInfo {
   if (!parentContext || (parentContext.mode !== 'horizontal' && parentContext.mode !== 'vertical')) return layout
 
   const mainAxisFill = parseLength(style['flex-grow'], 0) > 0
@@ -209,15 +223,73 @@ function resolveSizing(layout: LayoutInfo, style: Record<string, string>, parent
 
   const [widthFill, heightFill] = parentContext.mode === 'horizontal' ? [mainAxisFill, crossAxisFill] : [crossAxisFill, mainAxisFill]
 
+  const widthHug = !widthFill && authoredSizing?.width === false
+  const heightHug = !heightFill && authoredSizing?.height === false
+
   return {
     ...layout,
-    widthSizing: widthFill ? 'fill' : layout.widthSizing,
-    heightSizing: heightFill ? 'fill' : layout.heightSizing
+    widthSizing: widthFill ? 'fill' : widthHug ? 'hug' : layout.widthSizing,
+    heightSizing: heightFill ? 'fill' : heightHug ? 'hug' : layout.heightSizing
   }
 }
 
+/** Максимальная длина имени фрейма из текстового содержимого — Figma не
+ *  ограничивает длину имени технически, но "Nam name name name..." на всю
+ *  ширину сайдбара слоёв бесполезен; обрезаем с многоточием, как обычно
+ *  делают сами дизайн-тулы. */
+const MAX_TEXT_NAME_LENGTH = 60
+
+/** Класс похож на utility-класс (Tailwind/UnoCSS и т.п.), а не на
+ *  семантическое имя компонента — такие НЕ годятся в имя фрейма (по запросу
+ *  пользователя: "названия по классам", но `<div class="tw:flex tw:gap-2
+ *  card-header">` должен назваться "card-header", а не "tw:flex"). Признаки:
+ *  variant/arbitrary-value синтаксис (`:`, `[...]`, `tw:`-неймспейс) или
+ *  короткий префикс из закрытого списка самых частых utility-групп
+ *  (spacing/sizing/flex/grid/position/color и т.п.), за которым сразу идёт
+ *  числовое/токенное значение. Эвристика, не парсер CSS-фреймворка —
+ *  осознанный компромисс (см. соседний buildName). */
+const UTILITY_CLASS_RE =
+  /^(?:tw:|hover:|focus:|active:|disabled:|group-|peer-|dark:|sm:|md:|lg:|xl:|2xl:)|[:[\]]|^(?:flex|grid|block|inline|inline-block|inline-flex|hidden|contents|table|relative|absolute|fixed|sticky|static)$|^(?:w|h|min-w|min-h|max-w|max-h|p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap|space-x|space-y|top|right|bottom|left|inset|z|text|font|leading|tracking|bg|border|rounded|shadow|ring|outline|opacity|cursor|overflow|transition|duration|ease|delay|translate|scale|rotate|col|row|items|justify|content|self|place)-[a-z0-9./%-]+$/i
+
+/** Сгенерированный/хэшированный класс (CSS Modules `Button_root__a1b2c`,
+ *  styled-components `sc-bZQynM`, emotion `css-1x2y3z` и т.п.) — тоже не
+ *  семантическое имя, отдельно от utility-паттерна выше (другая форма шума,
+ *  но общая причина: имя нестабильно между сборками/бесполезно для чтения). */
+const HASHED_CLASS_RE = /__[a-z0-9]+$/i
+
+/** Первый класс в списке, похожий на осмысленное имя компонента, а не на
+ *  utility/хэш-шум (см. UTILITY_CLASS_RE/HASHED_CLASS_RE) — по запросу
+ *  пользователя ("названия по классам"), раз простое "первый класс в DOM-
+ *  порядке" на реальных сайтах с Tailwind чаще всего даёт бесполезное имя
+ *  вида "tw:flex". `null`, если семантического кандидата нет — вызывающая
+ *  сторона откатывается на буквально первый класс (лучше хоть что-то, чем
+ *  голый тег). */
+function pickSemanticClass(classes: string[]): string | null {
+  return classes.find((c) => !UTILITY_CLASS_RE.test(c) && !HASHED_CLASS_RE.test(c)) ?? null
+}
+
+function truncateName(text: string): string {
+  return text.length > MAX_TEXT_NAME_LENGTH ? `${text.slice(0, MAX_TEXT_NAME_LENGTH - 1).trimEnd()}…` : text
+}
+
+/**
+ * Имя фрейма/ноды при импорте — по запросу пользователя: текстовые узлы
+ * называются по своему содержимому (сразу видно, что это за текст, в
+ * сайдбаре слоёв Figma), остальные — по осмысленному CSS-классу, если такой
+ * есть, иначе как раньше (id → первый класс → тег). id остаётся высшим
+ * приоритетом для НЕ-текстовых узлов: он уникален и осознанно проставлен
+ * автором страницы, семантичнее любого класса.
+ */
 function buildName(snapshot: DomSnapshotNode): string {
+  const isTextLeaf = !snapshot.asset && (snapshot.text !== undefined || (snapshot.textRuns?.length ?? 0) > 0)
+  if (isTextLeaf) {
+    const raw = snapshot.text ?? (snapshot.textRuns ?? []).map((r) => r.text).join('')
+    const cleaned = raw.replace(/\s+/g, ' ').trim()
+    if (cleaned) return truncateName(cleaned)
+  }
   if (snapshot.id) return snapshot.id
+  const semanticClass = pickSemanticClass(snapshot.classes)
+  if (semanticClass) return semanticClass
   if (snapshot.classes.length > 0) return snapshot.classes[0] as string
   return snapshot.tag.toUpperCase()
 }

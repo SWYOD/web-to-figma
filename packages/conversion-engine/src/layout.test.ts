@@ -75,4 +75,44 @@ describe('parseLayout', () => {
     parseLayout(style({ display: 'flex', 'justify-content': 'space-between' }), 'n1', diagnostics)
     expect(diagnostics).toHaveLength(0)
   })
+
+  it('single-column grid (no template-columns) approximates to a vertical Auto Layout stack', () => {
+    const layout = parseLayout(style({ display: 'grid', 'row-gap': '12px' }), 'n1', [])
+    expect(layout.mode).toBe('vertical')
+    expect(layout.gap).toBe(12)
+  })
+
+  it('explicit single-column grid-template-columns approximates to vertical', () => {
+    const layout = parseLayout(style({ display: 'grid', 'grid-template-columns': '1fr' }), 'n1', [])
+    expect(layout.mode).toBe('vertical')
+  })
+
+  it('single-row multi-column grid approximates to a horizontal Auto Layout row', () => {
+    const layout = parseLayout(
+      style({ display: 'grid', 'grid-template-columns': '100px 100px 100px', 'column-gap': '8px' }),
+      'n1',
+      []
+    )
+    expect(layout.mode).toBe('horizontal')
+    expect(layout.gap).toBe(8)
+  })
+
+  it('true 2D grid (multi-row AND multi-column) is not approximated — stays mode: none', () => {
+    const layout = parseLayout(
+      style({ display: 'grid', 'grid-template-columns': '1fr 1fr', 'grid-template-rows': '100px 100px' }),
+      'n1',
+      []
+    )
+    expect(layout.mode).toBe('none')
+  })
+
+  it('grid axis mapping is inverted vs flex: vertical grid reads justify-items for align, align-content for justify', () => {
+    const layout = parseLayout(
+      style({ display: 'grid', 'justify-items': 'center', 'align-content': 'center' }),
+      'n1',
+      []
+    )
+    expect(layout.align).toBe('center')
+    expect(layout.justify).toBe('center')
+  })
 })

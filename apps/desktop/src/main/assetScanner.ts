@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import sharp from 'sharp'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { fetchAssetBytes, hashContent } from '@web-to-figma/asset-engine'
 import type { ScannedAsset, AssetScanResult } from '../shared/types'
@@ -20,6 +21,8 @@ const MAX_ASSETS = 300
  *  без 256KB-лимита bridge-транспорта (см. AssetCollector), но всё равно не
  *  безлимитно: гигантский hero-баннер не должен раздувать IPC-сообщение. */
 const MAX_ASSET_BYTES = 8 * 1024 * 1024
+/** Превью-тайл в сетке — 72px, с запасом под retina (см. AssetsPanel.tsx). */
+const MAX_THUMBNAIL_DIMENSION = 160
 
 interface CdpNode {
   backendNodeId: number
@@ -158,10 +161,30 @@ async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<A
     return openTag + markup.slice(openTagMatch[0].length)
   }
 
-  const addRaster = (bytes: Buffer, mimeType: string, sourceUrl: string, width: number | undefined, height: number | undefined): void => {
+  // Миниатюра генерируется ЗДЕСЬ, в main-процессе, через sharp (libvips) —
+  // не в рендерере через `new Image()` + canvas (было раньше, см. живой баг:
+  // жалоба пользователя на многосекундное подвисание панели при накоплении
+  // десятков/сотен ассетов). Декод+ресайз полноразмерного фото в рендерере
+  // блокирует UI-поток синхронно на каждый тайл; sharp делает то же в Node,
+  // не трогая UI вообще, и заметно быстрее (C++/libvips против canvas).
+  const addRaster = async (
+    bytes: Buffer,
+    mimeType: string,
+    sourceUrl: string,
+    width: number | undefined,
+    height: number | undefined
+  ): Promise<void> => {
     if (bytes.length > MAX_ASSET_BYTES) return
     const hash = hashContent(bytes)
     if (byHash.has(hash)) return
+    let thumbnail: string | undefined
+    try {
+      const resized = sharp(bytes).resize(MAX_THUMBNAIL_DIMENSION, MAX_THUMBNAIL_DIMENSION, { fit: 'inside', withoutEnlargement: true })
+      const thumbBytes = await resized.jpeg({ quality: 82 }).toBuffer()
+      thumbnail = `data:image/jpeg;base64,${thumbBytes.toString('base64')}`
+    } catch (err) {
+      log.debug('failed to generate thumbnail', { sourceUrl, message: (err as Error).message })
+    }
     byHash.set(hash, {
       id: `asset-${nextId++}`,
       kind: 'image',
@@ -169,7 +192,8 @@ async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<A
       width,
       height,
       sourceUrl,
-      data: `data:${mimeType};base64,${bytes.toString('base64')}`
+      data: `data:${mimeType};base64,${bytes.toString('base64')}`,
+      thumbnail
     })
   }
 
@@ -217,7 +241,7 @@ async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<A
           return
         }
         if (!SUPPORTED_RASTER_MIME.has(fetched.mimeType)) return
-        addRaster(fetched.bytes, fetched.mimeType, absoluteUrl, box?.model.width, box?.model.height)
+        await addRaster(fetched.bytes, fetched.mimeType, absoluteUrl, box?.model.width, box?.model.height)
       } catch (err) {
         log.debug('failed to fetch img asset', { src, message: (err as Error).message })
       }

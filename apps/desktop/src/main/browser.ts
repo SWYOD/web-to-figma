@@ -83,7 +83,15 @@ export class BrowserController {
         nodeIntegration: false
       }
     })
-    this.win.contentView.addChildView(view)
+    // index 0 — всегда САМЫЙ НИЖНИЙ слой в contentView (z-order = порядок
+    // добавления, поздние — выше, см. overlay.ts). Overlay монтируется ОДИН
+    // раз при старте окна, сразу после первой вкладки (см. index.ts
+    // createWindow) — без явного index любая вкладка, открытая ПОЗЖЕ этого
+    // момента (новый таб, target=_blank и т.п.), добавилась бы ПОСЛЕ overlay
+    // и перекрыла бы плавающий тулбар (живой баг: тулбар пропадал на второй
+    // и любой следующей вкладке). Явный 0 держит все вкладки ниже overlay
+    // независимо от порядка их создания.
+    this.win.contentView.addChildView(view, 0)
     view.setBounds({ x: 0, y: 0, width: 0, height: 0 })
 
     const state: BrowserState = {
@@ -125,6 +133,15 @@ export class BrowserController {
         log.warn('did-fail-load', { errorCode, errorDescription })
         this.patchTab(id, { isLoading: false, loadError: errorDescription })
       }
+    })
+    // Без этого обработчика window.open()/target=_blank/среднюю кнопку мыши
+    // по ссылке Electron по умолчанию открывает голым нативным окном ОС, а
+    // не новой вкладкой нашего собственного набора WebContentsView (баг,
+    // пойманный пользователем на средней кнопке мыши) — перехватываем и
+    // заводим настоящую вкладку вместо неё.
+    wc.setWindowOpenHandler(({ url }) => {
+      this.newTab(url)
+      return { action: 'deny' }
     })
 
     wc.loadURL(normalizeUrlInput(url)).catch((err: Error) => {

@@ -68,6 +68,15 @@ export function LeftSidebar({
             className="recent-row"
             title={s.url}
             onClick={() => window.api.browserNavigate(s.url)}
+            // Средняя кнопка — как в обычном браузере: открыть в новой
+            // вкладке, а не в текущей (по запросу пользователя). `<button>`
+            // не эмитит `onClick` на среднем клике вообще (только левый), но
+            // САМ auxclick с button===1 браузер шлёт — здесь его и ловим.
+            onAuxClick={(e) => {
+              if (e.button !== 1) return
+              e.preventDefault()
+              window.api.browserNewTab(s.url)
+            }}
           >
             {s.faviconUrl ? (
               <img className="recent-row-favicon" src={s.faviconUrl} alt="" onError={(e) => (e.currentTarget.style.display = 'none')} />

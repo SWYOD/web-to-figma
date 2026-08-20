@@ -12,7 +12,8 @@
     "test": "vitest run"
   },
   "dependencies": {
-    "@web-to-figma/design-ast": "workspace:*"
+    "@web-to-figma/design-ast": "workspace:*",
+    "sharp": "^0.35.3"
   },
   "devDependencies": {
     "@types/node": "^22.10.1",

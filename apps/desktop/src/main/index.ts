@@ -27,7 +27,6 @@ import type {
   BridgeInfo,
   ColorMatchSource,
   ImportResult,
-  OverlayOpenPayload,
   OverlaySize,
   PickState,
   RecentSite,
@@ -121,45 +120,80 @@ let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
 let elementPicker: ElementPicker | null = null
 let overlayController: OverlayController | null = null
-/** Какой попап сейчас показан в overlay-слое (см. overlay.ts) — единственный
- *  источник правды, транслируется ОБОИМ рендерерам (главному окну — чтобы
- *  кнопка-якорь знала, что её попап открыт/закрыт, и самому overlay —
- *  какой контент рисовать), поэтому Escape/клик-снаружи/потеря фокуса
- *  браузером всегда закрывают попап согласованно в обоих местах. */
-let overlayKind: string | null = null
-/** x/width заданы вызывающей стороной один раз при открытии, anchorTop —
- *  верх кнопки-якоря; height пересчитывается на каждый `overlay:report-size`
- *  от overlay-рендерера (реальная высота контента заранее неизвестна) — см.
- *  applyOverlayBounds(). */
-let overlayGeometry: { x: number; width: number; anchorTop: number } | null = null
 
-const OVERLAY_GAP = 6
-// Разумная стартовая оценка высоты — применяется СРАЗУ при открытии, пока
-// overlay ещё не успел измерить и прислать реальную (см. applyOverlayBounds) —
-// нижний край попапа считается от неё так же, как от реальной, поэтому даже
-// эта оценка уже прижата к якорю корректно, просто верх box'а (невидим,
-// прозрачный фон) может на кадр оказаться чуть выше/ниже настоящего.
-const OVERLAY_INITIAL_HEIGHT_GUESS = 420
+// Отступ снизу — тот же 16px, что раньше был в CSS `.picker-float-bar{bottom:16px}`.
+// Ширина/высота — стартовая оценка ДО первого `overlay:report-size` от
+// рендерера (просто сама пилюля, без раскрытого попапа и без длинной подписи
+// статуса пикера) — ЖИВОЙ БАГ, если оставить как константу: реальный контент
+// (напр. подпись "Кликните на элемент страницы") бывает шире изначальной
+// оценки, а bounds WebContentsView — это реальный размер холста, не auto-fit
+// HTML-контейнер, так что то, что не влезло, физически обрезалось/скроллилось
+// внутри фиксированных bounds. Обе оценки — временные, тут же перезаписываются
+// первым же `overlay:report-size`.
+// +48 (2×SHADOW_MARGIN, см. ниже) к голым размерам пилюли — стартовая оценка
+// тоже должна учитывать паддинг под тень, иначе первый кадр до первого
+// overlay:report-size короткой вспышкой обрезал бы тень так же, как и до
+// этого фикса.
+const TOOLBAR_WIDTH_GUESS = 140 + 48
+const TOOLBAR_HEIGHT_GUESS = 48 + 48
+// Визуальный зазор от низа браузера до самой пилюли/попапа — то, что
+// пользователь реально видит как "отступ". Ниже он используется НЕ напрямую
+// (см. TOOLBAR_BOTTOM_GAP) — минусуется на SHADOW_MARGIN, см. тот докстринг.
+const TOOLBAR_VISUAL_BOTTOM_GAP = 16
+// `.overlay-toolbar-stack` в CSS обёрнут паддингом на этот отступ со всех
+// сторон (см. styles.css) — WebContentsView клипает контент СТРОГО по своим
+// bounds, а box-shadow (var(--shadow), blur 20px + offset 6px) рендерится ЗА
+// пределами border-box элемента; без запаса тень обрезалась прямым углом
+// (живой баг, пойман пользователем на скриншоте). Раз паддинг — часть того
+// же `.overlay-toolbar-stack`, что мы измеряем ResizeObserver'ом, репортится
+// он автоматически (входит в getBoundingClientRect); по X это ничего не
+// меняет (паддинг симметричный, центрирование остаётся верным само собой),
+// а по Y нужно скорректировать нижний якорь на ту же величину, иначе
+// видимая пилюля просто отъехала бы вверх на SHADOW_MARGIN лишних пикселей
+// (см. TOOLBAR_BOTTOM_GAP ниже).
+const SHADOW_MARGIN = 24
+const TOOLBAR_BOTTOM_GAP = TOOLBAR_VISUAL_BOTTOM_GAP - SHADOW_MARGIN
 
-function applyOverlayBounds(height: number): void {
-  if (!overlayGeometry) return
-  const { x, width, anchorTop } = overlayGeometry
+/**
+ * Плавающий тулбар (pick/import/apply-to-selection) теперь ПОСТОЯННО живёт в
+ * overlay-слое (по запросу пользователя — раньше сидел в HTML-полосе,
+ * специально вырезанной снизу из bounds браузера, из-за чего сам браузер не
+ * доходил до низа окна; см. renderer/styles.css до этого коммита). Больше не
+ * "один попап, открытый по запросу с явным anchorTop от кнопки" (старое
+ * `overlayKind`/`overlayGeometry`/`overlay:open` — Apply to Selection теперь
+ * просто ЛОКАЛЬНЫЙ React state внутри самого overlay-рендерера, см.
+ * OverlayRoot.tsx, никакого IPC-таргетирования "какой попап" не нужно), а
+ * якорь всегда один — низ ТЕКУЩЕГО browser-viewport (см. browserViewportBounds
+ * ниже, обновляется на каждый `browser:set-bounds`). И ширина, И высота
+ * измеряются overlay-рендерером (ResizeObserver на `.overlay-toolbar-stack`,
+ * см. OverlayRoot.tsx) и репортятся сюда через `overlay:report-size` —
+ * контент сам решает, сколько места ему нужно (пилюля / раскрытый Apply to
+ * Selection popover / длинная подпись статуса пикера), а не подгоняется под
+ * заранее угаданную константу.
+ */
+let browserViewportBounds: ViewBounds | null = null
+let toolbarOverlayWidth = TOOLBAR_WIDTH_GUESS
+let toolbarOverlayHeight = TOOLBAR_HEIGHT_GUESS
+
+function repositionToolbarOverlay(): void {
+  const bounds = browserViewportBounds
+  if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
+    overlayController?.hide()
+    return
+  }
+  // Не шире самой браузерной области — иначе при очень узком окне тулбар
+  // вылезал бы за его пределы вместо того, чтобы хотя бы прижаться к краям.
+  const width = Math.min(toolbarOverlayWidth, bounds.width)
+  const x = Math.round(bounds.x + bounds.width / 2 - width / 2)
+  const anchorBottom = bounds.y + bounds.height - TOOLBAR_BOTTOM_GAP
   overlayController?.setBounds({
     x,
-    y: Math.round(anchorTop - OVERLAY_GAP - height),
-    width,
-    height: Math.max(1, Math.ceil(height))
+    y: Math.round(anchorBottom - toolbarOverlayHeight),
+    width: Math.max(1, Math.ceil(width)),
+    height: Math.max(1, Math.ceil(toolbarOverlayHeight))
   })
 }
 
-function setOverlay(kind: string | null, geometry?: { x: number; width: number; anchorTop: number }): void {
-  overlayKind = kind
-  overlayGeometry = kind ? (geometry ?? null) : null
-  if (overlayGeometry) applyOverlayBounds(OVERLAY_INITIAL_HEIGHT_GUESS)
-  else overlayController?.hide()
-  mainWindow?.webContents.send('overlay:content', kind)
-  overlayController?.send('overlay:content', kind)
-}
 const recentSites = new RecentSitesStore((list) => mainWindow?.webContents.send('recent-sites:updated', list))
 
 function createWindow(): void {
@@ -203,7 +237,11 @@ function createWindow(): void {
       elementPicker?.stopIfActive()
       void recentSites.recordVisit(url)
     },
-    () => setOverlay(null)
+    // Реальный клик В СТРАНИЦУ переводит OS-фокус на её webContents — это
+    // единственный способ узнать о "клике снаружи" popover'а Apply to
+    // Selection, раз тот теперь рисуется в overlay-рендерере (см. ниже),
+    // а не в этом же окне, где сработал бы обычный document click-outside.
+    () => overlayController?.send('overlay:collapse-popover', undefined)
   )
   browserController.mount()
 
@@ -217,7 +255,16 @@ function createWindow(): void {
       mainWindow?.webContents.send('inspector:selection', result)
       overlayController?.send('inspector:selection', result)
     },
-    (state: PickState) => mainWindow?.webContents.send('inspector:pick-state', state)
+    // Тоже в оба webContents — PickerFloatBar (активная подсветка кнопки,
+    // Esc/повторный клик по кнопке для отмены) живёт в overlay-рендерере, не
+    // в главном окне (см. комментарий у onSelect выше); без этого
+    // `pick.active` там навсегда оставался бы false после первого события,
+    // и повторный клик по кнопке пикера в тулбаре запускал бы pick заново
+    // вместо остановки (живой баг).
+    (state: PickState) => {
+      mainWindow?.webContents.send('inspector:pick-state', state)
+      overlayController?.send('inspector:pick-state', state)
+    }
     // getEffectiveTheme, getViewScreenBounds // 4-й/5-й аргумент для кастомного тултипа, см. inspector.ts
   )
 
@@ -226,11 +273,12 @@ function createWindow(): void {
   const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
   overlayController = new OverlayController()
   overlayController.mount(mainWindow, devUrl)
-  // Окно сдвинулось/изменило размер — bounds overlay'я считаны от старой
-  // позиции анкера в renderer'е и больше не актуальны, закрываем, а не
-  // показываем неправильно расположенный попап.
-  mainWindow.on('resize', () => setOverlay(null))
-  mainWindow.on('move', () => setOverlay(null))
+  // Якорь тулбара — browserViewportBounds, а те координаты уже РЕЛЯТИВНЫ
+  // окну (renderer шлёт getBoundingClientRect() своего же div'а, см.
+  // BrowserViewport.tsx) — чистое перемещение окна (move, без изменения
+  // размера) их не меняет вообще, отдельный обработчик не нужен. На resize
+  // тот же div сам переотправит новые bounds через свой ResizeObserver —
+  // `browser:set-bounds` ниже и так переанкерит тулбар.
 
   if (isDev && process.env['ELECTRON_RENDERER_URL']) {
     void loadDevUrlWithRetry(mainWindow, process.env['ELECTRON_RENDERER_URL'])
@@ -301,16 +349,20 @@ function registerIpc(): void {
   ipcMain.handle('browser:forward', (): void => browserController?.forward())
   ipcMain.handle('browser:reload', (): void => browserController?.reload())
   ipcMain.handle('browser:stop', (): void => browserController?.stop())
-  ipcMain.handle('browser:set-bounds', (_e, bounds: ViewBounds): void => browserController?.setBounds(bounds))
+  ipcMain.handle('browser:set-bounds', (_e, bounds: ViewBounds): void => {
+    browserController?.setBounds(bounds)
+    browserViewportBounds = bounds
+    repositionToolbarOverlay()
+  })
   ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
 
   // Пикер держит CDP debugger-сессию на КОНКРЕТНОМ webContents активной
   // вкладки (см. inspector.ts) — переключение/закрытие вкладки меняет,
   // какой webContents видим, поэтому сбрасываем активный pick-режим, чтобы
   // не остаться привязанными к уже невидимой вкладке.
-  ipcMain.handle('browser:new-tab', (): void => {
+  ipcMain.handle('browser:new-tab', (_e, url?: string): void => {
     elementPicker?.stopIfActive()
-    browserController?.newTab()
+    browserController?.newTab(url)
   })
   ipcMain.handle('browser:close-tab', (_e, id: string): void => {
     elementPicker?.stopIfActive()
@@ -322,11 +374,14 @@ function registerIpc(): void {
   })
   ipcMain.handle('browser:get-tabs', (): TabsSnapshot => browserController?.getTabsSnapshot() ?? { tabs: [], activeTabId: null })
 
-  ipcMain.handle('overlay:open', (_e, payload: OverlayOpenPayload): void => {
-    setOverlay(payload.kind, { x: payload.x, width: payload.width, anchorTop: payload.anchorTop })
+  // Тулбар теперь ВСЕГДА показан (не открывается/закрывается по запросу) —
+  // единственное, что реально меняется динамически, это его высота (раскрыт
+  // ли внутри него Apply to Selection popover, см. OverlayRoot.tsx).
+  ipcMain.handle('overlay:report-size', (_e, size: OverlaySize): void => {
+    toolbarOverlayWidth = size.width
+    toolbarOverlayHeight = size.height
+    repositionToolbarOverlay()
   })
-  ipcMain.handle('overlay:close', (): void => setOverlay(null))
-  ipcMain.handle('overlay:report-size', (_e, size: OverlaySize): void => applyOverlayBounds(size.height))
 
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())

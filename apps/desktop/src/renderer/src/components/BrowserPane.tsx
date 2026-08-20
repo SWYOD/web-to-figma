@@ -1,11 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import type { AssetScanResult, BrowserState, ScannedAsset, TabsSnapshot } from '../../../shared/types'
-import { makeThumbnail } from '../assetThumbnail'
 import { BottomPanel } from './BottomPanel'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserToolbar } from './BrowserToolbar'
 import { BrowserViewport } from './BrowserViewport'
-import { PickerFloatBar } from './PickerFloatBar'
 
 /** Верхняя граница на СУММУ ассетов по всем накопленным страницам одного
  *  домена (по жалобе пользователя — "если ассетов много, панель тормозит";
@@ -83,8 +81,6 @@ export function BrowserPane(): JSX.Element {
   const [bottomMaximized, setBottomMaximized] = useState(false)
   const tabsStateRef = useRef(tabsState)
   tabsStateRef.current = tabsState
-  const scansRef = useRef(scans)
-  scansRef.current = scans
 
   const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeTabId) ?? EMPTY_STATE
 
@@ -97,23 +93,12 @@ export function BrowserPane(): JSX.Element {
     const domain = hostFromUrl(url)
     setScanningTabId(activeTabId)
     try {
+      // Миниатюры растровых ассетов уже готовы в `result` — их генерирует
+      // main-процесс через sharp (см. assetScanner.ts), не рендерер: раньше
+      // здесь был `new Image()` + canvas на КАЖДУЮ картинку, синхронно
+      // блокировавший UI-поток при накоплении десятков/сотен ассетов (живой
+      // баг, жалоба пользователя на многосекундное подвисание панели).
       const result: AssetScanResult = await window.api.assetsScan()
-
-      // Дедуп ДО генерации миниатюр — approximate (state мог обновиться,
-      // пока ждали скан), но это только чтобы не тратить время на decode
-      // уже виденных картинок; окончательный дедуп — фреш из `prev` внутри
-      // setScans ниже, он и определяет, что реально попадёт в state.
-      const scanStart = scansRef.current[activeTabId]
-      const seenApprox = new Set(
-        (scanStart?.domain === domain ? scanStart.batches : []).flatMap((b) => b.assets.map((a) => a.data))
-      )
-      const likelyNew = result.assets.filter((a) => !seenApprox.has(a.data))
-      // Миниатюры — только для растровых картинок (см. assetThumbnail.ts);
-      // SVG-иконки рендерятся дёшево при любом количестве, не трогаем.
-      const withThumbs = await Promise.all(
-        likelyNew.map(async (a) => (a.kind === 'image' ? { ...a, thumbnail: await makeThumbnail(a.data) } : a))
-      )
-      const withThumbsByData = new Map(withThumbs.map((a) => [a.data, a]))
 
       setScans((prev) => {
         const existing = prev[activeTabId]
@@ -125,10 +110,10 @@ export function BrowserPane(): JSX.Element {
         // Дедуп по содержимому (data: URL), не по asset.id — тот нумеруется
         // заново в КАЖДОМ скане (asset-1, asset-2…), поэтому не годится как
         // устойчивый ключ "уже видели" между разными сканами одной вкладки.
-        // Фреш из `prev` (не из scanStart выше) — на случай гонки с другим
-        // сканом этой же вкладки, завершившимся, пока ждали миниатюры.
+        // Фреш из `prev` (не из snapshot до await) — на случай гонки с другим
+        // сканом этой же вкладки, завершившимся, пока этот скан ещё шёл.
         const seen = new Set(priorBatches.flatMap((b) => b.assets.map((a) => a.data)))
-        const newAssets = result.assets.filter((a) => !seen.has(a.data)).map((a) => withThumbsByData.get(a.data) ?? a)
+        const newAssets = result.assets.filter((a) => !seen.has(a.data))
 
         let batches = priorBatches
         if (newAssets.length > 0) {
@@ -208,16 +193,19 @@ export function BrowserPane(): JSX.Element {
         onStop={() => window.api.browserStop()}
       />
       {/* Явные flex-значения, а не полагаться на авто-basis: у обёртки вьюпорта
-          нет обычного контента (BrowserViewport/PickerFloatBar — position:absolute),
-          поэтому "оба flex:1 1 auto" при maximized панели снизу не гарантированно
-          схлопнули бы вьюпорт до нуля — авто-basis с двумя элементами без
-          in-flow контента делит место непредсказуемо. Явный 0 0 0px убирает
+          нет обычного контента (BrowserViewport — position:absolute, дырка
+          под нативный слой), поэтому "flex:1 1 auto" при maximized панели
+          снизу не гарантированно схлопнул бы вьюпорт до нуля — авто-basis без
+          in-flow контента считает место непредсказуемо. Явный 0 0 0px убирает
           неоднозначность: реальный нативный WebContentsView скрывается тем же
           способом, что и BrowserController.setHidden() — через нулевые bounds,
-          которые ResizeObserver в BrowserViewport.tsx вычислит сам из схлопнутого div. */}
+          которые ResizeObserver в BrowserViewport.tsx вычислит сам из схлопнутого
+          div. Плавающий тулбар (pick/import/apply-to-selection) больше не
+          рендерится здесь — он постоянно живёт в overlay-рендерере поверх
+          браузера (см. OverlayRoot.tsx), браузер теперь занимает всю область
+          без зарезервированной снизу полосы. */}
       <div className="browser-viewport-wrap" style={bottomMaximized ? { flex: '0 0 0px' } : undefined}>
         <BrowserViewport />
-        <PickerFloatBar />
       </div>
       <BottomPanel
         tabs={tabsState.tabs}

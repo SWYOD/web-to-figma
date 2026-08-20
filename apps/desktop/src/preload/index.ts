@@ -8,7 +8,6 @@ import type {
   BridgeStatusEvent,
   ColorMatchSource,
   ImportResult,
-  OverlayOpenPayload,
   OverlaySize,
   PickState,
   RecentSite,
@@ -39,7 +38,7 @@ const api: Api = {
   browserSetBounds: (bounds: ViewBounds) => ipcRenderer.invoke('browser:set-bounds', bounds),
   browserSetHidden: (hidden: boolean) => ipcRenderer.invoke('browser:set-hidden', hidden),
 
-  browserNewTab: () => ipcRenderer.invoke('browser:new-tab'),
+  browserNewTab: (url?: string) => ipcRenderer.invoke('browser:new-tab', url),
   browserCloseTab: (id: string) => ipcRenderer.invoke('browser:close-tab', id),
   browserSwitchTab: (id: string) => ipcRenderer.invoke('browser:switch-tab', id),
   browserGetTabs: () => ipcRenderer.invoke('browser:get-tabs'),
@@ -49,13 +48,11 @@ const api: Api = {
     return () => ipcRenderer.removeListener('browser:tabs', listener)
   },
 
-  overlayOpen: (payload: OverlayOpenPayload) => ipcRenderer.invoke('overlay:open', payload),
-  overlayClose: () => ipcRenderer.invoke('overlay:close'),
   overlayReportSize: (size: OverlaySize) => ipcRenderer.invoke('overlay:report-size', size),
-  onOverlayContent: (cb: (kind: string | null) => void) => {
-    const listener = (_e: Electron.IpcRendererEvent, kind: string | null): void => cb(kind)
-    ipcRenderer.on('overlay:content', listener)
-    return () => ipcRenderer.removeListener('overlay:content', listener)
+  onOverlayCollapsePopover: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('overlay:collapse-popover', listener)
+    return () => ipcRenderer.removeListener('overlay:collapse-popover', listener)
   },
 
   inspectorStartPick: () => ipcRenderer.invoke('inspector:start-pick'),

@@ -13,6 +13,19 @@ export interface DomSnapshotNode {
   classes: string[]
   /** Сырые computed-style значения как их отдаёт CDP: { "display": "flex", "font-size": "14px", ... }. */
   computedStyle: Record<string, string>
+  /**
+   * true = свойство `width`/`height` реально ЗАДАНО каким-то CSS-правилом
+   * автора страницы (или inline `style=`), не только browser-дефолтом —
+   * computed style (см. `computedStyle` выше) всегда резолвится в конкретные
+   * px и не может отличить "auto → hug по контенту" от "explicit значение,
+   * совпавшее по факту с тем же px" (см. resolveSizing в convertElement.ts,
+   * это единственный источник сигнала для Figma `HUG` sizing). Заполняется
+   * вызывающей стороной через `CSS.getMatchedStylesForNode`. Опционально (не
+   * все вызывающие стороны/тесты его собирают) — отсутствие resolveSizing
+   * трактует как "неизвестно", тот же 'fixed', что и раньше (безопасный
+   * дефолт, не HUG наугад).
+   */
+  authoredSizing?: { width: boolean; height: boolean }
   /** width/height — border-box; x/y — позиция относительно padding-box родителя (0,0 для корня). */
   box: { width: number; height: number; x: number; y: number }
   children?: DomSnapshotNode[]

@@ -35,8 +35,24 @@ function baseStyle(overrides: Record<string, string> = {}): Record<string, strin
   }
 }
 
-function node(tag: string, box: DomSnapshotNode['box'], style: Record<string, string>, children?: DomSnapshotNode[], text?: string): DomSnapshotNode {
-  return { tag, id: null, classes: [], box, computedStyle: baseStyle(style), ...(children ? { children } : {}), ...(text !== undefined ? { text } : {}) }
+function node(
+  tag: string,
+  box: DomSnapshotNode['box'],
+  style: Record<string, string>,
+  children?: DomSnapshotNode[],
+  text?: string,
+  authoredSizing?: DomSnapshotNode['authoredSizing']
+): DomSnapshotNode {
+  return {
+    tag,
+    id: null,
+    classes: [],
+    box,
+    computedStyle: baseStyle(style),
+    ...(children ? { children } : {}),
+    ...(text !== undefined ? { text } : {}),
+    ...(authoredSizing ? { authoredSizing } : {})
+  }
 }
 
 describe('fill sizing — main axis (flex-grow)', () => {
@@ -112,5 +128,40 @@ describe('fill sizing — scoping', () => {
     const { node: result } = convertElement(parent)
     expect(result.children![0]!.layout!.widthSizing).toBe('fixed')
     expect(result.children![0]!.layout!.heightSizing).toBe('fixed')
+  })
+})
+
+describe('hug sizing — authored CSS (CSS.getMatchedStylesForNode)', () => {
+  it('width not authored by any rule (no fill on that axis) -> widthSizing:hug', () => {
+    const parent = node('div', { width: 300, height: 100, x: 0, y: 0 }, { display: 'flex', 'flex-direction': 'column', 'align-items': 'flex-start' }, [
+      node('div', { width: 80, height: 20, x: 0, y: 0 }, {}, undefined, undefined, { width: false, height: true })
+    ])
+    const { node: result } = convertElement(parent)
+    expect(result.children![0]!.layout!.widthSizing).toBe('hug')
+    expect(result.children![0]!.layout!.heightSizing).toBe('fixed')
+  })
+
+  it('fill takes precedence over hug on the same axis', () => {
+    const parent = node('div', { width: 300, height: 100, x: 0, y: 0 }, { display: 'flex', 'flex-direction': 'row', 'align-items': 'flex-start' }, [
+      node('div', { width: 100, height: 40, x: 0, y: 0 }, { 'flex-grow': '1' }, undefined, undefined, { width: false, height: false })
+    ])
+    const { node: result } = convertElement(parent)
+    expect(result.children![0]!.layout!.widthSizing).toBe('fill')
+  })
+
+  it('authoredSizing absent (unknown, e.g. from a caller that never collected it) stays fixed, not hug', () => {
+    const parent = node('div', { width: 300, height: 100, x: 0, y: 0 }, { display: 'flex', 'flex-direction': 'column', 'align-items': 'flex-start' }, [
+      node('div', { width: 80, height: 20, x: 0, y: 0 }, {})
+    ])
+    const { node: result } = convertElement(parent)
+    expect(result.children![0]!.layout!.widthSizing).toBe('fixed')
+  })
+
+  it('width authored explicitly -> stays fixed, not hug', () => {
+    const parent = node('div', { width: 300, height: 100, x: 0, y: 0 }, { display: 'flex', 'flex-direction': 'column', 'align-items': 'flex-start' }, [
+      node('div', { width: 80, height: 20, x: 0, y: 0 }, {}, undefined, undefined, { width: true, height: true })
+    ])
+    const { node: result } = convertElement(parent)
+    expect(result.children![0]!.layout!.widthSizing).toBe('fixed')
   })
 })

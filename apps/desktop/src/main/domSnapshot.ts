@@ -104,9 +104,40 @@ interface ComputedStyleResult {
 interface OuterHtmlResult {
   outerHTML: string
 }
+interface CssProperty {
+  name: string
+  value: string
+}
+interface MatchedStylesResult {
+  inlineStyle?: { cssProperties: CssProperty[] }
+  matchedCSSRules?: { rule: { origin: string; style: { cssProperties: CssProperty[] } } }[]
+}
 interface FetchedNodeData {
   box: BoxModelResult['model']
   style: Record<string, string>
+  /** true = свойство реально ЗАДАНО каким-то правилом автора страницы (или
+   *  inline style), не только унаследовано/резолвлено дефолтом браузера — см.
+   *  hasAuthoredProperty ниже и докстринг у DomSnapshotNode.authoredSizing в
+   *  conversion-engine. */
+  authoredSizing: { width: boolean; height: boolean }
+}
+
+/**
+ * computed-стиль (`CSS.getComputedStyleForNode`) ВСЕГДА резолвится в
+ * конкретное px-значение и не говорит, было ли оно явно задано автором
+ * страницы или это просто browser-дефолт (`width:auto` на блочном элементе
+ * резолвится в те же px, что и `width:100%`) — этого достаточно для layout/
+ * позиционирования, но НЕДОСТАТОЧНО, чтобы отличить "должен hug-аться по
+ * контенту" от "явно растянут на всю ширину" (см. resolveSizing в
+ * convertElement.ts). Для этого нужен authored-уровень — `matchedCSSRules`
+ * (+ `inlineStyle`) из `CSS.getMatchedStylesForNode`: реально применённые к
+ * узлу CSS-правила автора, а не user-agent-стили браузера по умолчанию.
+ */
+function hasAuthoredProperty(matched: MatchedStylesResult, propertyName: string): boolean {
+  if (matched.inlineStyle?.cssProperties.some((p) => p.name === propertyName)) return true
+  return (matched.matchedCSSRules ?? []).some(
+    (m) => m.rule.origin !== 'user-agent' && m.rule.style.cssProperties.some((p) => p.name === propertyName)
+  )
 }
 
 export interface SnapshotResult {
@@ -309,13 +340,15 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
       const nodeId = nodeIdByBackendId.get(backendId)
       if (nodeId === undefined) return
       try {
-        const [box, computed] = await Promise.all([
+        const [box, computed, matched] = await Promise.all([
           dbg.sendCommand('DOM.getBoxModel', { backendNodeId: backendId }) as Promise<BoxModelResult>,
-          dbg.sendCommand('CSS.getComputedStyleForNode', { nodeId }) as Promise<ComputedStyleResult>
+          dbg.sendCommand('CSS.getComputedStyleForNode', { nodeId }) as Promise<ComputedStyleResult>,
+          (dbg.sendCommand('CSS.getMatchedStylesForNode', { nodeId }).catch(() => ({}))) as Promise<MatchedStylesResult>
         ])
         dataByBackendId.set(backendId, {
           box: box.model,
-          style: Object.fromEntries(computed.computedStyle.map((e) => [e.name, e.value]))
+          style: Object.fromEntries(computed.computedStyle.map((e) => [e.name, e.value])),
+          authoredSizing: { width: hasAuthoredProperty(matched, 'width'), height: hasAuthoredProperty(matched, 'height') }
         })
       } catch (err) {
         // Не отрендерен (display:none и т.п.) — узел и его поддерево просто выпадают из снапшота.
@@ -445,6 +478,7 @@ function buildNode(
     id: attrMap.get('id') || null,
     classes: (attrMap.get('class') ?? '').split(/\s+/).filter(Boolean),
     computedStyle: data.style,
+    authoredSizing: data.authoredSizing,
     box: { width: data.box.width, height: data.box.height, x: Math.round(rel.x), y: Math.round(rel.y) },
     ...(children.length > 0 ? { children } : {}),
     ...(pseudoType ? { pseudoType } : {}),

@@ -1,26 +1,32 @@
 import { useEffect, useState } from 'react'
-import { Frame as FrameIcon, MousePointerClick } from 'lucide-react'
+import { Frame as FrameIcon, MousePointerClick, Wand2 } from 'lucide-react'
 import { IconButton } from '@web-to-figma/ui'
 import type { PickState } from '../../../shared/types'
-import { ApplyToSelectionPopover } from './ApplyToSelectionPopover'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 
 type ImportUiState = { kind: 'idle' | 'loading' } | { kind: 'ok' } | { kind: 'error'; message: string }
 
+interface Props {
+  applyOpen: boolean
+  onToggleApply: () => void
+  applyDisabled: boolean
+}
+
 /**
  * Плавающий пилл-тулбар над браузерной областью (в духе Figma) — единственное
  * место для всех действий над текущим выбором: pick, Import as Frame, Apply
- * to Selection (раньше — разбросаны по шапке InspectorPanel/toolbar; собраны
- * сюда по запросу пользователя, той же группой, что тулбар инструментов в
- * самой Figma). WebContentsView всегда рисуется НАД HTML своего
- * bounds-прямоугольника (см. main/browser.ts) — бар не перекрывается страницей
- * потому что сидит в полосе, специально исключённой из bounds `.browser-viewport`
- * (см. styles.css: `.browser-viewport-wrap`/`.browser-viewport` inset с bottom).
- * Apply to Selection раскрывает попап вверх (`placement="up"`) — вниз от
- * нижнего бара раскрываться некуда.
+ * to Selection. Живёт постоянно в overlay-рендерере (см. OverlayRoot.tsx,
+ * main/overlay.ts) — отдельный composited-слой НАД встроенным браузером,
+ * поэтому браузер теперь занимает область целиком (никакой зарезервированной
+ * снизу HTML-полосы, как раньше — см. docs/architecture.md, по запросу
+ * пользователя). Apply to Selection здесь только КНОПКА-триггер — само
+ * состояние "открыт ли popover" и его контент (`ApplyToSelectionContent`)
+ * теперь выше, в `OverlayRoot`, т.к. попап должен уметь раздвигать ВЕСЬ
+ * overlay вверх (см. `overlay:report-size`), а не будет самостоятельным
+ * элементом внутри этого компонента.
  */
-export function PickerFloatBar(): JSX.Element {
+export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled }: Props): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [hasSelection, setHasSelection] = useState(false)
   const [importState, setImportState] = useState<ImportUiState>({ kind: 'idle' })
@@ -70,7 +76,9 @@ export function PickerFloatBar(): JSX.Element {
       <IconButton disabled={!hasSelection || importState.kind === 'loading'} onClick={handleImport} title="Import as Frame">
         <FrameIcon size={16} />
       </IconButton>
-      <ApplyToSelectionPopover />
+      <IconButton active={applyOpen} disabled={applyDisabled} onClick={onToggleApply} title="Apply to Selection">
+        <Wand2 size={16} />
+      </IconButton>
       {label && <span className={`picker-float-bar-label${importState.kind === 'error' ? ' error' : ''}`}>{label}</span>}
     </div>
   )

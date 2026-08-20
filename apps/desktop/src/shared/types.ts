@@ -106,24 +106,19 @@ export interface ViewBounds {
   height: number
 }
 
-/** См. main/overlay.ts — попап, который должен визуально стоять НАД
- *  встроенным браузером, а не прятать/подвинуть его. `x`/`width` заданы
- *  вызывающей стороной (сама знает свою ширину — фиксированная, как раньше
- *  делал CSS `.popover { min-width }`), `anchorTop` — верх якоря; `height`
- *  сюда НЕ входит — реальная высота попапа заранее неизвестна (зависит от
- *  контента), overlay сам измеряет себя и шлёт `overlay:report-size`, main
- *  пересчитывает `y = anchorTop - GAP - height` так, чтобы НИЖНИЙ край попапа
- *  всегда был прижат к якорю независимо от высоты контента. Координаты — в
- *  системе окна (DIP), той же, что `getBoundingClientRect()` в renderer, см.
- *  BrowserViewport.tsx. */
-export interface OverlayOpenPayload {
-  kind: string
-  x: number
-  width: number
-  anchorTop: number
-}
-
+/** См. main/overlay.ts — плавающий тулбар (pick/import/apply-to-selection)
+ *  постоянно стоит НАД встроенным браузером, заякоренный к его нижнему краю
+ *  и по центру (см. main/index.ts `repositionToolbarOverlay`,
+ *  `browserViewportBounds`) — ни высота, ни ширина сюда не входят как
+ *  константы, обе заранее неизвестны (раскрыт ли Apply to Selection popover;
+ *  насколько широка подпись статуса вроде "Кликните на элемент страницы") —
+ *  overlay сам измеряет себя (`ResizeObserver` на `.overlay-toolbar-stack`,
+ *  см. OverlayRoot.tsx) и шлёт оба размера через `overlay:report-size`.
+ *  Раньше ширина была захардкожена (`TOOLBAR_OVERLAY_WIDTH=300`) — живой
+ *  баг: контент шире 300px (та самая подпись статуса) обрезался/скроллился
+ *  внутри фиксированных bounds WebContentsView. */
 export interface OverlaySize {
+  width: number
   height: number
 }
 
@@ -213,11 +208,12 @@ export interface ScannedAsset {
   sourceUrl?: string
   /** Готовый data: URL — прямо в `<img src>`, не нужно отдельно декодировать. */
   data: string
-  /** Уменьшенная копия `data` для превью в сетке (см. BrowserPane.makeThumbnail) —
-   *  растровые ассеты сканер отдаёт БЕЗ уменьшения (до 8MB, чтобы "Отправить в
-   *  Figma" получал оригинал), рендерить исходные байты в 72px-тайле дорого при
-   *  десятках/сотнях тайлов (декод полноразмерного изображения ради миниатюры).
-   *  Заполняется на клиенте после скана, до иконок не относится (SVG дешёвы). */
+  /** Уменьшенная копия `data` для превью в сетке — генерируется В MAIN-ПРОЦЕССЕ
+   *  через sharp (см. assetScanner.ts), не на клиенте: `data` сканер отдаёт БЕЗ
+   *  уменьшения (до 8MB, чтобы "Отправить в Figma" получал оригинал), а рендерить
+   *  исходные байты в 72px-тайле дорого при десятках/сотнях тайлов — раньше
+   *  миниатюра декодировалась в рендерере через `new Image()`+canvas и заметно
+   *  подвешивала UI-поток (живой баг). До иконок не относится (SVG дешёвы). */
   thumbnail?: string
 }
 
@@ -267,20 +263,18 @@ export interface Api {
    *  usePopoverVisibility и main/browser.ts класс-docstring. */
   browserSetHidden: (hidden: boolean) => Promise<void>
 
-  /** См. main/overlay.ts — открывает попап в отдельном composited-слое НАД
-   *  браузером, ничего не пряча и не подвигая. */
-  overlayOpen: (payload: OverlayOpenPayload) => Promise<void>
-  overlayClose: () => Promise<void>
   /** Overlay-рендерер сам измеряет свой реальный контент (ResizeObserver, см.
    *  OverlayRoot.tsx) и шлёт сюда высоту — main пересчитывает bounds так,
-   *  чтобы нижний край попапа оставался прижат к якорю (см. OverlayOpenPayload). */
+   *  чтобы нижний край плавающего тулбара оставался прижат к низу браузера
+   *  (см. main/index.ts `repositionToolbarOverlay`). */
   overlayReportSize: (size: OverlaySize) => Promise<void>
-  /** `content` — `{kind}` открытого попапа или `null`; шлётся ОБОИМ рендерерам
-   *  (главному окну и overlay) на любое изменение — единственный источник
-   *  правды про то, что сейчас открыто (см. index.ts `setOverlay`). */
-  onOverlayContent: (cb: (kind: string | null) => void) => () => void
+  /** Клик В САМУ страницу (другой webContents, см. main/index.ts) должен
+   *  закрыть раскрытый Apply to Selection popover — тот теперь локальный
+   *  React state внутри overlay-рендерера, обычный document click-outside
+   *  его не видит. */
+  onOverlayCollapsePopover: (cb: () => void) => () => void
 
-  browserNewTab: () => Promise<void>
+  browserNewTab: (url?: string) => Promise<void>
   browserCloseTab: (id: string) => Promise<void>
   browserSwitchTab: (id: string) => Promise<void>
   browserGetTabs: () => Promise<TabsSnapshot>

@@ -10,10 +10,14 @@ export default defineConfig({
     // зависимости (включая ESM-only 'nanoid') остаются инлайн — main-процесс
     // electron-vite собирает в CJS, а require() чистого ESM-пакета в CJS падает
     // (ERR_REQUIRE_ESM); инлайн Rollup'ом эту проблему не имеет.
+    // 'sharp' (используется в @web-to-figma/asset-engine для WebP→PNG,
+    // см. fetchAsset.ts) — нативный N-API модуль, .node-биндинг физически
+    // нельзя заинлайнить в один JS-файл; должен остаться require()'ом из
+    // реального node_modules (см. package.json build.asarUnpack).
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') },
-        external: ['ws']
+        external: ['ws', 'sharp']
       }
     }
   },

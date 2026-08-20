@@ -244,11 +244,12 @@
   border-top: 1px solid var(--border);
 }
 
-/* Обёртка резервирует полосу внизу под .picker-float-bar — сам
-   .browser-viewport (источник bounds для нативного WebContentsView, см.
-   BrowserViewport.tsx) намеренно НЕ доходит до низа контейнера, чтобы бар
-   лежал на HTML-фоне, а не был перекрыт нативным слоем браузера (тот всегда
-   рисуется НАД HTML в своих bounds, см. main/browser.ts). */
+/* Браузер занимает всю область вьюпорта без зарезервированной снизу полосы —
+   плавающий тулбар (.picker-float-bar) больше не живёт здесь, он постоянно
+   смонтирован во ВТОРОМ WebContentsView (overlay, см. main/overlay.ts,
+   OverlayRoot.tsx), который композитится НАД этим и позиционируется поверх
+   его нижнего края из main-процесса (см. repositionToolbarOverlay в
+   main/index.ts). */
 .browser-viewport-wrap {
   position: relative;
   flex: 1 1 auto;
@@ -257,14 +258,9 @@
 .browser-viewport {
   position: absolute;
   inset: 0;
-  bottom: 64px;
   background: var(--bg-canvas);
 }
 .picker-float-bar {
-  position: absolute;
-  left: 50%;
-  bottom: 16px;
-  transform: translateX(-50%);
   display: flex;
   align-items: center;
   gap: 8px;
@@ -286,11 +282,12 @@
 
 /* ── Overlay-окно (второй WebContentsView НАД браузером, см. main/overlay.ts,
    OverlayRoot.tsx) — прозрачный фон вместо непрозрачного body из base.css.
-   Bounds окна выше реального контента (main держит стартовую оценку высоты,
-   пока overlay не измерит и не пришлёт точную — см. index.ts
-   applyOverlayBounds), поэтому контент прижимается к НИЗУ окна
-   (justify-content:flex-end) — так нижний край попапа всегда у якоря,
-   независимо от того, насколько оценка высоты сейчас неточна. */
+   Окно anchor'ится по низу области браузера и меняет ВЫСОТУ по факту
+   измерения .overlay-toolbar-stack (ResizeObserver → overlay:report-size, см.
+   main/index.ts repositionToolbarOverlay), поэтому контент здесь всегда
+   прижат к низу (justify-content:flex-end) — нижний край тулбара остаётся у
+   якоря независимо от того, раскрыт ли сейчас Apply to Selection popover
+   внутри .overlay-toolbar-stack. */
 body.overlay-body {
   background: transparent;
 }
@@ -299,12 +296,35 @@ body.overlay-body {
   height: 100%;
   display: flex;
   flex-direction: column;
+  align-items: center;
   justify-content: flex-end;
+}
+/* Паддинг = SHADOW_MARGIN в main/index.ts — запас, чтобы box-shadow пилюли/
+   попапа (var(--shadow), blur 20px + offset 6px) не обрезался прямым углом
+   WebContentsView (тот клипает контент строго по своим bounds, а тень
+   рендерится ЗА пределами border-box). main держит эти два числа в синхроне
+   вручную (ResizeObserver меряет ЭТОТ элемент целиком, паддинг входит в
+   getBoundingClientRect автоматически) — при изменении здесь поменяй и там. */
+.overlay-toolbar-stack {
+  display: flex;
+  flex-direction: column;
+  align-items: center;
+  gap: 8px;
+  padding: 24px;
 }
 .popover.overlay-popover {
   position: static;
   inset: auto;
+  /* Ширина overlay-окна теперь адаптивная под самый широкий контент (см.
+     main/index.ts repositionToolbarOverlay) — без явного min-width попап
+     как child с width:100% участвовал бы в этом же вычислении и мог
+     схлопнуться до ширины одной только пилюли тулбара (та обычно уже),
+     сжимая свои переключатели/подписи. min-width гарантирует попапу его
+     собственную комфортную ширину независимо от пилюли; width:100%
+     остаётся верхней границей на случай, если контейнер и так шире (напр.
+     из-за длинной подписи статуса пикера рядом). */
   width: 100%;
+  min-width: 280px;
   max-height: 100%;
   box-sizing: border-box;
 }

@@ -125,10 +125,17 @@ const HIGHLIGHT_CONFIG = {
 // (не held object reference — тот тоже не переживает detach/повторный
 // attach между отдельными кликами пикера).
 const PICK_HIGHLIGHT_ATTR = 'data-w2f-picked'
+// boxShadow даёт свечение вокруг обводки (по запросу пользователя — "чисто
+// визуальный момент, для красоты"): двойная тень — плотная у самого края и
+// размытая шире — читается как glow, а не просто более толстая обводка.
+// box-shadow не требует места в layout (в отличие от filter:drop-shadow на
+// элементе с overflow:hidden — тот обрезался бы), поэтому безопасен на любом
+// произвольном узле страницы.
 const APPLY_PICK_HIGHLIGHT_FUNCTION = `function() {
-  this.setAttribute('${PICK_HIGHLIGHT_ATTR}', JSON.stringify({ outline: this.style.outline, outlineOffset: this.style.outlineOffset }))
+  this.setAttribute('${PICK_HIGHLIGHT_ATTR}', JSON.stringify({ outline: this.style.outline, outlineOffset: this.style.outlineOffset, boxShadow: this.style.boxShadow }))
   this.style.outline = '2px solid #8b5cf6'
   this.style.outlineOffset = '-2px'
+  this.style.boxShadow = '0 0 0 1px rgba(139, 92, 246, 0.5), 0 0 16px 2px rgba(139, 92, 246, 0.55)'
 }`
 // Снимает подсветку с ЛЮБОГО ранее помеченного элемента по атрибуту (не по
 // held reference) — вызывается в начале каждого нового start(), чтобы старая
@@ -139,6 +146,7 @@ const CLEAR_PICK_HIGHLIGHT_SCRIPT = `(() => {
       const prev = JSON.parse(el.getAttribute('${PICK_HIGHLIGHT_ATTR}') || '{}')
       el.style.outline = prev.outline || ''
       el.style.outlineOffset = prev.outlineOffset || ''
+      el.style.boxShadow = prev.boxShadow || ''
     } catch {}
     el.removeAttribute('${PICK_HIGHLIGHT_ATTR}')
   })
@@ -228,6 +236,14 @@ export class ElementPicker {
       // страница уже ушла/элемент исчез — тихо игнорируем.
       await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
       await dbg.sendCommand('Overlay.setInspectMode', { mode: 'searchForNode', highlightConfig: HIGHLIGHT_CONFIG })
+      // Esc-отмена читается ЗДЕСЬ, на webContents самой страницы через
+      // before-input-event, а не обычным DOM `keydown`-листенером в React —
+      // тот сработал бы, только если фокус ОС сейчас именно на renderer'е
+      // приложения (тулбар/правая панель), а не на встроенной странице, на
+      // которую пользователь наводится курсором в процессе пика (живой баг:
+      // "Escape не отменяет пик режим"). before-input-event видит ввод в
+      // ЭТОТ webContents независимо от фокуса остальных окон/панелей.
+      wc.on('before-input-event', this.handleBeforeInput)
       // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
       // this.tooltipMode = await this.getEffectiveTheme()
       // await dbg.sendCommand('Runtime.evaluate', { expression: buildHoverTooltipInstallScript(this.tooltipMode) })
@@ -358,7 +374,12 @@ export class ElementPicker {
   private cleanupDebugger(wc: WebContents): void {
     wc.debugger.removeListener('message', this.handleMessage)
     wc.debugger.removeListener('detach', this.handleDetach)
+    wc.removeListener('before-input-event', this.handleBeforeInput)
     if (wc.debugger.isAttached()) wc.debugger.detach()
+  }
+
+  private handleBeforeInput = (_event: unknown, input: Electron.Input): void => {
+    if (this.active && input.type === 'keyDown' && input.key === 'Escape') void this.stop()
   }
 
   private handleMessage = (_event: unknown, method: string, params: unknown): void => {
@@ -437,25 +458,42 @@ export class ElementPicker {
     return { element: summary, diagnostics: this.lastConversion.diagnostics }
   }
 
+  /**
+   * Живой баг: клик пикером иногда ощутимо "подвисал" перед тем, как элемент
+   * визуально выбирался — раньше ЭТА функция целиком ждала
+   * `captureAndConvert()` (структура + computed style + authored CSS +
+   * СЕТЕВАЯ загрузка байт всех картинок в поддереве, см. domSnapshot.ts) и
+   * только потом ставила подсветку/выходила из pick-режима. Быстрая
+   * обратная связь по клику (подсветка на странице, выход из inspect-режима,
+   * `onStateChange({active:false})` → тулбар гаснет) НЕ должна зависеть от
+   * того, сколько там картинок и с какой скоростью отвечает их CDN — она
+   * идёт СРАЗУ; тяжёлый захват — уже после, тулбар/подсветка к этому моменту
+   * уже отреагировали. debugger при этом ОСТАЁТСЯ подключён до конца захвата
+   * (полный detach — в `finally`, а не в `stop()`, которая отсоединила бы
+   * его раньше времени и уронила бы саму `captureAndConvert`).
+   */
   private async handleInspectNodeRequested(params: InspectNodeRequestedParams): Promise<void> {
     const wc = this.getWebContents()
     if (!wc) return
 
+    this.lastBackendNodeId = params.backendNodeId
+    await this.applyPickHighlight(wc, params.backendNodeId)
     try {
-      this.lastBackendNodeId = params.backendNodeId
+      await wc.debugger.sendCommand('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} })
+    } catch (err) {
+      log.debug('exit inspect mode failed', { message: (err as Error).message })
+    }
+    this.active = false
+    this.onStateChange({ active: false, error: null })
+
+    try {
       const result = await this.captureAndConvert(wc, params.backendNodeId)
       this.lastSelectionResult = result
       this.onSelect(result)
-      // ДО stop() — тот отсоединяет debugger, а CDP-подсветка (Overlay) в
-      // любом случае не переживает отсоединение. Инлайн-outline на самой
-      // странице переживает, поэтому подсветка ставится именно так — иначе
-      // выбор визуально "пропадает" сразу после клика (см. константы выше).
-      await this.applyPickHighlight(wc, params.backendNodeId)
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
     } finally {
-      // Клик фиксирует выбор — как в реальном "Inspect element", pick-режим сам выключается.
-      await this.stop()
+      this.cleanupDebugger(wc)
     }
   }
 

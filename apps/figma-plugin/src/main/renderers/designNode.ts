@@ -138,13 +138,11 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: S
       childNode.x = child.layout.absolute.x
       childNode.y = child.layout.absolute.y
     } else if (frame.layoutMode !== 'NONE') {
-      // FILL только валиден на детях Auto Layout родителя (см. designNode.ts
-      // JSDoc выше и plugin-typings) — 'absolute' дети выше уже выведены из
-      // потока через layoutPositioning:'ABSOLUTE' и сюда не попадают. 'hug'
-      // conversion-engine намеренно не производит (см. resolveSizing в
-      // convertElement.ts — нужен authored CSS, не только computed), поэтому
-      // здесь только fill/fixed.
-      applyChildSizing(childNode as FrameNode | TextNode, child.layout)
+      // FILL/HUG только валидны на детях Auto Layout родителя (см.
+      // designNode.ts JSDoc выше и plugin-typings) — 'absolute' дети выше уже
+      // выведены из потока через layoutPositioning:'ABSOLUTE' и сюда не
+      // попадают.
+      applyChildSizing(childNode, child.layout)
     }
   }
 
@@ -160,10 +158,21 @@ function matchSolidColor(paints: DesignNode['fills'], styleMatch: StyleMatchOpti
   return matchColor(firstSolid.color, styleMatch.catalog, styleMatch.colorMatchSource)
 }
 
-/** node.layout.widthSizing/heightSizing:'fill' → layoutSizingHorizontal/Vertical:'FILL' на реальном Auto Layout ребёнке; иначе 'FIXED' (явно, не полагаясь на дефолт API). */
-function applyChildSizing(childNode: FrameNode | TextNode, layout: LayoutInfo | undefined): void {
-  childNode.layoutSizingHorizontal = layout?.widthSizing === 'fill' ? 'FILL' : 'FIXED'
-  childNode.layoutSizingVertical = layout?.heightSizing === 'fill' ? 'FILL' : 'FIXED'
+/**
+ * node.layout.widthSizing/heightSizing → layoutSizingHorizontal/Vertical на
+ * реальном Auto Layout ребёнке; 'fixed' по умолчанию (явно, не полагаясь на
+ * дефолт API). 'HUG' — валиден в Figma ТОЛЬКО на TEXT-узлах и на FRAME,
+ * который сам является Auto Layout контейнером (`layoutMode !== 'NONE'`);
+ * на плоском фрейме/картинке/векторе без своего Auto Layout API бросает
+ * ошибку — canHug ниже это отсекает, оставляя FIXED (conversion-engine мог
+ * посчитать 'hug' по authored CSS независимо от того, чем узел стал здесь).
+ */
+function applyChildSizing(childNode: SceneNode, layout: LayoutInfo | undefined): void {
+  if (!('layoutSizingHorizontal' in childNode)) return
+  const sizable = childNode as FrameNode | TextNode
+  const canHug = childNode.type === 'TEXT' || (childNode.type === 'FRAME' && childNode.layoutMode !== 'NONE')
+  sizable.layoutSizingHorizontal = layout?.widthSizing === 'fill' ? 'FILL' : layout?.widthSizing === 'hug' && canHug ? 'HUG' : 'FIXED'
+  sizable.layoutSizingVertical = layout?.heightSizing === 'fill' ? 'FILL' : layout?.heightSizing === 'hug' && canHug ? 'HUG' : 'FIXED'
 }
 
 /** Ставит новый узел рядом с текущим viewport и подводит взгляд к нему — см. ТЗ §17. */

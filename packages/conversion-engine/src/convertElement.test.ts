@@ -98,4 +98,23 @@ describe('convertElement', () => {
     expect(convertElement(snapshot({ classes: ['btn-primary'] })).node.name).toBe('btn-primary')
     expect(convertElement(snapshot({ tag: 'button' })).node.name).toBe('BUTTON')
   })
+
+  it('names a text leaf after its own content, not id/class/tag', () => {
+    expect(convertElement(snapshot({ id: 'hero-title', classes: ['title'], text: 'Welcome to the site' })).node.name).toBe(
+      'Welcome to the site'
+    )
+  })
+
+  it('truncates a long text-leaf name with an ellipsis', () => {
+    const long = 'a'.repeat(80)
+    const name = convertElement(snapshot({ text: long })).node.name
+    expect(name.length).toBe(60)
+    expect(name.endsWith('…')).toBe(true)
+  })
+
+  it('skips utility/hashed classes in favor of a semantic one', () => {
+    expect(convertElement(snapshot({ classes: ['tw:flex', 'tw:gap-2', 'card-header'] })).node.name).toBe('card-header')
+    expect(convertElement(snapshot({ classes: ['flex', 'items-center', 'w-full'] })).node.name).toBe('flex')
+    expect(convertElement(snapshot({ classes: ['Button_root__a1b2c'] })).node.name).toBe('Button_root__a1b2c')
+  })
 })

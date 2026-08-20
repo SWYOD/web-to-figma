@@ -15,6 +15,8 @@ import type {
   ScannedAsset,
   SelectionResult,
   TabsSnapshot,
+  UpdateReadyInfo,
+  UpdateStatus,
   ViewBounds
 } from '../shared/types'
 
@@ -88,6 +90,19 @@ const api: Api = {
     const listener = (_e: Electron.IpcRendererEvent, list: RecentSite[]): void => cb(list)
     ipcRenderer.on('recent-sites:updated', listener)
     return () => ipcRenderer.removeListener('recent-sites:updated', listener)
+  },
+
+  checkForUpdate: () => ipcRenderer.invoke('updater:check'),
+  installUpdate: () => ipcRenderer.invoke('updater:install'),
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, status: UpdateStatus): void => cb(status)
+    ipcRenderer.on('updater:status', listener)
+    return () => ipcRenderer.removeListener('updater:status', listener)
+  },
+  onUpdateReady: (cb: (info: UpdateReadyInfo) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, info: UpdateReadyInfo): void => cb(info)
+    ipcRenderer.on('updater:ready', listener)
+    return () => ipcRenderer.removeListener('updater:ready', listener)
   }
 }
 

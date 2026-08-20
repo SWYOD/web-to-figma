@@ -3,6 +3,7 @@ import { Monitor, Moon, Palette, Settings, Sun } from 'lucide-react'
 import { BUILTIN_THEMES, DEFAULT_THEME, Popover, Segmented } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
 import { ThemesGalleryModal } from './ThemesGalleryModal'
+import { UpdateBadge } from './UpdateBadge'
 
 const THEME_MODE_OPTIONS: { value: ThemeMode; label: string; icon: JSX.Element }[] = [
   { value: 'light', label: 'Light', icon: <Sun size={13} /> },
@@ -25,7 +26,9 @@ interface Props {
  * Skill-tree, урезано до единственной релевантной секции ("Внешний вид"):
  * выбор темы (открывает галерею) + Light/Dark/System (был в toolbar, теперь
  * здесь — см. docs/design-system.md §7). Остальные секции Skill-tree
- * (директории, шрифт, механика разблокировки, обновления) нерелевантны.
+ * (директории, шрифт, механика разблокировки) нерелевантны — плашка
+ * обновлений (`UpdateBadge`), наоборот, теперь есть и здесь, тем же
+ * паттерном, что в Skill-tree (см. main/autoUpdater.ts).
  */
 export function SettingsPopover({
   themeMode,
@@ -42,6 +45,7 @@ export function SettingsPopover({
 
   return (
     <div className="settings-anchor">
+      <UpdateBadge />
       <Popover
         open={open}
         onClose={() => setOpen(false)}

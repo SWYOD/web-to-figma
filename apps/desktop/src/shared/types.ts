@@ -227,6 +227,19 @@ export interface AssetScanResult {
   truncated: boolean
 }
 
+/** Статус автообновления (electron-updater, см. main/autoUpdater.ts) — та же
+ *  модель, что в Skill-tree: скачивание автоматическое, установка только по
+ *  явному клику пользователя (см. UpdateBadge.tsx). */
+export interface UpdateStatus {
+  state: 'checking' | 'available' | 'not-available' | 'downloaded' | 'error'
+  version?: string
+  message?: string
+}
+
+export interface UpdateReadyInfo {
+  version: string
+}
+
 /** Одна запись истории посещений встроенного браузера (см. main/recentSites.ts). */
 export interface RecentSite {
   url: string
@@ -301,4 +314,9 @@ export interface Api {
   /** Создаёт в Figma отдельную ноду из ассета (image-fill прямоугольник или
    *  vector) — не полноценный DesignNode-импорт, только сам ассет. */
   assetsSendToFigma: (asset: ScannedAsset) => Promise<ImportResult>
+
+  checkForUpdate: () => Promise<void>
+  installUpdate: () => Promise<void>
+  onUpdateStatus: (cb: (status: UpdateStatus) => void) => () => void
+  onUpdateReady: (cb: (info: UpdateReadyInfo) => void) => () => void
 }

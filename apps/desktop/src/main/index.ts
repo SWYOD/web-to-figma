@@ -18,6 +18,7 @@ import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
 import { OverlayController } from './overlay'
 import { scanPageAssets } from './assetScanner'
+import { registerAutoUpdater, scheduleUpdateChecks } from './autoUpdater'
 import type {
   AppSettings,
   ApplyStylesResult,
@@ -448,9 +449,11 @@ function registerIpc(): void {
 
 app.whenReady().then(async () => {
   registerIpc()
+  registerAutoUpdater()
   await recentSites.load()
   await startBridge()
   createWindow()
+  scheduleUpdateChecks()
 
   app.on('activate', () => {
     if (BrowserWindow.getAllWindows().length === 0) createWindow()

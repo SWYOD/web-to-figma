@@ -13,19 +13,31 @@
  * независимое WebSocket-соединение к тому же локальному брокеру на 3790,
  * параллельно обычному bridge к desktop-приложению Web To Figma).
  *
- * Портированы 31 из 34 команд DesignAgent — все, кроме `get_spec`,
- * `get_design_md`, `export_tokens`: эти три опираются на отдельный, гораздо
- * более объёмный конвейер анализа/экстракции (extract.ts/analyze.ts/
- * serialize.ts/designdoc.ts/tokens.ts у DesignAgent, суммарно ~70KB
- * исходников) — читающий, а не пишущий путь, самостоятельная задача, не
- * портировался сознательно в этом заходе (см. `default` ниже — понятная
- * ошибка вместо молчаливого "Unknown command").
+ * Портированы все 34 команды DesignAgent. Первый заход оставил `get_spec`/
+ * `get_design_md`/`export_tokens` неготовыми — они опираются на отдельный
+ * конвейер анализа/экстракции (extract.ts/intent.ts/analyze.ts/serialize.ts/
+ * designdoc.ts/tokens.ts, ~76KB исходников), портированный тем же способом
+ * (дословно из source map) во второй заход и вынесенный в
+ * `designAgentSpec.ts`, чтобы не раздувать этот файл — см. импорты ниже.
  *
  * Логика внутри команд — оригинальная (не переизобретена по описанию), где
  * это разумно адаптирована под то, что у этого плагина уже нет собственного
  * состояния DesignAgent (аннотации/кэш анализа и т.п.) — но семантика
- * каждой Figma Plugin API операции сохранена как есть.
+ * каждой Figma Plugin API операции сохранена как есть. Кэш анализа
+ * (`AnalysisCache`/`selectionSignature` у оригинала) сознательно не
+ * портирован — чистая перф-оптимизация для собственной авто-обновляющейся
+ * панели DesignAgent, которой у этого плагина нет; здесь `get_spec`/
+ * `get_design_md`/`export_tokens` просто всегда считают заново.
  */
+
+import {
+  analyzeNodeCoreAsync,
+  exportTokens,
+  generateDesignDoc,
+  loadAnnotationCategories,
+  type DesignDocFrame,
+  type TokenFormat
+} from './designAgentSpec'
 
 const CANVAS_GUTTER = 80
 
@@ -71,6 +83,14 @@ let annotationCategoryId: string | undefined
 
 function isSceneNode(node: BaseNode | null): node is SceneNode {
   return Boolean(node && node.type !== 'DOCUMENT' && node.type !== 'PAGE' && node.type !== 'SLICE')
+}
+
+function resolvePrimaryNode(selection: readonly SceneNode[]): SceneNode | null {
+  if (selection.length > 0 && selection[0]) return selection[0]
+  // Dev Mode: fall back to focusedNode when nothing is explicitly selected.
+  const focused = (figma.currentPage as { focusedNode?: SceneNode | null }).focusedNode
+  if (focused && 'visible' in focused) return focused
+  return null
 }
 
 // В dynamic-page режиме getNodeByIdAsync на id инстанс-сублоя ("I…;…") может
@@ -514,9 +534,36 @@ function placeOnPage(node: SceneNode & LayoutMixin, x: unknown, y: unknown): voi
   }
 }
 
-/** Три команды, требующие отдельного, ещё не портированного конвейера
- *  анализа/экстракции DesignAgent — см. докстринг файла. */
-const NOT_YET_PORTED = new Set(['get_spec', 'get_design_md', 'export_tokens'])
+const MAX_DESIGN_MD_FRAMES = 12
+
+const DESIGN_MD_EXPORTABLE_TYPES = new Set(['FRAME', 'SECTION', 'COMPONENT', 'COMPONENT_SET', 'INSTANCE', 'GROUP'])
+
+function selectExportableNodes(selection: readonly SceneNode[]): SceneNode[] {
+  const matching = selection.filter((node) => DESIGN_MD_EXPORTABLE_TYPES.has(node.type))
+  if (matching.length > 0) return matching
+  const primary = resolvePrimaryNode(selection)
+  return primary ? [primary] : []
+}
+
+async function collectDesignMd(): Promise<{ markdown: string; frameCount: number }> {
+  const selection = figma.currentPage.selection
+  const nodes = selectExportableNodes(selection)
+  if (nodes.length === 0) {
+    throw new Error('Select at least one frame, section, or component first.')
+  }
+  const limited = nodes.slice(0, MAX_DESIGN_MD_FRAMES)
+  const omittedFrameCount = nodes.length - limited.length
+  const categories = await loadAnnotationCategories()
+
+  const frames: DesignDocFrame[] = []
+  for (const node of limited) {
+    const core = await analyzeNodeCoreAsync(node, { annotationCategories: categories })
+    frames.push({ core })
+  }
+
+  const markdown = generateDesignDoc(frames, { fileName: figma.root.name || 'Untitled', omittedFrameCount })
+  return { markdown, frameCount: limited.length }
+}
 
 export async function runDesignAgentCommand(command: string, params: Record<string, unknown>): Promise<unknown> {
   switch (command) {
@@ -530,6 +577,24 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
         selectionCount: selection.length,
         primary: primary ? { id: primary.id, name: primary.name, type: primary.type } : null
       }
+    }
+    case 'get_spec': {
+      const primary = resolvePrimaryNode(figma.currentPage.selection)
+      if (!primary) throw new Error('Nothing selected in Figma. Select a frame, component, or section first.')
+      const core = await analyzeNodeCoreAsync(primary)
+      return { selectedNode: core.selectedNode, intent: core.intent, uiSpec: core.uiSpec }
+    }
+    case 'get_design_md':
+      return collectDesignMd()
+    case 'export_tokens': {
+      const allowed: TokenFormat[] = ['css', 'tailwind', 'sass', 'dtcg']
+      const requested = String(params.format ?? 'css').toLowerCase()
+      const format = (allowed as string[]).includes(requested) ? (requested as TokenFormat) : 'css'
+      const primary = resolvePrimaryNode(figma.currentPage.selection)
+      if (!primary) throw new Error('Nothing selected in Figma. Select a frame, component, or section first.')
+      const core = await analyzeNodeCoreAsync(primary)
+      const vars = core.uiSpec.tokenization.resolvedVariables ?? []
+      return { format, count: vars.length, content: exportTokens(vars, format) }
     }
     case 'list_page_nodes': {
       const nodes = figma.currentPage.children.map((child) => ({
@@ -1097,11 +1162,6 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
     case 'console_logs':
       return readConsoleLogs(params)
     default:
-      if (NOT_YET_PORTED.has(command)) {
-        throw new Error(
-          `"${command}" is not implemented in Web To Figma's DesignAgent bridge yet (needs DesignAgent's spec-extraction pipeline, a separate port) — use the original DesignAgent plugin for this one command.`
-        )
-      }
       throw new Error(`Unknown command: ${command}`)
   }
 }

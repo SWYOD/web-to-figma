@@ -49,6 +49,23 @@ export function InspectorPanel(): JSX.Element {
   const showDetails = selection && !pick.active
   const confidence = useMemo(() => computeConfidenceScore(diagnostics), [diagnostics])
   const level = confidenceLevel(confidence)
+  // Схлопываем по `code` — при выборе крупного блока один и тот же диагноз
+  // (напр. "родитель не Flex-контейнер") может повториться на десятках
+  // вложенных узлов; без группировки список превращается в стену
+  // одинаковых строк вместо полезной сводки (реальный отзыв пользователя:
+  // выбор большого блока википедии "засрал всю панель ошибками"). Скор
+  // confidence по-прежнему считается по ПОЛНОМУ недедуплицированному списку
+  // ниже — штраф должен расти с числом затронутых узлов, схлопывание только
+  // для отображения.
+  const groupedDiagnostics = useMemo(() => {
+    const byCode = new Map<string, { code: string; severity: ConversionWarning['severity']; message: string; count: number }>()
+    for (const d of diagnostics) {
+      const existing = byCode.get(d.code)
+      if (existing) existing.count += 1
+      else byCode.set(d.code, { code: d.code, severity: d.severity, message: d.message, count: 1 })
+    }
+    return [...byCode.values()]
+  }, [diagnostics])
 
   return (
     <Panel>
@@ -78,12 +95,13 @@ export function InspectorPanel(): JSX.Element {
               {confidence}% · {LEVEL_LABEL[level]}
             </span>
           </div>
-          {diagnostics.length === 0 ? (
+          {groupedDiagnostics.length === 0 ? (
             <div className="placeholder-hint">Диагностик нет — элемент конвертируется без известных приближений.</div>
           ) : (
-            diagnostics.map((d, i) => (
-              <div key={i} className={`diagnostic-row ${d.severity}`}>
+            groupedDiagnostics.map((d) => (
+              <div key={d.code} className={`diagnostic-row ${d.severity}`}>
                 {d.message}
+                {d.count > 1 && <span className="diagnostic-count"> × {d.count}</span>}
               </div>
             ))
           )}

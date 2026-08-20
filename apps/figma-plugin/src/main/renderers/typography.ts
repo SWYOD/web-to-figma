@@ -43,7 +43,12 @@ export function toTextAlign(align: TypographyInfo['textAlign']): TextNode['textA
   }
 }
 
-export function toTextCase(textCase: TypographyInfo['textCase']): TextNode['textCase'] {
+// Возвращаемый тип — узкий TextCase/TextDecoration (БЕЗ figma.mixed), не
+// TextNode['textCase']/['textDecoration'] (тот шире, т.к. ЧТЕНИЕ свойства с
+// узла может дать figma.mixed) — функции сами никогда mixed не производят,
+// а setRangeTextCase/setRangeTextDecoration принимают только узкий тип
+// (см. createMixedTextNode в textNode.ts).
+export function toTextCase(textCase: TypographyInfo['textCase']): TextCase {
   switch (textCase) {
     case 'upper':
       return 'UPPER'
@@ -56,7 +61,7 @@ export function toTextCase(textCase: TypographyInfo['textCase']): TextNode['text
   }
 }
 
-export function toTextDecoration(decoration: TypographyInfo['textDecoration']): TextNode['textDecoration'] {
+export function toTextDecoration(decoration: TypographyInfo['textDecoration']): TextDecoration {
   switch (decoration) {
     case 'underline':
       return 'UNDERLINE'

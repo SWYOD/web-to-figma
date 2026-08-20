@@ -55,7 +55,7 @@ export function LeftSidebar({
   return (
     <Panel>
       <PanelHead>
-        <PanelTitle>Recent</PanelTitle>
+        <PanelTitle>Недавние</PanelTitle>
       </PanelHead>
 
       <div className="recent-scroll">

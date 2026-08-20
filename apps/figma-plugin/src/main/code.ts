@@ -3,6 +3,7 @@ import type { DesignDocument } from '@web-to-figma/design-ast'
 import { placeNearViewport, renderDesignNode } from './renderers/designNode'
 import { applyStylesToSelection, type ApplyStylesTargets } from './renderers/applyStyles'
 import type { ColorMatchSource } from './renderers/styleMatching'
+import { createAssetNode, type PlaceAssetPayload } from './renderers/asset'
 
 /**
  * Main sandbox плагина — максимально тонкий (см. docs/architecture.md §3,
@@ -34,6 +35,7 @@ type UiToMainMessage =
       colorMatchSource?: ColorMatchSource
     }
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
+  | ({ type: 'place-asset'; requestId: string } & PlaceAssetPayload)
 
 figma.ui.onmessage = async (msg: UiToMainMessage) => {
   if (msg.type === 'get-stored-token') {
@@ -59,6 +61,21 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
     } catch (err) {
       figma.ui.postMessage({
         type: 'import-result',
+        requestId: msg.requestId,
+        ok: false,
+        error: err instanceof Error ? err.message : String(err)
+      })
+    }
+    return
+  }
+  if (msg.type === 'place-asset') {
+    try {
+      const created = createAssetNode(msg)
+      placeNearViewport(created)
+      figma.ui.postMessage({ type: 'place-asset-result', requestId: msg.requestId, ok: true, nodeId: created.id })
+    } catch (err) {
+      figma.ui.postMessage({
+        type: 'place-asset-result',
         requestId: msg.requestId,
         ok: false,
         error: err instanceof Error ? err.message : String(err)

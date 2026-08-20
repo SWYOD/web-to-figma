@@ -2,9 +2,14 @@
 <html lang="ru">
   <head>
     <meta charset="UTF-8" />
+    <!-- img-src разрешает data:/http(s) отдельно от default-src 'self' — иначе
+         тихо блокируются и превью ассетов (data: URL, main/assetScanner.ts),
+         и фавиконки недавних сайтов (реальные https-адреса из page-favicon-updated,
+         browser.ts) — оба обнаружены сломанными молча (img просто не рендерится,
+         без видимой ошибки в UI) при живой проверке новой панели ассетов. -->
     <meta
       http-equiv="Content-Security-Policy"
-      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'"
+      content="default-src 'self'; script-src 'self'; style-src 'self' 'unsafe-inline'; img-src 'self' data: https: http:"
     />
     <title>Web To Figma</title>
   </head>

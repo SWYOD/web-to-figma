@@ -111,6 +111,27 @@ export const ApplyStylesMessageSchema = z.object({
   })
 })
 
+/**
+ * Панель ассетов (по запросу пользователя — сканирует ВСЮ страницу, не
+ * привязано к выбору через Inspector) — "отправить в Figma" один конкретный
+ * ассет. Самодостаточно (не ссылается на DesignDocument.assets — тот только
+ * для полноценного дерева импорта): полный `data:` URL прямо в payload, тот
+ * же формат, что `ScannedAsset.data` в desktop (см. shared/types.ts) —
+ * панель живёт только в desktop, 256KB-лимит инлайна из AssetCollector сюда
+ * не применяется, но каждый ассет уже ограничен MAX_ASSET_BYTES при сканировании.
+ */
+export const PlaceAssetMessageSchema = z.object({
+  ...base,
+  kind: z.literal('place-asset'),
+  payload: z.object({
+    assetKind: z.enum(['icon', 'image']),
+    mimeType: z.string(),
+    width: z.number().optional(),
+    height: z.number().optional(),
+    data: z.string()
+  })
+})
+
 export const ResponseMessageSchema = z.object({
   ...base,
   kind: z.literal('response'),
@@ -140,6 +161,7 @@ export const BridgeMessageSchema = z.discriminatedUnion('kind', [
   ImportAssetMessageSchema,
   ImportAssetsMessageSchema,
   ApplyStylesMessageSchema,
+  PlaceAssetMessageSchema,
   ResponseMessageSchema,
   ErrorMessageSchema
 ])
@@ -154,6 +176,7 @@ export type ImportNodeMessage = z.infer<typeof ImportNodeMessageSchema>
 export type ImportAssetMessage = z.infer<typeof ImportAssetMessageSchema>
 export type ImportAssetsMessage = z.infer<typeof ImportAssetsMessageSchema>
 export type ApplyStylesMessage = z.infer<typeof ApplyStylesMessageSchema>
+export type PlaceAssetMessage = z.infer<typeof PlaceAssetMessageSchema>
 export type ResponseMessage = z.infer<typeof ResponseMessageSchema>
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>
 export type BridgeMessage = z.infer<typeof BridgeMessageSchema>

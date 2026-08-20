@@ -79,7 +79,7 @@ describe('convertElement — text leaves (fixture: pure-text leaf, e.g. <h3>/<p>
   })
 })
 
-describe('convertElement — mixed inline content (fixture: <p>Some <b>x</b> text</p>)', () => {
+describe('convertElement — mixed inline content, extraction failed (fixture: <p>text <img> text</p>)', () => {
   it('flags mixed-inline-text-not-captured when droppedInlineText is set, and does not become type:text', () => {
     const { node, diagnostics } = convertElement(
       snapshot({
@@ -93,5 +93,67 @@ describe('convertElement — mixed inline content (fixture: <p>Some <b>x</b> tex
     // The nested pure-text <b> still converts normally as its own text child.
     expect(node.children?.[0]?.type).toBe('text')
     expect(node.children?.[0]?.text).toBe('x')
+  })
+})
+
+describe('convertElement — mixed inline content, extraction succeeded (fixture: <p>Some <b>x</b> text</p> → textRuns)', () => {
+  it('produces type:text with textRuns (not the plain text field) when snapshot.textRuns is present', () => {
+    const { node } = convertElement(
+      snapshot({
+        text: undefined,
+        textRuns: [
+          { text: 'Some ', style: { color: 'rgb(0, 0, 0)', 'font-weight': '400' } },
+          { text: 'x', style: { color: 'rgb(0, 0, 0)', 'font-weight': '700' } },
+          { text: ' text', style: { color: 'rgb(0, 0, 0)', 'font-weight': '400' } }
+        ]
+      })
+    )
+    expect(node.type).toBe('text')
+    expect(node.text).toBeUndefined()
+    expect(node.textRuns).toHaveLength(3)
+    expect(node.textRuns?.map((r) => r.text)).toEqual(['Some ', 'x', ' text'])
+  })
+
+  it('does NOT flag mixed-inline-text-not-captured — the content was actually captured, not dropped', () => {
+    const { diagnostics } = convertElement(
+      snapshot({
+        text: undefined,
+        textRuns: [{ text: 'x', style: {} }]
+      })
+    )
+    expect(diagnostics.some((d) => d.code === 'mixed-inline-text-not-captured')).toBe(false)
+  })
+
+  it('parses each run typography/color independently from its OWN style, not the container style', () => {
+    const { node } = convertElement(
+      snapshot({
+        text: undefined,
+        computedStyle: { 'font-weight': '400', color: 'rgb(0, 0, 0)' },
+        textRuns: [
+          { text: 'bold red ', style: { 'font-weight': '700', color: 'rgb(255, 0, 0)', 'font-family': 'Inter, sans-serif', 'font-size': '14px' } },
+          { text: 'plain', style: { 'font-weight': '400', color: 'rgb(0, 0, 0)', 'font-family': 'Inter, sans-serif', 'font-size': '14px' } }
+        ]
+      })
+    )
+    expect(node.textRuns?.[0]?.typography.fontWeight).toBe(700)
+    expect(node.textRuns?.[0]?.color).toEqual({ r: 1, g: 0, b: 0, a: 1 })
+    expect(node.textRuns?.[1]?.typography.fontWeight).toBe(400)
+    expect(node.textRuns?.[1]?.color).toEqual({ r: 0, g: 0, b: 0, a: 1 })
+  })
+
+  it('validates against DesignNodeSchema', () => {
+    const { node } = convertElement(snapshot({ text: undefined, textRuns: [{ text: 'x', style: {} }] }))
+    expect(DesignNodeSchema.safeParse(node).success).toBe(true)
+  })
+
+  it('never produces children — the flattened inline elements are already inside textRuns, not separate nodes', () => {
+    const { node } = convertElement(
+      snapshot({
+        text: undefined,
+        textRuns: [{ text: 'x', style: {} }],
+        children: [snapshot({ tag: 'b', text: 'nested' })]
+      })
+    )
+    expect(node.children).toBeUndefined()
   })
 })

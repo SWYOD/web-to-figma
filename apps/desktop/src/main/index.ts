@@ -1,19 +1,28 @@
-import { app, BrowserWindow, ipcMain, shell } from 'electron'
+import { app, BrowserWindow, clipboard, ipcMain, nativeImage, shell } from 'electron'
 // import { nativeTheme, type Rectangle } from 'electron' // нужно, если включить getEffectiveTheme/getViewScreenBounds ниже
 import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
 import { nanoid } from 'nanoid'
 import { BridgeServer } from '@web-to-figma/bridge-protocol/server'
-import { createMessage, type ApplyStylesMessage, type ErrorMessage, type ImportNodeMessage, type ResponseMessage } from '@web-to-figma/bridge-protocol'
+import {
+  createMessage,
+  type ApplyStylesMessage,
+  type ErrorMessage,
+  type ImportNodeMessage,
+  type PlaceAssetMessage,
+  type ResponseMessage
+} from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
 import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
 import { OverlayController } from './overlay'
+import { scanPageAssets } from './assetScanner'
 import type {
   AppSettings,
   ApplyStylesResult,
   ApplyStylesTargets,
+  AssetScanResult,
   BridgeInfo,
   ColorMatchSource,
   ImportResult,
@@ -21,6 +30,7 @@ import type {
   OverlaySize,
   PickState,
   RecentSite,
+  ScannedAsset,
   SelectionResult,
   TabsSnapshot,
   ViewBounds
@@ -384,6 +394,52 @@ function registerIpc(): void {
       if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
       const payload = (response as ResponseMessage).payload as { appliedTo?: number; skipped?: string[] }
       return { ok: true, appliedTo: payload.appliedTo, skipped: payload.skipped }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  // Панель ассетов (по запросу пользователя) — сканирует ВСЮ активную
+  // вкладку, не привязано к текущему выбору через Inspector (см. assetScanner.ts).
+  ipcMain.handle('assets:scan', async (): Promise<AssetScanResult> => {
+    const wc = browserController?.getWebContents()
+    if (!wc) return { assets: [], truncated: false }
+    return scanPageAssets(wc)
+  })
+
+  ipcMain.handle('assets:copy', (_e, asset: ScannedAsset): ImportResult => {
+    try {
+      if (asset.mimeType === 'image/svg+xml') {
+        // Копировать растровым изображением бессмысленно — это же исходный
+        // код, а не пиксели; текстом можно вставить куда угодно (в код,
+        // в Figma через "paste as SVG", и т.д.).
+        const commaIndex = asset.data.indexOf(',')
+        const markup = Buffer.from(asset.data.slice(commaIndex + 1), 'base64').toString('utf-8')
+        clipboard.writeText(markup)
+      } else {
+        clipboard.writeImage(nativeImage.createFromDataURL(asset.data))
+      }
+      return { ok: true }
+    } catch (err) {
+      return { ok: false, error: (err as Error).message }
+    }
+  })
+
+  ipcMain.handle('assets:send-to-figma', async (_e, asset: ScannedAsset): Promise<ImportResult> => {
+    if (!bridgeServer || bridgeServer.connectionCount === 0) {
+      return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+    }
+    const message = createMessage<PlaceAssetMessage>('place-asset', {
+      assetKind: asset.kind,
+      mimeType: asset.mimeType,
+      width: asset.width,
+      height: asset.height,
+      data: asset.data
+    })
+    try {
+      const response = await bridgeServer.request(message)
+      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+      return { ok: true }
     } catch (err) {
       return { ok: false, error: (err as Error).message }
     }

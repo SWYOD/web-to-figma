@@ -197,6 +197,36 @@ export interface ApplyStylesResult {
   error?: string
 }
 
+/** Один ассет, найденный при сканировании всей страницы (см. main/assetScanner.ts,
+ *  AssetsPanel.tsx) — не то же самое, что `DesignAsset` из @web-to-figma/design-ast:
+ *  тот заточен под транспорт в DesignDocument (256KB inline-лимит, дедуп в
+ *  рамках одного импорта), этот — под просмотр в панели (всегда inline,
+ *  живёт только в desktop, дедуп в рамках одного скана страницы). */
+export interface ScannedAsset {
+  id: string
+  /** SVG почти всегда иконка/логотип, растр — почти всегда фото/иллюстрация
+   *  (см. assetScanner.ts) — простой предсказуемый дефолт классификации. */
+  kind: 'icon' | 'image'
+  mimeType: string
+  width?: number
+  height?: number
+  sourceUrl?: string
+  /** Готовый data: URL — прямо в `<img src>`, не нужно отдельно декодировать. */
+  data: string
+  /** Уменьшенная копия `data` для превью в сетке (см. BrowserPane.makeThumbnail) —
+   *  растровые ассеты сканер отдаёт БЕЗ уменьшения (до 8MB, чтобы "Отправить в
+   *  Figma" получал оригинал), рендерить исходные байты в 72px-тайле дорого при
+   *  десятках/сотнях тайлов (декод полноразмерного изображения ради миниатюры).
+   *  Заполняется на клиенте после скана, до иконок не относится (SVG дешёвы). */
+  thumbnail?: string
+}
+
+export interface AssetScanResult {
+  assets: ScannedAsset[]
+  /** true — на странице было больше MAX_ASSETS элементов, часть не попала в результат. */
+  truncated: boolean
+}
+
 /** Одна запись истории посещений встроенного браузера (см. main/recentSites.ts). */
 export interface RecentSite {
   url: string
@@ -260,4 +290,15 @@ export interface Api {
   recentSitesGet: () => Promise<RecentSite[]>
   recentSitesRemove: (url: string) => Promise<void>
   onRecentSitesUpdated: (cb: (list: RecentSite[]) => void) => () => void
+
+  /** Сканирует ВСЮ текущую активную вкладку (не поддерево выбора через
+   *  Inspector) на иконки/картинки — см. main/assetScanner.ts. */
+  assetsScan: () => Promise<AssetScanResult>
+  /** Копирует ассет в системный буфер — картинку как изображение
+   *  (`clipboard.writeImage`), SVG как текст разметки (`clipboard.writeText`,
+   *  копировать растровым изображением бессмысленно — это же исходный код). */
+  assetsCopy: (asset: ScannedAsset) => Promise<ImportResult>
+  /** Создаёт в Figma отдельную ноду из ассета (image-fill прямоугольник или
+   *  vector) — не полноценный DesignNode-импорт, только сам ассет. */
+  assetsSendToFigma: (asset: ScannedAsset) => Promise<ImportResult>
 }

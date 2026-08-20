@@ -20,6 +20,8 @@ type MainToUiMessage =
   | { type: 'import-result'; requestId: string; ok: false; error: string }
   | { type: 'apply-result'; requestId: string; ok: true; appliedTo: number; skipped: string[] }
   | { type: 'apply-result'; requestId: string; ok: false; error: string }
+  | { type: 'place-asset-result'; requestId: string; ok: true; nodeId: string }
+  | { type: 'place-asset-result'; requestId: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
@@ -117,6 +119,12 @@ function Plugin(): JSX.Element {
             createResponse<ErrorMessage>('error', msg.requestId, { code: 'APPLY_STYLES_FAILED', message: msg.error })
           )
         }
+      } else if (msg.type === 'place-asset-result') {
+        if (msg.ok) {
+          clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
+        } else {
+          clientRef.current?.send(createResponse<ErrorMessage>('error', msg.requestId, { code: 'PLACE_ASSET_FAILED', message: msg.error }))
+        }
       }
     }
     window.addEventListener('message', onMessage)
@@ -184,6 +192,16 @@ function Plugin(): JSX.Element {
             requestId: message.id,
             document: message.payload.document as DesignDocument,
             targets: message.payload.targets
+          })
+        } else if (message.kind === 'place-asset') {
+          postToMain({
+            type: 'place-asset',
+            requestId: message.id,
+            assetKind: message.payload.assetKind,
+            mimeType: message.payload.mimeType,
+            width: message.payload.width,
+            height: message.payload.height,
+            data: message.payload.data
           })
         }
       }

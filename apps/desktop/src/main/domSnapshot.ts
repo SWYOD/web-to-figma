@@ -15,6 +15,34 @@ const ELEMENT_NODE = 1
 const TEXT_NODE = 3
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'LINK', 'META', 'NOSCRIPT'])
 
+/** "Чисто инлайновые" теги форматирования — смешанный контент разворачивается
+ *  в стилизованные диапазоны ОДНОГО TextNode, только если ВСЕ вложенные
+ *  элементы из этого списка (см. extractTextRuns). Картинки/блочные
+ *  элементы/таблицы и т.п. — не сюда: Figma TextNode не умеет встроенные
+ *  картинки внутри текста, поэтому такой контент сознательно остаётся на
+ *  старом пути (droppedInlineText, вложенные элементы — отдельными узлами). */
+const INLINE_TEXT_TAGS = new Set([
+  'B',
+  'STRONG',
+  'I',
+  'EM',
+  'U',
+  'S',
+  'STRIKE',
+  'SPAN',
+  'A',
+  'SMALL',
+  'MARK',
+  'SUB',
+  'SUP',
+  'CODE',
+  'ABBR',
+  'CITE',
+  'Q',
+  'TIME',
+  'LABEL'
+])
+
 /** figma.createImage() принимает только эти форматы — см. Figma Plugin API. */
 const SUPPORTED_RASTER_MIME = new Set(['image/png', 'image/jpeg', 'image/gif'])
 
@@ -58,35 +86,113 @@ export interface SnapshotResult {
 }
 
 /**
- * Прямой текст элемента — только когда он "чистый текстовый лист" (все
- * прямые дети — DOM-текстовые узлы, ни одного дочернего элемента). Смешанный
- * контент (текст + вложенные теги, напр. `<p>Some <b>x</b> text</p>`)
- * намеренно не материализуется как текст целиком (нужны стилизованные
- * диапазоны внутри одного TextNode — отдельная, более сложная задача) —
- * вложенные элементы (здесь `<b>`) конвертируются как обычно сами по себе,
- * а потерянный "голый" текст вокруг них помечается `droppedInlineText` для
- * diagnostic, а не тихо пропадает без следа. Пробелы нормализуются как в
- * CSS `white-space:normal` (частый случай, а не точный расчёт per-node
- * computed white-space — упрощение, задокументировано в conversion-rules.md).
+ * Прямой текст ИЛИ смешанный контент элемента.
+ *
+ * Чистый текстовый лист (все прямые дети — DOM-текстовые узлы, ни одного
+ * дочернего элемента) — как раньше, `text`.
+ *
+ * Смешанный контент (текст + вложенные теги, напр. `<p>Some <b>x</b> text</p>`,
+ * а также случай "только вложенные инлайновые теги без голого текста вокруг",
+ * напр. `<p><b>x</b> <i>y</i></p>`) — пробуем развернуть ВСЁ поддерево в
+ * плоский список стилизованных диапазонов (`textRuns`, см. extractTextRuns).
+ * Получается, только если КАЖДЫЙ вложенный элемент — "чисто инлайновый" тег
+ * форматирования (INLINE_TEXT_TAGS); если среди вложенных попался тег вне
+ * этого списка (картинка, блочный элемент и т.п.) — откат на старое
+ * поведение: вложенные элементы конвертируются как обычно сами по себе, а
+ * потерянный "голый" прямой текст вокруг них помечается `droppedInlineText`
+ * для diagnostic, а не тихо пропадает без следа.
+ *
+ * Пробелы нормализуются как в CSS `white-space:normal` (частый случай, а не
+ * точный расчёт per-node computed white-space — упрощение, задокументировано
+ * в conversion-rules.md).
  */
-function extractDirectText(cdpNode: CdpNode): { text?: string; droppedInlineText?: boolean } {
+function extractTextContent(
+  cdpNode: CdpNode,
+  dataByBackendId: Map<number, FetchedNodeData>
+): { text?: string; textRuns?: { text: string; style: Record<string, string> }[]; droppedInlineText?: boolean } {
   let hasElementChild = false
-  let rawText = ''
-  let hasNonWhitespaceText = false
+  let hasDirectText = false
 
   for (const child of cdpNode.children ?? []) {
     if (child.nodeType === ELEMENT_NODE && !SKIP_TAGS.has(child.nodeName)) {
       hasElementChild = true
-    } else if (child.nodeType === TEXT_NODE) {
-      const value = child.nodeValue ?? ''
-      rawText += value
-      if (value.trim() !== '') hasNonWhitespaceText = true
+    } else if (child.nodeType === TEXT_NODE && (child.nodeValue ?? '').trim() !== '') {
+      hasDirectText = true
     }
   }
 
-  if (!hasNonWhitespaceText) return {}
-  if (hasElementChild) return { droppedInlineText: true }
-  return { text: rawText.replace(/\s+/g, ' ').trim() }
+  if (!hasElementChild) {
+    if (!hasDirectText) return {}
+    const rawText = (cdpNode.children ?? [])
+      .filter((c) => c.nodeType === TEXT_NODE)
+      .map((c) => c.nodeValue ?? '')
+      .join('')
+    return { text: rawText.replace(/\s+/g, ' ').trim() }
+  }
+
+  const rawRuns = extractTextRuns(cdpNode, dataByBackendId)
+  if (rawRuns === null) return hasDirectText ? { droppedInlineText: true } : {}
+  const trimmed = trimRunsEdges(rawRuns)
+  if (trimmed.length === 0) return {}
+  return { textRuns: trimmed }
+}
+
+/**
+ * Разворачивает смешанный контент в плоский список `{text, style}` прогонов
+ * (DOM-порядок) — null, если среди вложенных элементов встретился НЕ "чисто
+ * инлайновый" тег (см. INLINE_TEXT_TAGS), тогда вызывающая сторона
+ * откатывается на droppedInlineText. Стиль каждого прогона — computed style
+ * ЕГО НЕПОСРЕДСТВЕННОГО родителя (тот, что содержит текстовый узел
+ * напрямую) — уже с учётом полного CSS-каскада (браузер сам резолвит
+ * наследование в CDP computed style), парсить каскад вручную не нужно.
+ * Данные по каждому узлу уже собраны обычным обходом дерева в
+ * buildSnapshotTree (INLINE_TEXT_TAGS не входят в SKIP_TAGS, значит уже
+ * прошли через тот же getBoxModel/getComputedStyleForNode round-trip, что и
+ * любой другой элемент) — новых CDP-вызовов не требуется.
+ */
+function extractTextRuns(
+  cdpNode: CdpNode,
+  dataByBackendId: Map<number, FetchedNodeData>
+): { text: string; style: Record<string, string> }[] | null {
+  const ownStyle = dataByBackendId.get(cdpNode.backendNodeId)?.style ?? {}
+  const runs: { text: string; style: Record<string, string> }[] = []
+
+  for (const child of cdpNode.children ?? []) {
+    if (child.nodeType === TEXT_NODE) {
+      const value = (child.nodeValue ?? '').replace(/\s+/g, ' ')
+      if (value !== '') runs.push({ text: value, style: ownStyle })
+      continue
+    }
+    if (child.nodeType !== ELEMENT_NODE) continue
+    const tag = child.nodeName.toUpperCase()
+    if (SKIP_TAGS.has(tag)) continue
+    if (tag === 'BR') {
+      runs.push({ text: '\n', style: ownStyle })
+      continue
+    }
+    if (!INLINE_TEXT_TAGS.has(tag)) return null
+    const nested = extractTextRuns(child, dataByBackendId)
+    if (nested === null) return null
+    runs.push(...nested)
+  }
+  return runs
+}
+
+/** Внутренние прогоны собираются с сохранённым (не обрезанным) пробелом на
+ *  границах — иначе "Some " перед `<b>` потеряло бы разделяющий пробел
+ *  перед склейкой с "bold". Обрезаем только КРАЙНИЕ пробелы всего
+ *  развёрнутого текста целиком (как браузер обрезает видимый текст блока по
+ *  краям), затем убираем прогоны, опустевшие после этого. */
+function trimRunsEdges(
+  runs: { text: string; style: Record<string, string> }[]
+): { text: string; style: Record<string, string> }[] {
+  if (runs.length === 0) return runs
+  const result = runs.map((r) => ({ ...r }))
+  const first = result[0]!
+  first.text = first.text.replace(/^\s+/, '')
+  const last = result[result.length - 1]!
+  last.text = last.text.replace(/\s+$/, '')
+  return result.filter((r) => r.text !== '')
 }
 
 function getAttr(node: CdpNode, name: string): string | undefined {
@@ -270,9 +376,15 @@ function buildNode(
   for (let i = 0; i < attrs.length; i += 2) attrMap.set(attrs[i] as string, attrs[i + 1] ?? '')
 
   const asset = assetByBackendId.get(cdpNode.backendNodeId)
+  const directText = asset ? {} : extractTextContent(cdpNode, dataByBackendId)
   const children: DomSnapshotNode[] = []
 
-  if (!asset || asset.kind !== 'svg') {
+  // Узел с успешно развёрнутыми textRuns не нуждается в отдельных дочерних
+  // DomSnapshotNode для тех же инлайновых тегов — они уже вошли в textRuns
+  // как стилизованные диапазоны (convertElement.ts всё равно отбросил бы
+  // `children` для текстового листа, но не строить их вообще дешевле и
+  // яснее, чем строить и тут же выбрасывать).
+  if ((!asset || asset.kind !== 'svg') && !directText.textRuns) {
     // CDP отдаёт pseudoElements в DOM-порядке (::before раньше ::after) — сохраняем как есть.
     for (const pseudo of cdpNode.pseudoElements ?? []) {
       const pseudoData = dataByBackendId.get(pseudo.backendNodeId)
@@ -289,8 +401,6 @@ function buildNode(
       if (converted) children.push(converted)
     }
   }
-
-  const directText = asset ? {} : extractDirectText(cdpNode)
 
   return {
     tag: pseudoType ? `::${pseudoType}` : cdpNode.nodeName.toLowerCase(),

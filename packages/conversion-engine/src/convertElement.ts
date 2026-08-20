@@ -1,5 +1,5 @@
 import { nanoid } from 'nanoid'
-import type { ConversionWarning, CornerRadius, DesignNode, LayoutInfo, Paint, StrokeInfo, TypographyInfo } from '@web-to-figma/design-ast'
+import type { ConversionWarning, CornerRadius, DesignNode, LayoutInfo, Paint, StrokeInfo, TextRun, TypographyInfo } from '@web-to-figma/design-ast'
 import { isTransparent, parseColor } from './color.js'
 import { parseLength } from './length.js'
 import { parseBoxShadow } from './shadow.js'
@@ -38,10 +38,14 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   const id = nanoid()
   const style = snapshot.computedStyle
 
-  // Текстовый лист (snapshot.text задан только для чистого текста без вложенных
-  // элементов, см. domSnapshot.ts extractDirectText) обходит asset ТОЛЬКО когда
-  // asset не задан — приоритет image/vector сохраняется, если оба сигнала пришли.
-  const isTextLeaf = !snapshot.asset && snapshot.text !== undefined
+  // Текстовый лист — snapshot.text (чистый текст без вложенных элементов) ИЛИ
+  // snapshot.textRuns (смешанный контент, успешно развёрнутый в стилизованные
+  // диапазоны, см. domSnapshot.ts extractTextContent) — оба обходят asset
+  // ТОЛЬКО когда asset не задан — приоритет image/vector сохраняется, если
+  // оба сигнала пришли.
+  const hasPlainText = !snapshot.asset && snapshot.text !== undefined
+  const hasTextRuns = !snapshot.asset && snapshot.textRuns !== undefined && snapshot.textRuns.length > 0
+  const isTextLeaf = hasPlainText || hasTextRuns
   const type = snapshot.asset ? (snapshot.asset.kind === 'svg' ? 'vector' : 'image') : isTextLeaf ? 'text' : 'frame'
 
   // Для текстового узла Figma-поле `fills` — это цвет ГЛИФОВ (CSS `color`),
@@ -106,6 +110,18 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     ? undefined
     : snapshot.children?.map((child) => convertNode(child, diagnostics, { mode: layout.mode, align: layout.align }))
 
+  // Каждый прогон парсится ТЕМИ ЖЕ функциями, что и typography/цвет узла
+  // целиком (parseTypography/parseColor) — единая точка разбора CSS→AST,
+  // просто применённая к computed style конкретного инлайн-элемента вместо
+  // computed style контейнера.
+  const textRuns: TextRun[] | undefined = hasTextRuns
+    ? snapshot.textRuns!.map((run) => ({
+        text: run.text,
+        typography: parseTypography(run.style),
+        color: parseColor(run.style['color'] ?? 'rgb(0, 0, 0)')
+      }))
+    : undefined
+
   const node: DesignNode = {
     id,
     type,
@@ -114,7 +130,8 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     layout,
     typography: parseTypography(style),
     ...(snapshot.asset ? { asset: { assetId: snapshot.asset.assetId } } : {}),
-    ...(isTextLeaf ? { text: snapshot.text } : {}),
+    ...(hasPlainText ? { text: snapshot.text } : {}),
+    ...(textRuns ? { textRuns } : {}),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),
     ...(effects.length > 0 ? { effects } : {}),

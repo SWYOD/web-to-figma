@@ -4,6 +4,7 @@ import type {
   AppSettings,
   ApplyStylesResult,
   ApplyStylesTargets,
+  AssetScanResult,
   BridgeStatusEvent,
   ColorMatchSource,
   ImportResult,
@@ -11,6 +12,7 @@ import type {
   OverlaySize,
   PickState,
   RecentSite,
+  ScannedAsset,
   SelectionResult,
   TabsSnapshot,
   ViewBounds
@@ -75,6 +77,10 @@ const api: Api = {
     ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
     ipcRenderer.invoke('inspector:apply-styles', targets),
+
+  assetsScan: (): Promise<AssetScanResult> => ipcRenderer.invoke('assets:scan'),
+  assetsCopy: (asset: ScannedAsset): Promise<ImportResult> => ipcRenderer.invoke('assets:copy', asset),
+  assetsSendToFigma: (asset: ScannedAsset): Promise<ImportResult> => ipcRenderer.invoke('assets:send-to-figma', asset),
 
   recentSitesGet: () => ipcRenderer.invoke('recent-sites:get'),
   recentSitesRemove: (url: string) => ipcRenderer.invoke('recent-sites:remove', url),

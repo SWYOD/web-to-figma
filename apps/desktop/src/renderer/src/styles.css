@@ -345,6 +345,295 @@ body.overlay-body {
   flex: 0 0 auto;
 }
 
+/* ── Нижняя панель центральной области (см. BottomPanel.tsx) ───────────── */
+.bottom-panel {
+  flex: 0 0 auto;
+  /* min-width:0 — без него содержимое сетки ассетов (много тайлов подряд)
+     не переносится по строкам и вместо этого раздувает ширину всей панели,
+     сплющивая соседние левую/правую панели и не давая ужать окно обратно —
+     классическая ловушка flex-item'а с auto min-width, содержащего CSS Grid
+     с auto-fill (see: живая проверка после отзыва пользователя). */
+  min-width: 0;
+  display: flex;
+  flex-direction: column;
+  border-top: 1px solid var(--border);
+  background: var(--surface);
+}
+.bottom-panel.maximized {
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.bottom-panel-resizer {
+  height: 6px;
+  flex: 0 0 auto;
+  cursor: row-resize;
+  position: relative;
+}
+.bottom-panel-resizer::after {
+  content: '';
+  position: absolute;
+  top: 50%;
+  left: 50%;
+  transform: translate(-50%, -50%);
+  width: 32px;
+  height: 3px;
+  border-radius: 2px;
+  background: transparent;
+  transition: background 0.12s;
+}
+.bottom-panel-resizer:hover::after {
+  background: var(--accent);
+}
+.bottom-panel-header {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  padding: 0 6px 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+/* Свёрнутая полоса — кликабельна целиком (разворачивает), не только по
+   маленькому шеврону (по запросу пользователя, мелкая мишень была неудобной). */
+.bottom-panel-header.collapsed {
+  cursor: pointer;
+}
+.bottom-panel-header.collapsed:hover {
+  background: var(--hover);
+}
+.bottom-panel-tabs {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  height: 100%;
+}
+.bottom-panel-tab {
+  height: 100%;
+  padding: 0 10px;
+  font-size: 12px;
+  color: var(--text-faint);
+  border-bottom: 2px solid transparent;
+  transition: color 0.12s, border-color 0.12s;
+}
+.bottom-panel-tab:hover {
+  color: var(--text-dim);
+}
+.bottom-panel-tab.active {
+  color: var(--text);
+  border-bottom-color: var(--accent);
+}
+.bottom-panel-header-actions {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+}
+.bottom-panel-body {
+  min-height: 0;
+  /* См. .bottom-panel — тот же паттерн, без него содержимое сетки ниже
+     форсирует ширину body/панели вместо переноса по строкам. */
+  min-width: 0;
+  overflow: hidden;
+  display: flex;
+  flex-direction: column;
+}
+
+/* ── Панель ассетов (иконки/картинки всей страницы) ─────────────────────── */
+.assets-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.assets-page-group {
+  display: flex;
+  flex-direction: column;
+  gap: 8px;
+  padding-bottom: 10px;
+  border-bottom: 1px solid var(--border);
+  min-width: 0;
+}
+.assets-page-group:last-child {
+  border-bottom: none;
+  padding-bottom: 0;
+}
+.assets-page-group-title {
+  font-size: 12px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assets-page-batch {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+/* Подпись "с какой страницы" — показывается только когда в группе больше
+   одной отсканированной страницы (аккумуляция по навигации внутри вкладки,
+   см. BrowserPane.scanActiveTab). */
+.assets-page-batch-caption {
+  font-size: 10.5px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.assets-empty {
+  padding: 4px 2px;
+}
+.assets-section {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+  min-width: 0;
+}
+.assets-section-title {
+  font-size: 10.5px;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-faint);
+  font-weight: 600;
+}
+.assets-grid {
+  display: grid;
+  gap: 6px;
+  /* min-width:0 — CSS Grid контейнер сам по себе тоже подвержен той же
+     content-based min-width ловушке (auto-fill колонки иначе считаются так,
+     будто перенос не нужен), см. .bottom-panel выше. */
+  min-width: 0;
+  /* Общий размер для иконок и картинок (по отзыву пользователя — раньше
+     были разные 64px/72px, разница больше не оправдана: тайлы иконок уже
+     выросли ради кнопок copy/send при наведении и стали визуально почти
+     такими же, как у картинок). */
+  grid-template-columns: repeat(auto-fill, minmax(72px, 1fr));
+}
+.asset-tile {
+  position: relative;
+  aspect-ratio: 1;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  overflow: hidden;
+  cursor: pointer;
+}
+.asset-tile-thumb {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+.assets-grid-icons .asset-tile-thumb {
+  padding: 6px;
+  box-sizing: border-box;
+}
+.asset-tile-fallback {
+  color: var(--text-faint);
+}
+.asset-tile-actions {
+  position: absolute;
+  inset: 0;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.asset-tile:hover .asset-tile-actions {
+  opacity: 1;
+}
+.asset-tile-action {
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(255, 255, 255, 0.12);
+  color: #fff;
+  cursor: pointer;
+  transition: background 0.12s;
+}
+.asset-tile-action:hover {
+  background: rgba(255, 255, 255, 0.24);
+}
+.asset-tile-action.error {
+  background: var(--danger);
+}
+
+/* ── Просмотр ассета на весь экран с зумом (клик по тайлу) ──────────────── */
+.lightbox {
+  width: min(90vw, 1100px);
+  height: min(85vh, 800px);
+  display: flex;
+  flex-direction: column;
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+  padding: 14px 16px 16px;
+}
+.lightbox-head {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  flex: 0 0 auto;
+  margin-bottom: 10px;
+}
+.lightbox-title {
+  font-size: 12.5px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+  min-width: 0;
+}
+.lightbox-actions {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  flex: 0 0 auto;
+}
+.lightbox-zoom-value {
+  font-size: 11.5px;
+  color: var(--text-faint);
+  width: 42px;
+  text-align: center;
+}
+.lightbox-viewport {
+  flex: 1 1 auto;
+  min-height: 0;
+  /* hidden, не auto — панорамирование теперь через явный translate() в JS
+     (AssetLightbox.tsx), а не через scrollLeft/Top, см. докстринг компонента:
+     overflow:auto не считал transform:scale() центрированного flex-child'а
+     скроллируемым overflow вообще. */
+  overflow: hidden;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  background: repeating-conic-gradient(var(--surface) 0% 25%, var(--bg-canvas) 0% 50%) 0 0 / 20px 20px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  cursor: grab;
+}
+.lightbox-viewport:active {
+  cursor: grabbing;
+}
+.lightbox-image {
+  max-width: 100%;
+  max-height: 100%;
+  object-fit: contain;
+}
+
 /* ── Inspector: element picker (Phase 3) + свойства (Phase 4) ────────── */
 .inspector-error {
   font-size: 11.5px;
@@ -506,6 +795,10 @@ body.overlay-body {
 }
 .diagnostic-row.error {
   color: var(--danger);
+}
+.diagnostic-count {
+  color: var(--text-faint);
+  font-weight: 600;
 }
 
 /* ── Import as Frame (Phase 6) ───────────────────────────────────────── */

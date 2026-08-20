@@ -60,6 +60,18 @@ export const ColorSchema = z.object({
   a: z.number().min(0).max(1)
 })
 
+/** Один стилизованный диапазон внутри смешанного текста (п.3 запроса
+ *  пользователя — "смешанный текст"), напр. один прогон "жирный курсив" в
+ *  "текст <b><i>жирный курсив</i></b> ещё текст". `typography`/`color` —
+ *  собственные вычисленные значения ЭТОГО прогона (уже с учётом каскада
+ *  CSS — резолвятся из computed style конкретного инлайн-элемента, см.
+ *  conversion-engine/convertElement.ts). См. `DesignNode.textRuns`. */
+export const TextRunSchema = z.object({
+  text: z.string(),
+  typography: TypographyInfoSchema,
+  color: ColorSchema
+})
+
 export const PaintSchema: z.ZodType<
   | { type: 'solid'; color: z.infer<typeof ColorSchema> }
   | { type: 'linear-gradient'; angleDeg: number; stops: { offset: number; color: z.infer<typeof ColorSchema> }[] }
@@ -130,6 +142,13 @@ export interface DesignNode {
   layout?: z.infer<typeof LayoutInfoSchema>
   typography?: z.infer<typeof TypographyInfoSchema>
   text?: string
+  /** Смешанный текст (п.3 запроса пользователя) — присутствует ВМЕСТО `text`,
+   *  когда узел содержит "голый" текст вперемешку с инлайновыми тегами
+   *  форматирования (`<b>`/`<a>`/`<i>`/...), которые раньше конвертировались
+   *  отдельными узлами с потерей окружающего текста (diagnostic
+   *  `mixed-inline-text-not-captured`). Взаимоисключающе с `text` — оба поля
+   *  разом не выставляются. */
+  textRuns?: z.infer<typeof TextRunSchema>[]
   fills?: z.infer<typeof PaintSchema>[]
   strokes?: z.infer<typeof StrokeInfoSchema>
   effects?: z.infer<typeof EffectSchema>[]
@@ -158,6 +177,7 @@ export const DesignNodeSchema: z.ZodType<DesignNode> = z.lazy(() =>
     layout: LayoutInfoSchema.optional(),
     typography: TypographyInfoSchema.optional(),
     text: z.string().optional(),
+    textRuns: z.array(TextRunSchema).optional(),
     fills: z.array(PaintSchema).optional(),
     strokes: StrokeInfoSchema.optional(),
     effects: z.array(EffectSchema).optional(),
@@ -222,6 +242,7 @@ export type SizingMode = z.infer<typeof SizingModeSchema>
 export type LayoutInfo = z.infer<typeof LayoutInfoSchema>
 export type TypographyInfo = z.infer<typeof TypographyInfoSchema>
 export type Color = z.infer<typeof ColorSchema>
+export type TextRun = z.infer<typeof TextRunSchema>
 export type Paint = z.infer<typeof PaintSchema>
 export type StrokeInfo = z.infer<typeof StrokeInfoSchema>
 export type Effect = z.infer<typeof EffectSchema>

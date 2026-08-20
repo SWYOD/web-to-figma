@@ -20,7 +20,7 @@
     "appId": "com.ilyatrubnikov.webtofigma",
     "productName": "Web To Figma",
     "icon": "build/icon.png",
-    "artifactName": "${productName}-${version}-autoupdate-${os}-${arch}.${ext}",
+    "artifactName": "Web-To-Figma-${version}-autoupdate-${os}-${arch}.${ext}",
     "publish": {
       "provider": "github",
       "owner": "SWYOD",
@@ -50,10 +50,10 @@
     "nsis": {
       "oneClick": false,
       "allowToChangeInstallationDirectory": true,
-      "artifactName": "${productName}-${version}-autoupdate-${os}-${arch}-Setup.${ext}"
+      "artifactName": "Web-To-Figma-${version}-autoupdate-${os}-${arch}-Setup.${ext}"
     },
     "portable": {
-      "artifactName": "${productName}-${version}-autoupdate-${os}-${arch}-portable.${ext}"
+      "artifactName": "Web-To-Figma-${version}-autoupdate-${os}-${arch}-portable.${ext}"
     }
   },
   "dependencies": {

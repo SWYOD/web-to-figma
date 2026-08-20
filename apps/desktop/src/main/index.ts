@@ -314,7 +314,17 @@ async function startBridge(): Promise<void> {
     serverVersion: app.getVersion(),
     onConnectionCountChange: (count) => {
       bridgeInfo = { ...bridgeInfo, connectionCount: count }
-      mainWindow?.webContents.send('bridge:status', { connectionCount: count })
+      // `mainWindow?.` защищает только от null/undefined, не от "объект ещё
+      // жив, но его webContents уже уничтожен" — живой краш при выходе из
+      // приложения: `before-quit` вызывает bridgeServer.stop() →
+      // teardownPeer() → этот колбэк синхронно, а к этому моменту в цепочке
+      // quit окно иногда уже задестроено (Electron кидает "Object has been
+      // destroyed" на .send() в такой момент, не TypeError на самом
+      // mainWindow — тот по-прежнему не null). isDestroyed() — единственная
+      // надёжная проверка.
+      if (mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('bridge:status', { connectionCount: count })
+      }
     },
     onMessage: (message) => {
       // Ответы на запросы desktop (ImportNode и т.д.) перехватываются
@@ -526,8 +536,19 @@ app.whenReady().then(async () => {
   })
 })
 
+// try/catch — намеренная защита от повтора живого бага: необработанное
+// исключение внутри bridgeServer.stop() (см. onConnectionCountChange выше)
+// раньше обрывало выполнение ДО следующей строки — app.quit() просто не
+// успевал вызваться, и процессы зависали (видно в Диспетчере задач как
+// живые "Web To Figma.exe" после закрытия окна). Закрытие окна должно
+// приводить к реальному выходу из приложения ВСЕГДА, что бы ни случилось с
+// остановкой bridge.
 app.on('window-all-closed', () => {
-  bridgeServer?.stop()
+  try {
+    bridgeServer?.stop()
+  } catch (err) {
+    log.error('bridge stop failed on window-all-closed', { message: (err as Error).message })
+  }
   if (process.platform !== 'darwin') app.quit()
 })
 
@@ -538,5 +559,9 @@ app.on('window-all-closed', () => {
 // исчерпывался за долгую сессию). stop() безопасно вызывать повторно —
 // внутри уже проверяет null.
 app.on('before-quit', () => {
-  bridgeServer?.stop()
+  try {
+    bridgeServer?.stop()
+  } catch (err) {
+    log.error('bridge stop failed on before-quit', { message: (err as Error).message })
+  }
 })

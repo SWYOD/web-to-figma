@@ -15,12 +15,13 @@ const ELEMENT_NODE = 1
 const TEXT_NODE = 3
 const SKIP_TAGS = new Set(['SCRIPT', 'STYLE', 'TEMPLATE', 'LINK', 'META', 'NOSCRIPT'])
 
-/** "Чисто инлайновые" теги форматирования — смешанный контент разворачивается
- *  в стилизованные диапазоны ОДНОГО TextNode, только если ВСЕ вложенные
- *  элементы из этого списка (см. extractTextRuns). Картинки/блочные
- *  элементы/таблицы и т.п. — не сюда: Figma TextNode не умеет встроенные
- *  картинки внутри текста, поэтому такой контент сознательно остаётся на
- *  старом пути (droppedInlineText, вложенные элементы — отдельными узлами). */
+/** "Чисто инлайновые" теги форматирования — необходимое (но не достаточное,
+ *  см. looksLikeInlineFormatting) условие для разворота в стилизованные
+ *  диапазоны ОДНОГО TextNode; нужны ВСЕ вложенные элементы из этого списка
+ *  (см. extractTextRuns). Картинки/блочные элементы/таблицы и т.п. — не
+ *  сюда: Figma TextNode не умеет встроенные картинки внутри текста, поэтому
+ *  такой контент сознательно остаётся на старом пути (droppedInlineText,
+ *  вложенные элементы — отдельными узлами). */
 const INLINE_TEXT_TAGS = new Set([
   'B',
   'STRONG',
@@ -42,6 +43,36 @@ const INLINE_TEXT_TAGS = new Set([
   'TIME',
   'LABEL'
 ])
+
+/**
+ * Тег из INLINE_TEXT_TAGS — необходимое, но НЕ достаточное условие для
+ * разворачивания в textRuns. Сайты сплошь и рядом используют `<a>`/`<span>`
+ * как основу для визуально самостоятельных "пилюль"/бейджей/кнопок (тег,
+ * рейтинг, чип) — своя заливка, своя рамка, свой border-radius, через
+ * `display:inline-block`/`flex` и padding. Тег формально "инлайновый", но
+ * визуально это отдельная фигура, а не кусок форматированного текста —
+ * TextRun (см. design-ast/schema.ts) не умеет заливку/рамку/скругление НА
+ * ДИАПАЗОН, только typography+color текста, так что разворачивание в
+ * textRuns БЕЗ этой проверки тихо теряет всю визуальную идентичность
+ * каждой такой "пилюли" и схлопывает их layout (gap/wrap) в одну строку
+ * без пробелов — конкретно так и было поймано (реальный сайт, блок тегов
+ * новостей: весь блок ссылок-пилюль превратился в один текстовый слой без
+ * стилей). Если хоть один вложенный "инлайновый" тег визуально ведёт себя
+ * как коробка — весь разворот в textRuns отменяется (см. extractTextRuns),
+ * откат на старый путь: элементы конвертируются каждый сам по себе,
+ * заливка/рамка/скругление там уже применяются штатно.
+ */
+function looksLikeInlineFormatting(style: Record<string, string>): boolean {
+  const bg = style['background-color']
+  if (bg && bg !== 'rgba(0, 0, 0, 0)' && bg !== 'transparent') return false
+  if (style['box-shadow'] && style['box-shadow'] !== 'none') return false
+  for (const side of ['top', 'right', 'bottom', 'left']) {
+    const borderStyle = style[`border-${side}-style`]
+    const borderWidth = parseFloat(style[`border-${side}-width`] ?? '0')
+    if (borderStyle && borderStyle !== 'none' && borderWidth > 0) return false
+  }
+  return true
+}
 
 /** figma.createImage() принимает только эти форматы — см. Figma Plugin API. */
 const SUPPORTED_RASTER_MIME = new Set(['image/png', 'image/jpeg', 'image/gif'])
@@ -96,11 +127,15 @@ export interface SnapshotResult {
  * напр. `<p><b>x</b> <i>y</i></p>`) — пробуем развернуть ВСЁ поддерево в
  * плоский список стилизованных диапазонов (`textRuns`, см. extractTextRuns).
  * Получается, только если КАЖДЫЙ вложенный элемент — "чисто инлайновый" тег
- * форматирования (INLINE_TEXT_TAGS); если среди вложенных попался тег вне
- * этого списка (картинка, блочный элемент и т.п.) — откат на старое
- * поведение: вложенные элементы конвертируются как обычно сами по себе, а
- * потерянный "голый" прямой текст вокруг них помечается `droppedInlineText`
- * для diagnostic, а не тихо пропадает без следа.
+ * форматирования (INLINE_TEXT_TAGS) И визуально ведёт себя как текст, а не
+ * как отдельная фигура (см. looksLikeInlineFormatting — своя заливка/рамка/
+ * тень отменяет разворот, даже если тег из allowlist: сайты сплошь и рядом
+ * стилизуют `<a>`/`<span>` под "пилюли"/бейджи). Если среди вложенных
+ * попался тег вне списка (картинка, блочный элемент и т.п.) ИЛИ элемент из
+ * списка, но визуально не текст — откат на старое поведение: вложенные
+ * элементы конвертируются как обычно сами по себе, а потерянный "голый"
+ * прямой текст вокруг них помечается `droppedInlineText` для diagnostic,
+ * а не тихо пропадает без следа.
  *
  * Пробелы нормализуются как в CSS `white-space:normal` (частый случай, а не
  * точный расчёт per-node computed white-space — упрощение, задокументировано
@@ -140,15 +175,16 @@ function extractTextContent(
 /**
  * Разворачивает смешанный контент в плоский список `{text, style}` прогонов
  * (DOM-порядок) — null, если среди вложенных элементов встретился НЕ "чисто
- * инлайновый" тег (см. INLINE_TEXT_TAGS), тогда вызывающая сторона
- * откатывается на droppedInlineText. Стиль каждого прогона — computed style
- * ЕГО НЕПОСРЕДСТВЕННОГО родителя (тот, что содержит текстовый узел
- * напрямую) — уже с учётом полного CSS-каскада (браузер сам резолвит
- * наследование в CDP computed style), парсить каскад вручную не нужно.
- * Данные по каждому узлу уже собраны обычным обходом дерева в
- * buildSnapshotTree (INLINE_TEXT_TAGS не входят в SKIP_TAGS, значит уже
- * прошли через тот же getBoxModel/getComputedStyleForNode round-trip, что и
- * любой другой элемент) — новых CDP-вызовов не требуется.
+ * инлайновый" тег (см. INLINE_TEXT_TAGS) ИЛИ тег из allowlist, но визуально
+ * не текст (см. looksLikeInlineFormatting — своя заливка/рамка/тень), тогда
+ * вызывающая сторона откатывается на droppedInlineText. Стиль каждого
+ * прогона — computed style ЕГО НЕПОСРЕДСТВЕННОГО родителя (тот, что
+ * содержит текстовый узел напрямую) — уже с учётом полного CSS-каскада
+ * (браузер сам резолвит наследование в CDP computed style), парсить каскад
+ * вручную не нужно. Данные по каждому узлу уже собраны обычным обходом
+ * дерева в buildSnapshotTree (INLINE_TEXT_TAGS не входят в SKIP_TAGS,
+ * значит уже прошли через тот же getBoxModel/getComputedStyleForNode
+ * round-trip, что и любой другой элемент) — новых CDP-вызовов не требуется.
  */
 function extractTextRuns(
   cdpNode: CdpNode,
@@ -171,6 +207,8 @@ function extractTextRuns(
       continue
     }
     if (!INLINE_TEXT_TAGS.has(tag)) return null
+    const childStyle = dataByBackendId.get(child.backendNodeId)?.style
+    if (childStyle && !looksLikeInlineFormatting(childStyle)) return null
     const nested = extractTextRuns(child, dataByBackendId)
     if (nested === null) return null
     runs.push(...nested)

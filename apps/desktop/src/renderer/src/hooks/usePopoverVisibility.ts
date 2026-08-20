@@ -3,7 +3,15 @@ import { useEffect } from 'react'
 let openCount = 0
 
 function syncHidden(): void {
-  window.api.browserSetHidden(openCount > 0)
+  const hasOpen = openCount > 0
+  window.api.browserSetHidden(hasOpen)
+  // Overlay-тулбар (второй WebContentsView НАД браузером, см. main/overlay.ts)
+  // рисуется поверх ВСЕГО окна, включая эти HTML-модалки — просто спрятать
+  // браузер (выше) недостаточно, тулбар продолжал бы плавать НАД самой
+  // модалкой (живой баг: полноэкранный просмотрщик ассета перекрывался
+  // плавающим тулбаром сверху). См. докстринг у overlaySuppressed в
+  // main/index.ts.
+  window.api.overlaySetSuppressed(hasOpen)
 }
 
 /**
@@ -15,7 +23,8 @@ function syncHidden(): void {
  * Вызвать с `open` попапа/модалки — пока открыт хотя бы один такой элемент
  * (общий счётчик, не per-компонент флаг — несколько могут быть открыты
  * одновременно), нативный view прячется нулевыми bounds и HTML-попап
- * становится виден целиком; на закрытии последнего view возвращается.
+ * становится виден целиком; на закрытии последнего view возвращается. То же
+ * самое, тем же счётчиком, применяется и к overlay-тулбару (см. syncHidden).
  */
 export function usePopoverVisibility(open: boolean): void {
   useEffect(() => {

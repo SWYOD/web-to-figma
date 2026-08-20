@@ -174,8 +174,22 @@ const TOOLBAR_BOTTOM_GAP = TOOLBAR_VISUAL_BOTTOM_GAP - SHADOW_MARGIN
 let browserViewportBounds: ViewBounds | null = null
 let toolbarOverlayWidth = TOOLBAR_WIDTH_GUESS
 let toolbarOverlayHeight = TOOLBAR_HEIGHT_GUESS
+// Overlay — второй WebContentsView, рисуется НАД ВСЕМ окном (включая
+// HTML-модалки главного renderer'а вроде AssetLightbox, см. main/browser.ts
+// class-docstring про порядок addChildView) — usePopoverVisibility.ts
+// (renderer) прячет только нативный БРАУЗЕР этим же паттерном-счётчиком, но
+// overlay-тулбар не имеет к нему отношения и продолжал бы плавать поверх
+// полноэкранной модалки (живой баг, пойман пользователем на скриншоте:
+// тулбар рисуется над просмотрщиком ассетов). Отдельный флаг вместо просто
+// hide() — repositionToolbarOverlay() дергается на каждый resize/report-size
+// и должен ЗНАТЬ, что показывать снова не нужно, пока модалка открыта.
+let overlaySuppressed = false
 
 function repositionToolbarOverlay(): void {
+  if (overlaySuppressed) {
+    overlayController?.hide()
+    return
+  }
   const bounds = browserViewportBounds
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
     overlayController?.hide()
@@ -365,6 +379,10 @@ function registerIpc(): void {
     repositionToolbarOverlay()
   })
   ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
+  ipcMain.handle('overlay:set-suppressed', (_e, suppressed: boolean): void => {
+    overlaySuppressed = suppressed
+    repositionToolbarOverlay()
+  })
 
   // Пикер держит CDP debugger-сессию на КОНКРЕТНОМ webContents активной
   // вкладки (см. inspector.ts) — переключение/закрытие вкладки меняет,

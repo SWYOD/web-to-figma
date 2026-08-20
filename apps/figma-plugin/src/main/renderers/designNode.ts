@@ -143,6 +143,22 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: S
       // выведены из потока через layoutPositioning:'ABSOLUTE' и сюда не
       // попадают.
       applyChildSizing(childNode, child.layout)
+      // Живой баг: figma.appendChild() в Auto-Layout родителя САМ, ДО того
+      // как мы успеваем выставить layoutSizingHorizontal/Vertical выше,
+      // синхронно применяет к новому ребёнку какой-то дефолт по ГЛАВНОЙ оси
+      // родителя (в горизонтальном ряду — ширина) — для узла БЕЗ собственных
+      // детей (картинка/вектор с одной лишь заливкой, нечего "hug"-ать)
+      // Figma схлопывает эту ось в единицы пикселей ДО нашего кода, а наш
+      // последующий layoutSizingHorizontal='FIXED' лишь "замораживает" уже
+      // испорченный размер, не восстанавливая исходный (проверено живьём:
+      // картинки-логотипы в горизонтальном flex-ряду импортировались шириной
+      // 1px при верной высоте). Переприменяем захваченный пиксельный размер
+      // ПОСЛЕ назначения sizing-режимов — на FILL/HUG-осях это безвредный
+      // no-op (auto-layout пересчитает их сам на следующем layout pass), на
+      // FIXED — гарантированно восстанавливает то, что реально было на странице.
+      if ('resize' in childNode) {
+        childNode.resize(Math.max(1, child.size.width), Math.max(1, child.size.height))
+      }
     }
   }
 

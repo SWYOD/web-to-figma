@@ -37,6 +37,7 @@ const api: Api = {
   browserStop: () => ipcRenderer.invoke('browser:stop'),
   browserSetBounds: (bounds: ViewBounds) => ipcRenderer.invoke('browser:set-bounds', bounds),
   browserSetHidden: (hidden: boolean) => ipcRenderer.invoke('browser:set-hidden', hidden),
+  overlaySetSuppressed: (suppressed: boolean) => ipcRenderer.invoke('overlay:set-suppressed', suppressed),
 
   browserNewTab: (url?: string) => ipcRenderer.invoke('browser:new-tab', url),
   browserCloseTab: (id: string) => ipcRenderer.invoke('browser:close-tab', id),

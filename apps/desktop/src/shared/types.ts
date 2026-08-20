@@ -262,6 +262,13 @@ export interface Api {
    *  popover/модалка, которая визуально заходит в browser area — см.
    *  usePopoverVisibility и main/browser.ts класс-docstring. */
   browserSetHidden: (hidden: boolean) => Promise<void>
+  /** См. usePopoverVisibility.ts — тот же счётчик open-попапов, но для
+   *  overlay-тулбара (второй WebContentsView НАД браузером, см.
+   *  main/overlay.ts): тот всегда рисуется поверх ВСЕГО окна, включая
+   *  HTML-модалки вроде AssetLightbox, поэтому просто спрятать браузер
+   *  (browserSetHidden) недостаточно — полноэкранная модалка всё равно
+   *  перекрывалась бы плавающим тулбаром сверху (живой баг). */
+  overlaySetSuppressed: (suppressed: boolean) => Promise<void>
 
   /** Overlay-рендерер сам измеряет свой реальный контент (ResizeObserver, см.
    *  OverlayRoot.tsx) и шлёт сюда высоту — main пересчитывает bounds так,

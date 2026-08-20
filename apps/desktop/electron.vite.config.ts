@@ -13,7 +13,15 @@ export default defineConfig({
     // 'sharp' (используется в @web-to-figma/asset-engine для WebP→PNG,
     // см. fetchAsset.ts) — нативный N-API модуль, .node-биндинг физически
     // нельзя заинлайнить в один JS-файл; должен остаться require()'ом из
-    // реального node_modules (см. package.json build.asarUnpack).
+    // реального node_modules (см. package.json build.asarUnpack). Живой баг
+    // при первой сборке инсталлятора: electron-builder в pnpm-монорепе не
+    // подтягивал транзитивный `optionalDependencies` пакет sharp'а с самим
+    // нативным бинарником (`@img/sharp-win32-x64`) — в упакованный
+    // `app.asar.unpacked` попадал только чистый JS sharp, без .node-файла,
+    // require() в проде упал бы. Фикс — `@img/sharp-win32-x64` объявлен
+    // ПРЯМОЙ зависимостью в package.json (не только транзитивно через
+    // sharp), тогда electron-builder видит его в графе и копирует. При
+    // сборке под mac аналогично понадобится `@img/sharp-darwin-x64`/`-arm64`.
     build: {
       rollupOptions: {
         input: { index: resolve(__dirname, 'src/main/index.ts') },

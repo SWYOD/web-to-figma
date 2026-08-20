@@ -83,6 +83,7 @@
     }
   },
   "dependencies": {
+    "@img/sharp-win32-x64": "^0.35.3",
     "@web-to-figma/asset-engine": "workspace:*",
     "@web-to-figma/bridge-protocol": "workspace:*",
     "@web-to-figma/conversion-engine": "workspace:*",

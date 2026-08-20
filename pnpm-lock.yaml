@@ -17,6 +17,9 @@ importers:
 
   apps/desktop:
     dependencies:
+      '@img/sharp-win32-x64':
+        specifier: ^0.35.3
+        version: 0.35.3
       '@web-to-figma/asset-engine':
         specifier: workspace:*
         version: link:../../packages/asset-engine
@@ -2869,8 +2872,7 @@ snapshots:
   '@img/sharp-win32-ia32@0.35.3':
     optional: true
 
-  '@img/sharp-win32-x64@0.35.3':
-    optional: true
+  '@img/sharp-win32-x64@0.35.3': {}
 
   '@isaacs/fs-minipass@4.0.1':
     dependencies:

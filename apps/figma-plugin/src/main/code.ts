@@ -4,6 +4,7 @@ import { placeNearViewport, renderDesignNode } from './renderers/designNode'
 import { applyStylesToSelection, type ApplyStylesTargets } from './renderers/applyStyles'
 import type { ColorMatchSource } from './renderers/styleMatching'
 import { createAssetNode, type PlaceAssetPayload } from './renderers/asset'
+import { runDesignAgentCommand } from './designAgentCommands'
 
 /**
  * Main sandbox плагина — максимально тонкий (см. docs/architecture.md §3,
@@ -16,6 +17,13 @@ import { createAssetNode, type PlaceAssetPayload } from './renderers/asset'
  *    единственное место в плагине, которое трогает `figma.*` для создания нод;
  *  - Phase 10: применение стилей к уже выделенным нодам (`renderers/applyStyles.ts`),
  *    та же изоляция — единственное место, где Apply to Selection трогает `figma.*`.
+ *  - Design Agent bridge (по запросу пользователя, см. `designAgentCommands.ts`):
+ *    выполнение команд из ВТОРОГО, независимого канала (тот же брокер на
+ *    localhost:3790, что и у DesignAgent — см. `ui/designAgentClient.ts`),
+ *    параллельно обычному bridge к desktop-приложению. Позволяет AI работать
+ *    с канвасом, пока пользователь параллельно тащит контент вручную через
+ *    Web To Figma — Figma не даёт держать два плагина открытыми одновременно,
+ *    поэтому канал DesignAgent поднимается ВНУТРИ этого же плагина.
  */
 
 const BRIDGE_TOKEN_KEY = 'bridgeToken'
@@ -36,6 +44,7 @@ type UiToMainMessage =
     }
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
   | ({ type: 'place-asset'; requestId: string } & PlaceAssetPayload)
+  | { type: 'da-command'; id: string; command: string; params: Record<string, unknown> }
 
 figma.ui.onmessage = async (msg: UiToMainMessage) => {
   if (msg.type === 'get-stored-token') {
@@ -100,6 +109,15 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
         ok: false,
         error: err instanceof Error ? err.message : String(err)
       })
+    }
+    return
+  }
+  if (msg.type === 'da-command') {
+    try {
+      const result = await runDesignAgentCommand(msg.command, msg.params)
+      figma.ui.postMessage({ type: 'da-result', id: msg.id, ok: true, result })
+    } catch (err) {
+      figma.ui.postMessage({ type: 'da-result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
     }
   }
 }

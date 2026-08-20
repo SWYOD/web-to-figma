@@ -1536,3 +1536,96 @@ oптимизации.
 0.1.2 (bridge-протокол/perf — не layout-фича из тех, что обычно ждут
 пересборки, но раз уж собираем релиз повторно за эту же сессию — тот же
 `dist:win`+`gh release create` цикл, что и для 0.1.1).
+
+## Design Agent bridge — плагин Figma умеет говорить на протоколе DesignAgent (2026-08-20)
+
+Пользователь хочет параллельную работу: он вручную тащит контент через Web
+To Figma, а AI (через MCP-тулы DesignAgent) в это же время правит тот же
+Figma-файл. Figma физически не даёт держать два плагина открытыми
+одновременно ("почему у меня появилась эта идея" — именно поэтому). Решение
+— не отдельный плагин, а ВТОРОЙ независимый канал внутри плагина Web To
+Figma (переименован в **Bridge Tools**, см. ниже): он подключается к тому же
+локальному WebSocket-брокеру, что и настоящий DesignAgent
+(`ws://localhost:3790`), и говорит на его же протоколе — тогда MCP-тулы
+DesignAgent, ничего не зная о подмене, работают против ЭТОГО плагина.
+
+**Как нашли протокол** — не документацией "снаружи", а прямым чтением
+реальных исходников DesignAgent, установленных локально:
+`C:\Users\ilya\.claude\plugins\cache\designagent\designagent\0.20.0\mcp\src\
+broker.ts`/`server.ts` (протокол брокера) и dev-сборка самого плагина
+`C:\Users\ilya\.claude\designagent-figma-dev\dist\code.js.map` (source map
+со встроенным `sourcesContent` — весь исходный `code.ts`, 105KB, восстановлен
+дословно через `map.sourcesContent`, без сторонних инструментов). Пользователь
+прямо указал на этот путь после того, как я по инерции сказал "у меня нет
+доступа к логике DesignAgent" — неверно: доступ был, просто не посмотрел.
+
+**Протокол брокера** (`broker.ts`): отдельный процесс-демон держит порт 3790
+(НЕ сам плагин и НЕ MCP-сервер — оба подключаются к НЕМУ как клиенты).
+Рукопожатие плагина: `{type:'hello', role:'figma-plugin'}` →
+`{type:'hello_ack', serverInstanceId, pid}`. Вызов тула: брокер шлёт плагину
+`{type:'request', id, command, params}`, плагин отвечает `{type:'response',
+id, ok, result|error}`. `{type:'ping'}` → отвечаем `{type:'pong'}`.
+Reverse-channel (`server_request`, файловые операции брокер→Claude) не
+реализован — ни одна портированная команда его не требует.
+
+**Портировано 31 из 34 команд** DesignAgent (`apps/figma-plugin/src/main/
+designAgentCommands.ts`) — максимально ДОСЛОВНО из реального рабочего кода
+(не переизобретено по описанию): status, list_page_nodes, list_children,
+list_variables_and_styles, focus, select, annotate, apply_fix,
+create_frame/rectangle/ellipse/text, set_text, set_fill/stroke/corner_radius/
+shadow/text_style/image/opacity/rotation, bind_fill_variable,
+bind_stroke_variable, apply_text_style, set_instance_property, place_image,
+move, resize, reparent, delete, clone, group, ungroup, rename,
+instantiate_component, set_grid, list_shaders, set_shader,
+list_animation_styles, apply_animation, remove_animation, get_animations,
+batch, take_screenshot, export_asset, console_logs. **НЕ портированы**:
+`get_spec`, `get_design_md`, `export_tokens` — опираются на отдельный,
+гораздо более объёмный конвейер экстракции/анализа DesignAgent
+(extract.ts/analyze.ts/serialize.ts/designdoc.ts/tokens.ts, суммарно ~70KB
+исходников) — читающий путь, самостоятельная задача, оставлена как Phase 2
+(понятная ошибка вместо "Unknown command" при попытке вызвать).
+
+Второе, независимое соединение — `apps/figma-plugin/src/ui/
+designAgentClient.ts` (браузерный `WebSocket`, тот же reconnect-паттерн, что
+у `BridgeClient` из `bridge-protocol`, но свой протокол — сырой JSON, не
+`bridge-protocol`'s codec). UI не имеет доступа к `figma.*` (только main
+sandbox) — команда релеится через `postMessage` (`code.ts`: новый тип
+сообщения `da-command`/`da-result`). `manifest.json` — добавлен
+`ws://localhost:3790`/`http://localhost:3790` в `networkAccess.allowedDomains`.
+UI — новая секция "Design Agent" в `App.tsx` рядом с существующей секцией
+Web To Figma, тумблер Start/Stop, статус (та же цветовая индикация, что у
+основного bridge).
+
+**Живая регрессия, пойманная СРАЗУ при первом реальном запуске** (не
+типчеком — таких ошибок typecheck не ловит): код-патчинг `console.*` в
+кольцевой буфер логов (`console[level] = ...`) предполагал, что ВСЕ уровни
+(`log/info/warn/error/debug`) существуют как функции — в песочнице
+Figma-плагина (QuickJS, не полноценный V8) это не гарантировано, `console
+[level].bind` на `undefined` бросал `TypeError: cannot read property 'bind'
+of undefined` при загрузке плагина. Фикс — пропускать уровни, которых нет,
+до `.bind`.
+
+**Live-верификация** — не синтетика, реальные вызовы через
+`mcp__plugin_designagent_designagent__*` (те же MCP-тулы, что подключаются к
+НАСТОЯЩЕМУ DesignAgent) против РЕАЛЬНОГО файла пользователя ("РИС site
+Main"): `status`/`list_page_nodes`/`list_children` — корректно читают
+реальное дерево (94 узла верхнего уровня, включая `tags` из фикса пилюль
+ранее в этой же сессии); `create_frame`+`create_text`+`set_fill`+`set_stroke`
++`clone`+`take_screenshot`+`delete` — создан, стилизован и удалён тестовый
+композит (тёмный фрейм со скруглением/рамкой, жирный цветной текст,
+клонированный и перекрашенный дубликат), подтверждено скриншотом и повторным
+чтением дерева. Один пограничный случай зафиксирован, не являющийся багом
+порта: `clone` без явного `parentId` не всегда сохраняет исходного родителя
+(текстовый клон приземлился на странице, а не внутри фрейма-родителя) —
+воспроизводит РЕАЛЬНОЕ поведение апстрима (код скопирован дословно,
+логика идентична), не регрессия порта.
+
+**Переименование по запросу пользователя**: сам плагин (`manifest.json`
+`name`) — "Web Importer" → **Bridge Tools** (стал шире одной функции —
+теперь это canvas-bridge для DESKTOP-приложения И для AI/DesignAgent).
+Заголовки секций внутри UI (`App.tsx`, было "Web Importer" трижды) →
+**Web To Figma** — теперь имя продукта, а не общее описание функции; секция
+"Design Agent" рядом с ней получила отдельный заголовок. Подсказка в
+desktop-приложении (`BridgePopover.tsx`, "Плагин Web Importer подключается
+сам...") тоже обновлена на новое имя — иначе пользователь искал бы в Figma
+несуществующий плагин.

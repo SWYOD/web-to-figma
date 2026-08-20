@@ -50,7 +50,7 @@ export function BridgePopover(): JSX.Element {
           </IconButton>
         </div>
         <div className="bridge-hint">
-          Плагин Web Importer подключается сам — просто откройте его в Figma,
+          Плагин Bridge Tools подключается сам — просто откройте его в Figma,
           пока запущено это приложение. Код нужен только вручную, если
           автоподключение почему-то не сработало.
         </div>

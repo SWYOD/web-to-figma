@@ -10,6 +10,7 @@ import {
 } from '@web-to-figma/bridge-protocol'
 import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
 import type { DesignDocument } from '@web-to-figma/design-ast'
+import { DesignAgentClient, type DesignAgentState } from './designAgentClient'
 
 const PLUGIN_VERSION = '0.1.0'
 const DISCOVERY_TIMEOUT_MS = 1200
@@ -22,6 +23,8 @@ type MainToUiMessage =
   | { type: 'apply-result'; requestId: string; ok: false; error: string }
   | { type: 'place-asset-result'; requestId: string; ok: true; nodeId: string }
   | { type: 'place-asset-result'; requestId: string; ok: false; error: string }
+  | { type: 'da-result'; id: string; ok: true; result: unknown }
+  | { type: 'da-result'; id: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
@@ -91,6 +94,15 @@ function Plugin(): JSX.Element {
   const [lastApply, setLastApply] = useState<LastApply | null>(null)
   const clientRef = useRef<BridgeClient | null>(null)
 
+  // Design Agent bridge (по запросу пользователя) — независимый от desktop
+  // bridge канал: см. designAgentClient.ts. daEnabled — пользовательский
+  // тумблер ("Start"/"Stop", как в самом плагине DesignAgent).
+  const [daEnabled, setDaEnabled] = useState(false)
+  const [daState, setDaState] = useState<DesignAgentState>('disconnected')
+  const daClientRef = useRef<DesignAgentClient | null>(null)
+  const daPendingRef = useRef(new Map<string, (outcome: { ok: boolean; result?: unknown; error?: string }) => void>())
+  const daNextIdRef = useRef(0)
+
   // Main sandbox → UI: результат импорта/apply-styles.
   useEffect(() => {
     const onMessage = (event: MessageEvent): void => {
@@ -124,6 +136,12 @@ function Plugin(): JSX.Element {
           clientRef.current?.send(createResponse<ResponseMessage>('response', msg.requestId, { nodeId: msg.nodeId }))
         } else {
           clientRef.current?.send(createResponse<ErrorMessage>('error', msg.requestId, { code: 'PLACE_ASSET_FAILED', message: msg.error }))
+        }
+      } else if (msg.type === 'da-result') {
+        const resolve = daPendingRef.current.get(msg.id)
+        if (resolve) {
+          daPendingRef.current.delete(msg.id)
+          resolve(msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error })
         }
       }
     }
@@ -212,10 +230,40 @@ function Plugin(): JSX.Element {
     return () => client.disconnect()
   }, [pairing])
 
+  // Design Agent bridge — только пока daEnabled (пользователь нажал "Start"),
+  // независимо от состояния основного desktop bridge выше.
+  useEffect(() => {
+    if (!daEnabled) return
+    const client = new DesignAgentClient({
+      onStateChange: setDaState,
+      runCommand: (command, params) => {
+        const id = String(daNextIdRef.current++)
+        return new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            daPendingRef.current.delete(id)
+            resolve({ ok: false, error: `Command "${command}" timed out.` })
+          }, 20000)
+          daPendingRef.current.set(id, (outcome) => {
+            clearTimeout(timeout)
+            resolve(outcome)
+          })
+          postToMain({ type: 'da-command', id, command, params })
+        })
+      }
+    })
+    daClientRef.current = client
+    client.connect()
+    return () => {
+      client.disconnect()
+      daClientRef.current = null
+      setDaState('disconnected')
+    }
+  }, [daEnabled])
+
   if (pairing === 'searching') {
     return (
       <div className="plugin-section">
-        <div className="plugin-title">Web Importer</div>
+        <div className="plugin-title">Web To Figma</div>
         <StatusRow state="connecting">Ищем приложение Web To Figma…</StatusRow>
         <div className="plugin-hint">Откройте desktop-приложение Web To Figma — плагин подключится сам.</div>
       </div>
@@ -225,7 +273,7 @@ function Plugin(): JSX.Element {
   if (authError === 'VERSION_UNSUPPORTED') {
     return (
       <div className="plugin-section">
-        <div className="plugin-title">Web Importer</div>
+        <div className="plugin-title">Web To Figma</div>
         <div className="plugin-hint" style={{ color: 'var(--danger)' }}>
           Версия плагина не совместима с desktop-приложением — обновите одно из них.
         </div>
@@ -236,7 +284,7 @@ function Plugin(): JSX.Element {
   return (
     <>
       <div className="plugin-section">
-        <div className="plugin-title">Web Importer</div>
+        <div className="plugin-title">Web To Figma</div>
         <StatusRow state={state}>
           {state === 'connected' ? 'Desktop bridge connected' : state === 'connecting' ? 'Подключение…' : 'Desktop bridge отключён'}
         </StatusRow>
@@ -245,6 +293,23 @@ function Plugin(): JSX.Element {
         <div className="plugin-hint">
           Выбор элемента, импорт и Apply to Selection запускаются из desktop-приложения
           (Inspector → Select element → Import as Frame / Apply to Selection).
+        </div>
+      </div>
+      <div className="plugin-section">
+        <div className="plugin-title-row">
+          <div className="plugin-title">Design Agent</div>
+          <button className="da-toggle" onClick={() => setDaEnabled((v) => !v)}>
+            {daEnabled ? 'Stop' : 'Start'}
+          </button>
+        </div>
+        {daEnabled && (
+          <StatusRow state={daState}>
+            {daState === 'connected' ? 'Claude bridge connected' : daState === 'connecting' ? 'Подключение…' : 'Не подключено'}
+          </StatusRow>
+        )}
+        <div className="plugin-hint">
+          Параллельный канал к DesignAgent bridge — AI сможет работать с этим файлом Figma, пока вы вручную тащите
+          контент через Web To Figma выше. Работает одновременно с обычным bridge.
         </div>
       </div>
       {lastImport && (

@@ -45,3 +45,27 @@ body {
   color: var(--text-faint);
   line-height: 1.5;
 }
+
+/* ── Design Agent bridge — тумблер рядом с заголовком секции ─────────── */
+.plugin-title-row {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  margin-bottom: 2px;
+}
+.plugin-title-row .plugin-title {
+  margin-bottom: 0;
+}
+.da-toggle {
+  font-size: 11px;
+  font-weight: 600;
+  padding: 4px 10px;
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+  background: var(--surface-2);
+  color: var(--text-dim);
+}
+.da-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}

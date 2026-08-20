@@ -7,6 +7,7 @@ import { BridgePopover } from './components/BridgePopover'
 import { BrowserPane } from './components/BrowserPane'
 import { InspectorPanel } from './components/InspectorPanel'
 import { LeftSidebar } from './components/LeftSidebar'
+import { VersionBadge } from './components/VersionBadge'
 
 export default function App(): JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null)
@@ -71,6 +72,7 @@ function Shell({
             <PanelLeft size={17} />
           </button>
           <span className="brand">Web To Figma</span>
+          <VersionBadge />
         </div>
         <div className="toolbar-right">
           <BridgePopover />

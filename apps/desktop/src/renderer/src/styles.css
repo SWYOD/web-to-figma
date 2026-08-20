@@ -7,6 +7,36 @@
   color: var(--text);
 }
 
+/* ── Version badge (toolbar, рядом с брендом) — тот же паттерн, что в
+   Skill-tree, см. VersionBadge.tsx. ─────────────────────────────────── */
+.version-badge {
+  display: inline-flex;
+  align-items: stretch;
+  border-radius: 999px;
+  border: 1px solid var(--border);
+  background: var(--surface);
+  font-size: 10.5px;
+  font-weight: 600;
+  color: var(--text-faint);
+  letter-spacing: 0.2px;
+  /* Обрезаем детей по скруглению пилюли, а не даём внутренней плашке
+     "плавать" с зазором внутри — тег должен заливать пилюлю вплотную. */
+  overflow: hidden;
+}
+.version-badge-base {
+  display: flex;
+  align-items: center;
+  padding: 2px 8px;
+}
+.version-badge-tag {
+  display: flex;
+  align-items: center;
+  padding: 2px 8px;
+  background: var(--accent-soft);
+  color: var(--accent);
+  text-transform: uppercase;
+}
+
 .placeholder {
   flex: 1 1 auto;
   display: flex;

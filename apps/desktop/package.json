@@ -2,6 +2,8 @@
   "name": "@web-to-figma/desktop",
   "version": "0.1.0",
   "private": true,
+  "description": "Desktop-инструмент переноса элементов реальных веб-сайтов в Figma",
+  "author": "ilyatrubnikov",
   "main": "./out/main/index.js",
   "scripts": {
     "dev": "electron-vite dev",

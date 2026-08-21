@@ -1,4 +1,5 @@
 import type { WebContents } from 'electron'
+import { nanoid } from 'nanoid'
 // import { screen, type Rectangle } from 'electron' // нужно для кастомного hover-тултипа ниже
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { convertElement } from '@web-to-figma/conversion-engine'
@@ -21,7 +22,7 @@ import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } fro
 //   type TooltipAccessibilityInfo,
 //   type TooltipMode
 // } from './hoverTooltip'
-import type { ElementSummary, PickState, SelectionResult } from '../shared/types'
+import type { ElementSummary, PickState, QueueItemSummary, SelectionResult } from '../shared/types'
 
 const log = createConsoleLogger('inspector')
 
@@ -152,6 +153,17 @@ const CLEAR_PICK_HIGHLIGHT_SCRIPT = `(() => {
   })
 })()`
 
+/** Один захваченный (но ещё не обязательно импортированный) элемент очереди
+ *  мульти-импорта — полный `conversion`/`assets` держим здесь же, а не
+ *  полагаемся на single-slot `lastConversion`/`lastAssets` (те продолжают
+ *  перезаписываться каждым новым пиком, как и раньше). */
+interface QueueItem {
+  id: string
+  result: SelectionResult
+  conversion: { node: DesignNode; diagnostics: ConversionWarning[] }
+  assets: Record<string, DesignAsset>
+}
+
 /**
  * Element picker — Phase 3. Изолирован от IPC/React, как и BrowserController.
  * Debugger подключается лениво (только на время активного pick-режима), чтобы
@@ -172,6 +184,21 @@ export class ElementPicker {
    *  выбор при повторном открытии (закрыта в момент клика → пропустила
    *  live-событие onSelect). */
   private lastSelectionResult: SelectionResult | null = null
+  /**
+   * Queue-mode (мульти-импорт, по запросу пользователя — "поочерёдный выбор
+   * с добавлением по одному, потом импорт разом"). Overlay.setInspectMode
+   * принципиально single-select — нет способа выбрать сразу несколько узлов
+   * за один pick (см. план фичи). Вместо этого: каждый клик пикера при
+   * активном queueMode НЕ идёт в обычный `onSelect` (single-selection путь
+   * для Import as Frame/Apply to Selection), а откладывается в
+   * `pendingQueueItem` и ждёт явного confirmQueueAdd()/Cancel() — тулбар
+   * показывает попап "Добавить/Отменить". После Add/Cancel пик-режим сам
+   * перезапускается (`start()`), если queueMode всё ещё включён — так
+   * реализуется "поочерёдный выбор" без повторных нажатий кнопки пикера.
+   */
+  private queueMode = false
+  private queue: QueueItem[] = []
+  private pendingQueueItem: QueueItem | null = null
   // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
   // private hoverTimer: ReturnType<typeof setInterval> | null = null
   // private hoverBackendNodeId: number | null = null
@@ -180,8 +207,14 @@ export class ElementPicker {
   constructor(
     private readonly getWebContents: () => WebContents | null,
     private readonly onSelect: (result: SelectionResult) => void,
-    private readonly onStateChange: (state: PickState) => void
-    // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — 4-й и 5-й параметры конструктора:
+    private readonly onStateChange: (state: PickState) => void,
+    /** Клик пикером при активном queueMode — вместо `onSelect`, ждёт
+     *  подтверждения (см. класс-докстринг про queueMode). */
+    private readonly onQueuePending: (item: QueueItemSummary) => void,
+    /** Очередь изменилась (add/remove/clear/confirm) — драйвит карточки в
+     *  левой панели и счётчик на кнопке батч-импорта. */
+    private readonly onQueueChange: (items: QueueItemSummary[]) => void
+    // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — 6-й и 7-й параметры конструктора:
     // , private readonly getEffectiveTheme: () => Promise<TooltipMode>
     // /** Экранные координаты (не window-relative) прямоугольника WebContentsView
     //  *  браузера — нужны, чтобы сопоставить screen.getCursorScreenPoint() с
@@ -366,9 +399,17 @@ export class ElementPicker {
   //   }
   // }
 
-  /** Вызывается извне при навигации браузера — старый DOM-снапшот больше не валиден. */
+  /** Вызывается извне при навигации браузера — старый DOM-снапшот больше не
+   *  валиден. `pendingQueueItem` сбрасывается ВСЕГДА (даже если `active`
+   *  сейчас false — во время ожидания Добавить/Отменить пик-режим уже не
+   *  active, см. класс-докстринг), а не только вместе с `stop()` — иначе
+   *  переключение вкладки/навигация в момент открытого попапа подтверждения
+   *  оставляла бы его висеть над уже невалидным снапшотом. `queueMode`/
+   *  накопленная `queue` не трогаются — пользователь мог намеренно перейти
+   *  на другую страницу, чтобы продолжить набирать очередь оттуда. */
   stopIfActive(): void {
     if (this.active) void this.stop()
+    this.pendingQueueItem = null
   }
 
   private cleanupDebugger(wc: WebContents): void {
@@ -489,12 +530,78 @@ export class ElementPicker {
     try {
       const result = await this.captureAndConvert(wc, params.backendNodeId)
       this.lastSelectionResult = result
-      this.onSelect(result)
+      if (this.queueMode) {
+        // Не onSelect — ждём явного confirmQueueAdd()/confirmQueueCancel()
+        // от пользователя (попап "Добавить/Отменить" в тулбаре), см.
+        // класс-докстринг про queueMode. lastConversion/lastAssets успели
+        // перезаписаться выше в captureAndConvert — копируем СЕЙЧАС, а не
+        // полагаемся на них позже (следующий клик их снова перезапишет).
+        this.pendingQueueItem = { id: nanoid(), result, conversion: this.lastConversion!, assets: this.lastAssets }
+        this.onQueuePending({ id: this.pendingQueueItem.id, element: result.element })
+      } else {
+        this.onSelect(result)
+      }
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
     } finally {
       this.cleanupDebugger(wc)
     }
+  }
+
+  /** Переключение queue-режима с тулбара. Выключение НЕ трогает уже
+   *  накопленную `queue` (пользователь может выключить/включить снова, не
+   *  теряя добавленное) — только отменяет ЕЩЁ НЕ подтверждённый pending-item
+   *  и сбрасывает соответствующий попап в overlay. */
+  setQueueMode(active: boolean): void {
+    this.queueMode = active
+    if (!active) this.pendingQueueItem = null
+  }
+
+  isQueueMode(): boolean {
+    return this.queueMode
+  }
+
+  getQueue(): QueueItemSummary[] {
+    return this.queue.map((item) => ({ id: item.id, element: item.result.element }))
+  }
+
+  /** "Добавить" в попапе подтверждения — переносит pending-item в очередь и,
+   *  если queueMode всё ещё активен, сразу перезапускает pick для следующего
+   *  элемента (см. класс-докстринг — это и есть "поочерёдный выбор"). */
+  confirmQueueAdd(): void {
+    if (!this.pendingQueueItem) return
+    this.queue.push(this.pendingQueueItem)
+    this.pendingQueueItem = null
+    this.onQueueChange(this.getQueue())
+    if (this.queueMode) void this.start()
+  }
+
+  /** "Отменить" — тот же авто-рестарт пика, просто без добавления в очередь. */
+  confirmQueueCancel(): void {
+    this.pendingQueueItem = null
+    if (this.queueMode) void this.start()
+  }
+
+  removeQueueItem(id: string): void {
+    this.queue = this.queue.filter((item) => item.id !== id)
+    this.onQueueChange(this.getQueue())
+  }
+
+  clearQueue(): void {
+    this.queue = []
+    this.onQueueChange([])
+  }
+
+  /** Пакет `DesignDocument` для батч-импорта — тот же формат, что и
+   *  buildDocument() для одиночного пика, просто по всей очереди разом. */
+  buildQueueDocuments(sourceUrl: string, viewport: { width: number; height: number }): DesignDocument[] {
+    return this.queue.map((item) => ({
+      version: 1,
+      root: item.conversion.node,
+      assets: item.assets,
+      diagnostics: item.conversion.diagnostics,
+      metadata: { sourceUrl, capturedAt: new Date().toISOString(), viewport }
+    }))
   }
 
   /** Ставит персистентный (переживающий detach debugger'а) outline на

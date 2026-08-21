@@ -1,8 +1,9 @@
 import { useEffect, useRef, useState } from 'react'
 import { isValidThemeDef, ThemeProvider } from '@web-to-figma/ui'
-import type { AppSettings } from '../../shared/types'
+import type { AppSettings, QueueItemSummary } from '../../shared/types'
 import { ApplyToSelectionContent } from './components/ApplyToSelectionContent'
 import { PickerFloatBar } from './components/PickerFloatBar'
+import { QueueConfirmCard } from './components/QueueConfirmCard'
 
 /**
  * Смонтирован вместо `App` во ВТОРОМ renderer-процессе (`?overlay=1`, см.
@@ -20,6 +21,9 @@ export function OverlayRoot(): JSX.Element | null {
   const [settings, setSettings] = useState<AppSettings | null>(null)
   const [applyOpen, setApplyOpen] = useState(false)
   const [hasSelection, setHasSelection] = useState(false)
+  const [queueMode, setQueueMode] = useState(false)
+  const [queuePending, setQueuePending] = useState<QueueItemSummary | null>(null)
+  const [queueCount, setQueueCount] = useState(0)
   const stackRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
@@ -27,16 +31,46 @@ export function OverlayRoot(): JSX.Element | null {
     window.api.inspectorGetLastSelection().then((result) => {
       if (result) setHasSelection(true)
     })
+    // Панель могла смонтироваться ПОСЛЕ того, как в очередь уже что-то
+    // добавили (тот же класс живых багов, что и у hasSelection выше) —
+    // подхватываем текущий размер очереди при монтировании.
+    window.api.inspectorQueueGet().then((items) => setQueueCount(items.length))
     const offSelection = window.api.onInspectorSelection(() => setHasSelection(true))
     // Клик В САМУ страницу (другой webContents) — единственный способ узнать
     // о "клике снаружи" popover'а, раз тот теперь не в этом же окне (см.
     // main/index.ts, BrowserController onFocus).
     const offCollapse = window.api.onOverlayCollapsePopover(() => setApplyOpen(false))
+    const offQueuePending = window.api.onInspectorQueuePending((item) => setQueuePending(item))
+    const offQueueUpdated = window.api.onInspectorQueueUpdated((items) => {
+      setQueueCount(items.length)
+      // Confirm/cancel уже пришли и обработаны main-процессом к этому
+      // моменту (см. ElementPicker.confirmQueueAdd/Cancel) — попап тут
+      // закрывается синхронно с самим кликом на кнопку, см. handleQueueAdd/
+      // Cancel ниже, это дополнительная подстраховка на случай гонки.
+      setQueuePending(null)
+    })
     return () => {
       offSelection()
       offCollapse()
+      offQueuePending()
+      offQueueUpdated()
     }
   }, [])
+
+  const handleQueueAdd = (): void => {
+    setQueuePending(null)
+    window.api.inspectorQueueConfirmAdd()
+  }
+  const handleQueueCancel = (): void => {
+    setQueuePending(null)
+    window.api.inspectorQueueConfirmCancel()
+  }
+  const handleToggleQueueMode = (): void => {
+    const next = !queueMode
+    setQueueMode(next)
+    window.api.inspectorSetQueueMode(next)
+    if (!next) setQueuePending(null)
+  }
 
   useEffect(() => {
     if (!applyOpen) return
@@ -46,6 +80,18 @@ export function OverlayRoot(): JSX.Element | null {
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
   }, [applyOpen])
+
+  // Esc на попапе "Добавить/Отменить" — тот же смысл, что "Отменить" (не
+  // добавлять в очередь), не просто "закрыть попап визуально" — иначе main
+  // остался бы думать, что pending-item всё ещё ждёт решения.
+  useEffect(() => {
+    if (!queuePending) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') handleQueueCancel()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [queuePending])
 
   // Реальные размеры стека (тулбар + опционально раскрытый popover, +
   // подпись статуса пикера переменной длины вроде "Кликните на элемент
@@ -85,8 +131,19 @@ export function OverlayRoot(): JSX.Element | null {
     >
       <div className="overlay-root">
         <div ref={stackRef} className="overlay-toolbar-stack">
-          {applyOpen && <ApplyToSelectionContent />}
-          <PickerFloatBar applyOpen={applyOpen} onToggleApply={() => setApplyOpen((v) => !v)} applyDisabled={!hasSelection} />
+          {queuePending ? (
+            <QueueConfirmCard item={queuePending} onAdd={handleQueueAdd} onCancel={handleQueueCancel} />
+          ) : (
+            applyOpen && <ApplyToSelectionContent />
+          )}
+          <PickerFloatBar
+            applyOpen={applyOpen}
+            onToggleApply={() => setApplyOpen((v) => !v)}
+            applyDisabled={!hasSelection}
+            queueMode={queueMode}
+            onToggleQueueMode={handleToggleQueueMode}
+            queueCount={queueCount}
+          />
         </div>
       </div>
     </ThemeProvider>

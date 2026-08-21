@@ -176,7 +176,9 @@ function ImportStylesBlock(): JSX.Element | null {
   if (!settings) return null
 
   const update = (
-    patch: Partial<Pick<AppSettings, 'useMatchedTextStyles' | 'useMatchedColorStyles' | 'colorMatchSource'>>
+    patch: Partial<
+      Pick<AppSettings, 'useMatchedTextStyles' | 'useMatchedColorStyles' | 'colorMatchSource' | 'alsoCreateInstance'>
+    >
   ): void => {
     const next = { ...settings, ...patch }
     setSettings(next)
@@ -184,32 +186,45 @@ function ImportStylesBlock(): JSX.Element | null {
   }
 
   return (
-    <Block>
-      <BlockHead>Стили проекта при импорте</BlockHead>
-      <div className="prop-row">
-        <span className="prop-label">Шрифты</span>
-        <Switch checked={settings.useMatchedTextStyles} onChange={(v) => update({ useMatchedTextStyles: v })} />
-      </div>
-      <div className="prop-row">
-        <span className="prop-label">Цвета</span>
-        <Switch checked={settings.useMatchedColorStyles} onChange={(v) => update({ useMatchedColorStyles: v })} />
-      </div>
-      {settings.useMatchedColorStyles && (
-        <Segmented
-          value={settings.colorMatchSource}
-          onChange={(v) => update({ colorMatchSource: v })}
-          options={[
-            { value: 'style', label: 'Style' },
-            { value: 'variable', label: 'Variable' }
-          ]}
-        />
-      )}
-      <div className="placeholder-hint">
-        Вместо исходных значений — ближайший локальный text style файла (шрифт — по кеглю и весу начертания) и{' '}
-        {settings.colorMatchSource === 'variable' ? 'color variable' : 'paint style'} для цвета (по расстоянию в
-        RGBA). Если подходящего кандидата нет — используется исходное значение.
-      </div>
-    </Block>
+    <>
+      <Block>
+        <BlockHead>Стили проекта при импорте</BlockHead>
+        <div className="prop-row">
+          <span className="prop-label">Шрифты</span>
+          <Switch checked={settings.useMatchedTextStyles} onChange={(v) => update({ useMatchedTextStyles: v })} />
+        </div>
+        <div className="prop-row">
+          <span className="prop-label">Цвета</span>
+          <Switch checked={settings.useMatchedColorStyles} onChange={(v) => update({ useMatchedColorStyles: v })} />
+        </div>
+        {settings.useMatchedColorStyles && (
+          <Segmented
+            value={settings.colorMatchSource}
+            onChange={(v) => update({ colorMatchSource: v })}
+            options={[
+              { value: 'style', label: 'Style' },
+              { value: 'variable', label: 'Variable' }
+            ]}
+          />
+        )}
+        <div className="placeholder-hint">
+          Вместо исходных значений — ближайший локальный text style файла (шрифт — по кеглю и весу начертания) и{' '}
+          {settings.colorMatchSource === 'variable' ? 'color variable' : 'paint style'} для цвета (по расстоянию в
+          RGBA). Если подходящего кандидата нет — используется исходное значение.
+        </div>
+      </Block>
+      <Block>
+        <BlockHead>Импорт как компонент</BlockHead>
+        <div className="prop-row">
+          <span className="prop-label">Также создать Instance</span>
+          <Switch checked={settings.alsoCreateInstance} onChange={(v) => update({ alsoCreateInstance: v })} />
+        </div>
+        <div className="placeholder-hint">
+          Кнопка «Import as Component» на тулбаре создаёт выбранный элемент как Figma Component. Если включено —
+          рядом сразу появится один его Instance.
+        </div>
+      </Block>
+    </>
   )
 }
 

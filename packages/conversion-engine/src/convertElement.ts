@@ -5,6 +5,8 @@ import { parseLength } from './length.js'
 import { parseBoxShadow } from './shadow.js'
 import { parseLayout } from './layout.js'
 import type { DomSnapshotNode } from './domSnapshot.js'
+import { detectComponentGroups } from './componentGroups.js'
+import { pickSemanticClass } from './classHeuristics.js'
 
 /**
  * DOM-снапшот (с детьми, Phase 8) → дерево DesignNode. Чистая функция — не
@@ -107,9 +109,21 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     })
   }
 
+  // Component recognition — группировка СРЕДИ ДЕТЕЙ ЭТОГО УЗЛА, до их
+  // конвертации (см. componentGroups.ts): структурно идентичные соседи
+  // (карточки/строки/элементы сетки) размечаются componentRef'ом, который
+  // рендерер (apps/figma-plugin) превращает в Figma-компонент + инстансы
+  // вместо N одинаковых фреймов. Вызывается на КАЖДОМ уровне рекурсии —
+  // вложенные повторы (напр. ряд иконок внутри каждой карточки) находятся
+  // автоматически, без отдельной логики.
+  const componentGroups = !isTextLeaf && snapshot.children ? detectComponentGroups(snapshot.children) : undefined
   const children = isTextLeaf
     ? undefined
-    : snapshot.children?.map((child) => convertNode(child, diagnostics, { mode: layout.mode, align: layout.align }))
+    : snapshot.children?.map((child, i) => {
+        const node = convertNode(child, diagnostics, { mode: layout.mode, align: layout.align })
+        const componentRef = componentGroups?.get(i)
+        return componentRef ? { ...node, componentRef } : node
+      })
 
   // Каждый прогон парсится ТЕМИ ЖЕ функциями, что и typography/цвет узла
   // целиком (parseTypography/parseColor) — единая точка разбора CSS→AST,
@@ -238,35 +252,6 @@ function resolveSizing(
  *  ширину сайдбара слоёв бесполезен; обрезаем с многоточием, как обычно
  *  делают сами дизайн-тулы. */
 const MAX_TEXT_NAME_LENGTH = 60
-
-/** Класс похож на utility-класс (Tailwind/UnoCSS и т.п.), а не на
- *  семантическое имя компонента — такие НЕ годятся в имя фрейма (по запросу
- *  пользователя: "названия по классам", но `<div class="tw:flex tw:gap-2
- *  card-header">` должен назваться "card-header", а не "tw:flex"). Признаки:
- *  variant/arbitrary-value синтаксис (`:`, `[...]`, `tw:`-неймспейс) или
- *  короткий префикс из закрытого списка самых частых utility-групп
- *  (spacing/sizing/flex/grid/position/color и т.п.), за которым сразу идёт
- *  числовое/токенное значение. Эвристика, не парсер CSS-фреймворка —
- *  осознанный компромисс (см. соседний buildName). */
-const UTILITY_CLASS_RE =
-  /^(?:tw:|hover:|focus:|active:|disabled:|group-|peer-|dark:|sm:|md:|lg:|xl:|2xl:)|[:[\]]|^(?:flex|grid|block|inline|inline-block|inline-flex|hidden|contents|table|relative|absolute|fixed|sticky|static)$|^(?:w|h|min-w|min-h|max-w|max-h|p|px|py|pt|pr|pb|pl|m|mx|my|mt|mr|mb|ml|gap|space-x|space-y|top|right|bottom|left|inset|z|text|font|leading|tracking|bg|border|rounded|shadow|ring|outline|opacity|cursor|overflow|transition|duration|ease|delay|translate|scale|rotate|col|row|items|justify|content|self|place)-[a-z0-9./%-]+$/i
-
-/** Сгенерированный/хэшированный класс (CSS Modules `Button_root__a1b2c`,
- *  styled-components `sc-bZQynM`, emotion `css-1x2y3z` и т.п.) — тоже не
- *  семантическое имя, отдельно от utility-паттерна выше (другая форма шума,
- *  но общая причина: имя нестабильно между сборками/бесполезно для чтения). */
-const HASHED_CLASS_RE = /__[a-z0-9]+$/i
-
-/** Первый класс в списке, похожий на осмысленное имя компонента, а не на
- *  utility/хэш-шум (см. UTILITY_CLASS_RE/HASHED_CLASS_RE) — по запросу
- *  пользователя ("названия по классам"), раз простое "первый класс в DOM-
- *  порядке" на реальных сайтах с Tailwind чаще всего даёт бесполезное имя
- *  вида "tw:flex". `null`, если семантического кандидата нет — вызывающая
- *  сторона откатывается на буквально первый класс (лучше хоть что-то, чем
- *  голый тег). */
-function pickSemanticClass(classes: string[]): string | null {
-  return classes.find((c) => !UTILITY_CLASS_RE.test(c) && !HASHED_CLASS_RE.test(c)) ?? null
-}
 
 function truncateName(text: string): string {
   return text.length > MAX_TEXT_NAME_LENGTH ? `${text.slice(0, MAX_TEXT_NAME_LENGTH - 1).trimEnd()}…` : text

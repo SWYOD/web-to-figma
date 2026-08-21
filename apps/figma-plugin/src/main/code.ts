@@ -41,6 +41,8 @@ type UiToMainMessage =
       useMatchedTextStyles?: boolean
       useMatchedColorStyles?: boolean
       colorMatchSource?: ColorMatchSource
+      placementOffset?: { x: number; y: number }
+      alsoCreateInstance?: boolean
     }
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
   | ({ type: 'place-asset'; requestId: string } & PlaceAssetPayload)
@@ -58,15 +60,27 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
   }
   if (msg.type === 'import-node') {
     try {
-      const created = await renderDesignNode(
+      const { primary, secondary } = await renderDesignNode(
         msg.document.root,
         msg.document.assets,
         msg.useMatchedTextStyles ?? false,
         msg.useMatchedColorStyles ?? false,
-        msg.colorMatchSource ?? 'style'
+        msg.colorMatchSource ?? 'style',
+        msg.as,
+        msg.alsoCreateInstance ?? false
       )
-      placeNearViewport(created)
-      figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: created.id })
+      placeNearViewport(primary, msg.placementOffset)
+      if (secondary) {
+        // Instance рядом с промотированным компонентом (Import as Component
+        // + "также создать Instance") — позиционируем ОТНОСИТЕЛЬНО уже
+        // размещённого primary (его x/y здесь уже финальные, placeNearViewport
+        // выше их выставил), не через viewport заново.
+        const GAP = 40
+        secondary.x = primary.x + primary.width + GAP
+        secondary.y = primary.y
+        figma.currentPage.selection = [primary, secondary]
+      }
+      figma.ui.postMessage({ type: 'import-result', requestId: msg.requestId, ok: true, nodeId: primary.id })
     } catch (err) {
       figma.ui.postMessage({
         type: 'import-result',

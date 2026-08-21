@@ -132,6 +132,31 @@ export const AssetReferenceSchema = z.object({
   assetId: z.string()
 })
 
+/**
+ * Распознавание компонентов (Phase "component recognition", последний пункт
+ * из бэклога после Phase 11) — conversion-engine находит СТРУКТУРНО
+ * идентичные соседние узлы (карточки, элементы списка, строки таблицы) и
+ * помечает первый как `role:'main'`, остальные — `role:'instance'` с этим же
+ * `groupId`; рендерер (apps/figma-plugin) превращает main в
+ * `figma.createComponentFromNode`, инстансы — в `mainComponent.createInstance()`.
+ * `overrides` — единственное, что реально может отличаться между
+ * структурно идентичными повторами: текст и картинки/векторы (позиция,
+ * размер, стили — наследуются от компонента, раз структура доказанно
+ * идентична). Ключи — path из индексов детей ("0.2.1") ОТ ЭТОГО узла
+ * (узла с role:'instance') вниз, по той же структуре, что и у main (числа
+ * совпадают у main/instance по построению — сравнение шло по идентичной
+ * форме дерева). Только на `role:'instance'` узлах. */
+export const ComponentRefSchema = z.object({
+  groupId: z.string(),
+  role: z.enum(['main', 'instance']),
+  overrides: z
+    .object({
+      text: z.record(z.string(), z.string()).optional(),
+      assets: z.record(z.string(), z.string()).optional()
+    })
+    .optional()
+})
+
 export const NodeTypeSchema = z.enum(['frame', 'text', 'image', 'vector', 'group'])
 
 export interface DesignNode {
@@ -165,6 +190,7 @@ export interface DesignNode {
   clipsContent?: boolean
   asset?: z.infer<typeof AssetReferenceSchema>
   source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }
+  componentRef?: z.infer<typeof ComponentRefSchema>
   children?: DesignNode[]
 }
 
@@ -194,6 +220,7 @@ export const DesignNodeSchema: z.ZodType<DesignNode> = z.lazy(() =>
         cssSelector: z.string().optional()
       })
       .optional(),
+    componentRef: ComponentRefSchema.optional(),
     children: z.array(DesignNodeSchema).optional()
   })
 )
@@ -248,6 +275,7 @@ export type StrokeInfo = z.infer<typeof StrokeInfoSchema>
 export type Effect = z.infer<typeof EffectSchema>
 export type CornerRadius = z.infer<typeof CornerRadiusSchema>
 export type AssetReference = z.infer<typeof AssetReferenceSchema>
+export type ComponentRef = z.infer<typeof ComponentRefSchema>
 export type NodeType = z.infer<typeof NodeTypeSchema>
 export type ConversionWarning = z.infer<typeof ConversionWarningSchema>
 export type AssetKind = z.infer<typeof AssetKindSchema>

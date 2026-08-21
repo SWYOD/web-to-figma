@@ -78,7 +78,20 @@ export const ImportNodeMessageSchema = z.object({
     /** Цвет матчится на Paint Style ('style', легаси) или на Figma Variable
      *  ('variable') — пользователь явно попросил выбор. Optional/дефолт
      *  'style' для обратной совместимости. */
-    colorMatchSource: z.enum(['style', 'variable']).optional()
+    colorMatchSource: z.enum(['style', 'variable']).optional(),
+    /** Мульти-импорт из очереди (см. inspector.ts ElementPicker queue-режим)
+     *  — desktop шлёт N отдельных `import-node` сообщений подряд (не единое
+     *  батч-сообщение — минимальное изменение протокола), но без этого все N
+     *  фреймов легли бы друг на друга в центре viewport'а. Смещение от якоря
+     *  viewport-центра, накопительное между сообщениями одной пачки —
+     *  desktop сам увеличивает его на ширину предыдущего документа + отступ.
+     *  Optional — обычный одиночный импорт его не передаёт, ведёт себя как
+     *  раньше. */
+    placementOffset: z.object({ x: z.number(), y: z.number() }).optional(),
+    /** `as:'component'` — создать рядом ещё и один Instance главного
+     *  компонента (Import as Component, по запросу пользователя). Игнорируется
+     *  при `as:'frame'`. Optional/дефолт false для обратной совместимости. */
+    alsoCreateInstance: z.boolean().optional()
   })
 })
 

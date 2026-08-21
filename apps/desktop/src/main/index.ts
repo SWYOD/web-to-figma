@@ -29,6 +29,8 @@ import type {
   ImportResult,
   OverlaySize,
   PickState,
+  QueueImportResult,
+  QueueItemSummary,
   RecentSite,
   ScannedAsset,
   SelectionResult,
@@ -51,7 +53,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   customThemes: [],
   useMatchedTextStyles: false,
   useMatchedColorStyles: false,
-  colorMatchSource: 'style'
+  colorMatchSource: 'style',
+  alsoCreateInstance: false
 }
 
 interface BridgeSecret {
@@ -278,8 +281,18 @@ function createWindow(): void {
     (state: PickState) => {
       mainWindow?.webContents.send('inspector:pick-state', state)
       overlayController?.send('inspector:pick-state', state)
+    },
+    // Queue-режим (мульти-импорт) — попап "Добавить/Отменить" живёт в
+    // overlay-рендерере, та же причина double-send, что и выше.
+    (item: QueueItemSummary) => {
+      mainWindow?.webContents.send('inspector:queue-pending', item)
+      overlayController?.send('inspector:queue-pending', item)
+    },
+    (items: QueueItemSummary[]) => {
+      mainWindow?.webContents.send('inspector:queue-updated', items)
+      overlayController?.send('inspector:queue-updated', items)
     }
-    // getEffectiveTheme, getViewScreenBounds // 4-й/5-й аргумент для кастомного тултипа, см. inspector.ts
+    // getEffectiveTheme, getViewScreenBounds // 6-й/7-й аргумент для кастомного тултипа, см. inspector.ts
   )
 
   // Overlay монтируется ПОСЛЕ browser-пейна — addChildView упорядочен по
@@ -419,6 +432,17 @@ function registerIpc(): void {
   // состояние, пока пользователь не кликнет заново.
   ipcMain.handle('inspector:get-last-selection', (): SelectionResult | null => elementPicker?.getLastSelection() ?? null)
 
+  // Queue-режим (мульти-импорт) — см. inspector.ts ElementPicker класс-докстринг.
+  ipcMain.handle('inspector:set-queue-mode', (_e, active: boolean): void => elementPicker?.setQueueMode(active))
+  ipcMain.handle('inspector:queue-confirm-add', (): void => elementPicker?.confirmQueueAdd())
+  ipcMain.handle('inspector:queue-confirm-cancel', (): void => elementPicker?.confirmQueueCancel())
+  ipcMain.handle('inspector:queue-remove', (_e, id: string): void => elementPicker?.removeQueueItem(id))
+  ipcMain.handle('inspector:queue-clear', (): void => elementPicker?.clearQueue())
+  // Левая панель могла быть смонтирована ПОСЛЕ того, как в очередь уже что-то
+  // добавили (тот же класс живых багов, что и get-last-selection выше) —
+  // подхватывает текущее состояние при монтировании, не ждёт live-события.
+  ipcMain.handle('inspector:queue-get', (): QueueItemSummary[] => elementPicker?.getQueue() ?? [])
+
   ipcMain.handle('recent-sites:get', (): RecentSite[] => recentSites.getAll())
   ipcMain.handle('recent-sites:remove', async (_e, url: string): Promise<void> => {
     await recentSites.remove(url)
@@ -459,6 +483,103 @@ function registerIpc(): void {
       } catch (err) {
         return { ok: false, error: (err as Error).message }
       }
+    }
+  )
+
+  // Import as Component (по запросу пользователя) — тот же одиночный pick,
+  // что и Import as Frame выше, но `as:'component'` вместо `'frame'` — реальная
+  // промоция в Figma Component/Instance целиком на стороне плагина (см.
+  // designNode.ts renderDesignNode).
+  ipcMain.handle(
+    'inspector:import-as-component',
+    async (
+      _e,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource,
+      alsoCreateInstance: boolean
+    ): Promise<ImportResult> => {
+      await elementPicker?.prepareForImport()
+      const document = elementPicker?.buildDocument(
+        browserController?.getState().url ?? '',
+        browserController?.getViewportSize() ?? { width: 0, height: 0 }
+      )
+      if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+      if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+      }
+
+      const message = createMessage<ImportNodeMessage>('import-node', {
+        document,
+        as: 'component',
+        useMatchedTextStyles,
+        useMatchedColorStyles,
+        colorMatchSource,
+        alsoCreateInstance
+      })
+      try {
+        const response = await bridgeServer.request(message)
+        if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+        return { ok: true }
+      } catch (err) {
+        return { ok: false, error: (err as Error).message }
+      }
+    }
+  )
+
+  // Горизонтальный отступ между фреймами батч-импорта из очереди — см.
+  // ImportNodeMessageSchema.placementOffset (bridge-protocol) и
+  // placeNearViewport в figma-plugin/renderers/designNode.ts.
+  const QUEUE_IMPORT_GAP = 80
+
+  ipcMain.handle(
+    'inspector:import-queue',
+    async (
+      _e,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource
+    ): Promise<QueueImportResult> => {
+      const documents = elementPicker?.buildQueueDocuments(
+        browserController?.getState().url ?? '',
+        browserController?.getViewportSize() ?? { width: 0, height: 0 }
+      )
+      if (!documents || documents.length === 0) return { ok: false, imported: 0, failed: 0, error: 'Очередь пуста' }
+      if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        return { ok: false, imported: 0, failed: 0, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+      }
+
+      // Последовательно, не параллельно — один запрос за раз к тому же
+      // единственному подключённому плагину (bridgeServer.request() и так
+      // резолвится по одному in-flight запросу за раз, см. docs/bridge-protocol.md).
+      let imported = 0
+      let failed = 0
+      let x = 0
+      for (const document of documents) {
+        const message = createMessage<ImportNodeMessage>('import-node', {
+          document,
+          as: 'frame',
+          useMatchedTextStyles,
+          useMatchedColorStyles,
+          colorMatchSource,
+          placementOffset: { x, y: 0 }
+        })
+        try {
+          const response = await bridgeServer.request(message)
+          if (response.kind === 'error') failed++
+          else imported++
+        } catch {
+          failed++
+        }
+        x += document.root.size.width + QUEUE_IMPORT_GAP
+      }
+
+      // Очередь считается "потреблённой" после попытки импорта, независимо
+      // от частичных неудач — то же поведение, что у одиночного импорта
+      // (успех/ошибка сразу видны в результате, зависать в панели нечему
+      // возвращаться: DOM-снапшот уже захвачен и не обновится сам собой).
+      elementPicker?.clearQueue()
+      return { ok: failed === 0, imported, failed }
     }
   )
 

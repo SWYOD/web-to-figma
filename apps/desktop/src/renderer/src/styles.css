@@ -279,6 +279,47 @@
 .picker-float-bar-label.error {
   color: var(--danger);
 }
+/* Счётчик элементов в очереди мульти-импорта (по запросу пользователя) —
+   маленький бейдж поверх кнопки "Импортировать очередь", видим, только пока
+   очередь не пуста (см. PickerFloatBar.tsx). */
+.picker-float-bar-queue-import {
+  position: relative;
+  display: flex;
+}
+/* Попап "Добавить/Отменить" (QueueConfirmCard.tsx) — переиспользует
+   .popover/.popover-section/.popover-label из packages/ui, тут только
+   специфика самого попапа. */
+.queue-confirm-summary {
+  font-size: 13px;
+  color: var(--text);
+  white-space: nowrap;
+  overflow: hidden;
+  text-overflow: ellipsis;
+}
+.queue-confirm-actions {
+  display: flex;
+  gap: 8px;
+  margin-top: 4px;
+}
+.queue-confirm-actions .tb-btn {
+  flex: 1;
+}
+.picker-float-bar-queue-badge {
+  position: absolute;
+  top: -4px;
+  right: -4px;
+  min-width: 14px;
+  height: 14px;
+  padding: 0 3px;
+  border-radius: 999px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 10px;
+  font-weight: 600;
+  line-height: 14px;
+  text-align: center;
+  pointer-events: none;
+}
 
 /* ── Overlay-окно (второй WebContentsView НАД браузером, см. main/overlay.ts,
    OverlayRoot.tsx) — прозрачный фон вместо непрозрачного body из base.css.
@@ -393,6 +434,18 @@ body.overlay-body {
 .recent-row-remove {
   display: none;
   flex: 0 0 auto;
+}
+
+/* ── Левый сайдбар: очередь мульти-выбора (см. LeftSidebar.tsx) ─────────── */
+.queue-scroll {
+  flex: 0 1 auto;
+  max-height: 160px;
+}
+.queue-row {
+  cursor: default;
+}
+.queue-row:hover .recent-row-remove {
+  display: inline-flex;
 }
 
 /* ── Нижняя панель центральной области (см. BottomPanel.tsx) ───────────── */

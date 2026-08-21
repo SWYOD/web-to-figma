@@ -202,7 +202,8 @@ function Plugin(): JSX.Element {
             as: message.payload.as,
             useMatchedTextStyles: message.payload.useMatchedTextStyles,
             useMatchedColorStyles: message.payload.useMatchedColorStyles,
-            colorMatchSource: message.payload.colorMatchSource
+            colorMatchSource: message.payload.colorMatchSource,
+            placementOffset: message.payload.placementOffset
           })
         } else if (message.kind === 'apply-styles') {
           postToMain({

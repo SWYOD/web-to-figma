@@ -1,8 +1,8 @@
 import { useEffect, useState } from 'react'
-import { Globe, X } from 'lucide-react'
-import { Panel, PanelHead, PanelTitle } from '@web-to-figma/ui'
+import { Globe, Trash2, X } from 'lucide-react'
+import { IconButton, Panel, PanelHead, PanelHeadActions, PanelTitle } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
-import type { RecentSite } from '../../../shared/types'
+import type { QueueItemSummary, RecentSite } from '../../../shared/types'
 import { SettingsPopover } from './SettingsPopover'
 
 interface Props {
@@ -41,16 +41,34 @@ export function LeftSidebar({
   onCustomThemesChange
 }: Props): JSX.Element {
   const [sites, setSites] = useState<RecentSite[]>([])
+  const [queueItems, setQueueItems] = useState<QueueItemSummary[]>([])
 
   useEffect(() => {
     window.api.recentSitesGet().then(setSites)
     return window.api.onRecentSitesUpdated(setSites)
   }, [])
 
+  useEffect(() => {
+    window.api.inspectorQueueGet().then(setQueueItems)
+    return window.api.onInspectorQueueUpdated(setQueueItems)
+  }, [])
+
   const handleRemove = (e: React.MouseEvent, url: string): void => {
     e.stopPropagation()
     window.api.recentSitesRemove(url)
   }
+
+  const handleQueueItemRemove = (e: React.MouseEvent, id: string): void => {
+    e.stopPropagation()
+    window.api.inspectorQueueRemove(id)
+  }
+
+  const queueLabel = (item: QueueItemSummary): string =>
+    item.element.id
+      ? `${item.element.tag}#${item.element.id}`
+      : item.element.classes[0]
+        ? `${item.element.tag}.${item.element.classes[0]}`
+        : item.element.tag
 
   return (
     <Panel>
@@ -93,6 +111,38 @@ export function LeftSidebar({
           </button>
         ))}
       </div>
+
+      {queueItems.length > 0 && (
+        <>
+          <PanelHead>
+            <PanelTitle>Очередь ({queueItems.length})</PanelTitle>
+            <PanelHeadActions>
+              <IconButton title="Очистить очередь" onClick={() => window.api.inspectorQueueClear()}>
+                <Trash2 size={14} />
+              </IconButton>
+            </PanelHeadActions>
+          </PanelHead>
+          <div className="recent-scroll queue-scroll">
+            {queueItems.map((item) => (
+              <div key={item.id} className="recent-row queue-row" title={queueLabel(item)}>
+                <span className="recent-row-text">
+                  <span className="recent-row-title">{queueLabel(item)}</span>
+                  <span className="recent-row-host">
+                    {item.element.width}×{item.element.height}
+                  </span>
+                </span>
+                <span
+                  className="icon-btn xs recent-row-remove"
+                  title="Убрать из очереди"
+                  onClick={(e) => handleQueueItemRemove(e, item.id)}
+                >
+                  <X size={12} />
+                </span>
+              </div>
+            ))}
+          </div>
+        </>
+      )}
 
       <SettingsPopover
         themeMode={themeMode}

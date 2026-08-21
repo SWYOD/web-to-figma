@@ -10,6 +10,8 @@ import type {
   ImportResult,
   OverlaySize,
   PickState,
+  QueueImportResult,
+  QueueItemSummary,
   RecentSite,
   ScannedAsset,
   SelectionResult,
@@ -75,8 +77,44 @@ const api: Api = {
     colorMatchSource: ColorMatchSource
   ): Promise<ImportResult> =>
     ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
+  inspectorImportAsComponent: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource,
+    alsoCreateInstance: boolean
+  ): Promise<ImportResult> =>
+    ipcRenderer.invoke(
+      'inspector:import-as-component',
+      useMatchedTextStyles,
+      useMatchedColorStyles,
+      colorMatchSource,
+      alsoCreateInstance
+    ),
   inspectorApplyStyles: (targets: ApplyStylesTargets): Promise<ApplyStylesResult> =>
     ipcRenderer.invoke('inspector:apply-styles', targets),
+
+  inspectorSetQueueMode: (active: boolean) => ipcRenderer.invoke('inspector:set-queue-mode', active),
+  onInspectorQueuePending: (cb: (item: QueueItemSummary) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, item: QueueItemSummary): void => cb(item)
+    ipcRenderer.on('inspector:queue-pending', listener)
+    return () => ipcRenderer.removeListener('inspector:queue-pending', listener)
+  },
+  onInspectorQueueUpdated: (cb: (items: QueueItemSummary[]) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, items: QueueItemSummary[]): void => cb(items)
+    ipcRenderer.on('inspector:queue-updated', listener)
+    return () => ipcRenderer.removeListener('inspector:queue-updated', listener)
+  },
+  inspectorQueueGet: (): Promise<QueueItemSummary[]> => ipcRenderer.invoke('inspector:queue-get'),
+  inspectorQueueConfirmAdd: () => ipcRenderer.invoke('inspector:queue-confirm-add'),
+  inspectorQueueConfirmCancel: () => ipcRenderer.invoke('inspector:queue-confirm-cancel'),
+  inspectorQueueRemove: (id: string) => ipcRenderer.invoke('inspector:queue-remove', id),
+  inspectorQueueClear: () => ipcRenderer.invoke('inspector:queue-clear'),
+  inspectorImportQueue: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ): Promise<QueueImportResult> =>
+    ipcRenderer.invoke('inspector:import-queue', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
 
   assetsScan: (): Promise<AssetScanResult> => ipcRenderer.invoke('assets:scan'),
   assetsCopy: (asset: ScannedAsset): Promise<ImportResult> => ipcRenderer.invoke('assets:copy', asset),

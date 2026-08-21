@@ -64,6 +64,9 @@ export interface AppSettings {
   /** Только когда useMatchedColorStyles включён — 'style' (Paint Style,
    *  легаси) или 'variable' (Figma Variable) как источник для подбора цвета. */
   colorMatchSource: ColorMatchSource
+  /** Import as Component: создавать рядом ещё и один Instance, а не только
+   *  сам компонент — см. PickerFloatBar "Import as Component". */
+  alsoCreateInstance: boolean
 }
 
 export interface BridgeInfo {
@@ -177,6 +180,22 @@ export interface SelectionResult {
 
 export interface ImportResult {
   ok: boolean
+  error?: string
+}
+
+/** Один элемент в очереди мульти-импорта (см. main/inspector.ts ElementPicker
+ *  queue-режим) — то же самое, что карточка в левой панели: достаточно
+ *  данных для показа (тег/классы/размер), не полный DesignDocument (тот
+ *  живёт только в main-процессе до момента реального импорта). */
+export interface QueueItemSummary {
+  id: string
+  element: ElementSummary
+}
+
+export interface QueueImportResult {
+  ok: boolean
+  imported: number
+  failed: number
   error?: string
 }
 
@@ -299,7 +318,34 @@ export interface Api {
     useMatchedColorStyles: boolean,
     colorMatchSource: ColorMatchSource
   ) => Promise<ImportResult>
+  /** Тот же одиночный pick, что Import as Frame, но корневая нода становится
+   *  Figma Component (см. designNode.ts renderDesignNode `as` параметр) —
+   *  отдельная кнопка на тулбаре, по запросу пользователя. */
+  inspectorImportAsComponent: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource,
+    alsoCreateInstance: boolean
+  ) => Promise<ImportResult>
   inspectorApplyStyles: (targets: ApplyStylesTargets) => Promise<ApplyStylesResult>
+
+  /** Queue-режим (мульти-импорт по запросу пользователя) — см.
+   *  main/inspector.ts ElementPicker класс-докстринг про весь флоу. */
+  inspectorSetQueueMode: (active: boolean) => Promise<void>
+  /** Клик пикером при активном queue-режиме — вместо onInspectorSelection,
+   *  ждёт confirmQueueAdd/Cancel (попап "Добавить/Отменить" в тулбаре). */
+  onInspectorQueuePending: (cb: (item: QueueItemSummary) => void) => () => void
+  onInspectorQueueUpdated: (cb: (items: QueueItemSummary[]) => void) => () => void
+  inspectorQueueGet: () => Promise<QueueItemSummary[]>
+  inspectorQueueConfirmAdd: () => Promise<void>
+  inspectorQueueConfirmCancel: () => Promise<void>
+  inspectorQueueRemove: (id: string) => Promise<void>
+  inspectorQueueClear: () => Promise<void>
+  inspectorImportQueue: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ) => Promise<QueueImportResult>
 
   recentSitesGet: () => Promise<RecentSite[]>
   recentSitesRemove: (url: string) => Promise<void>

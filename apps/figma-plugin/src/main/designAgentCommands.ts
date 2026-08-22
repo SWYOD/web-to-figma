@@ -654,11 +654,30 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
     case 'list_variables_and_styles': {
       const collections = await figma.variables.getLocalVariableCollectionsAsync()
       const colorVariables: Array<{ id: string; name: string; collection: string; hex?: string }> = []
+      const floatVariables: Array<{
+        id: string
+        name: string
+        collection: string
+        value?: number
+        scopes: readonly VariableScope[]
+      }> = []
       for (const collection of collections) {
         const firstModeId = collection.modes[0]?.modeId
         for (const id of collection.variableIds) {
           const variable = await figma.variables.getVariableByIdAsync(id)
-          if (!variable || variable.resolvedType !== 'COLOR') continue
+          if (!variable) continue
+          if (variable.resolvedType === 'FLOAT') {
+            const value = firstModeId ? variable.valuesByMode[firstModeId] : undefined
+            floatVariables.push({
+              id: variable.id,
+              name: variable.name,
+              collection: collection.name,
+              value: typeof value === 'number' ? value : undefined,
+              scopes: variable.scopes
+            })
+            continue
+          }
+          if (variable.resolvedType !== 'COLOR') continue
           let hex: string | undefined
           if (firstModeId) {
             const value = variable.valuesByMode[firstModeId]
@@ -683,7 +702,68 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
         fontSize: style.fontSize,
         lineHeight: style.lineHeight
       }))
-      return { colorVariables, textStyles }
+      return { colorVariables, floatVariables, textStyles }
+    }
+    case 'upsert_float_variables': {
+      const collectionName = String(params.collectionName ?? '').trim()
+      if (!collectionName) throw new Error('collectionName is required.')
+      if (!Array.isArray(params.variables) || params.variables.length === 0) {
+        throw new Error('variables must be a non-empty array.')
+      }
+
+      const collections = await figma.variables.getLocalVariableCollectionsAsync()
+      const collection =
+        collections.find((item) => item.name === collectionName) ??
+        figma.variables.createVariableCollection(collectionName)
+      if (collection.modes.length !== 1 || !collection.modes[0]) {
+        throw new Error(
+          `Collection "${collectionName}" must contain exactly one mode; found ${collection.modes.length}.`
+        )
+      }
+
+      const modeId = collection.modes[0].modeId
+      const existing = new Map<string, Variable>()
+      for (const id of collection.variableIds) {
+        const variable = await figma.variables.getVariableByIdAsync(id)
+        if (variable) existing.set(variable.name, variable)
+      }
+
+      const createdVariableIds: string[] = []
+      const updatedVariableIds: string[] = []
+      const requestNames = new Set<string>()
+      for (const item of params.variables as Array<Record<string, unknown>>) {
+        const name = String(item.name ?? '').trim()
+        const value = Number(item.value)
+        if (!name || !Number.isFinite(value)) {
+          throw new Error('Each variable requires a non-empty name and finite numeric value.')
+        }
+        if (requestNames.has(name)) throw new Error(`Duplicate variable name in request: ${name}`)
+        requestNames.add(name)
+
+        let variable = existing.get(name)
+        if (variable && variable.resolvedType !== 'FLOAT') {
+          throw new Error(`Existing variable "${name}" is not FLOAT.`)
+        }
+        if (!variable) {
+          variable = figma.variables.createVariable(name, collection, 'FLOAT')
+          createdVariableIds.push(variable.id)
+        } else {
+          updatedVariableIds.push(variable.id)
+        }
+        variable.scopes = ['WIDTH_HEIGHT']
+        variable.description =
+          typeof item.description === 'string' ? item.description : 'Text block min-height token.'
+        variable.setValueForMode(modeId, value)
+      }
+
+      return {
+        collectionId: collection.id,
+        collectionName: collection.name,
+        modeId,
+        createdVariableIds,
+        updatedVariableIds,
+        count: createdVariableIds.length + updatedVariableIds.length
+      }
     }
     case 'focus': {
       const nodeId = String(params.nodeId ?? '')

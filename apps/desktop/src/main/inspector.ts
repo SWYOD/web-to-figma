@@ -153,6 +153,35 @@ const CLEAR_PICK_HIGHLIGHT_SCRIPT = `(() => {
   })
 })()`
 
+// Живой баг, найденный пользователем: наша ЖЕ подсветка выбранного элемента
+// (outline+box-shadow выше) — это ОБЫЧНЫЙ инлайн-стиль на реальной странице,
+// поэтому CDP `CSS.getComputedStyleForNode` в `buildSnapshotTree` честно
+// видел его как часть computed style элемента и импортировал фиолетовый glow
+// как настоящий box-shadow эффект в Figma. Снимается ВРЕМЕННО прямо перед
+// снятием снапшота (см. `captureAndConvert`/`withoutPickHighlight` ниже) —
+// как обычный клик пикера (highlight только что применён), так и
+// `prepareForImport()` (highlight мог провисеть на странице долго, пока
+// пользователь решал, импортировать ли) — оба идут через один и тот же
+// `captureAndConvert`, поэтому фикс достаточно применить один раз там, а не
+// дублировать в обоих вызывающих местах.
+const SUPPRESS_PICK_HIGHLIGHT_FUNCTION = `function() {
+  try {
+    const prev = JSON.parse(this.getAttribute('${PICK_HIGHLIGHT_ATTR}') || '{}')
+    this.style.outline = prev.outline || ''
+    this.style.outlineOffset = prev.outlineOffset || ''
+    this.style.boxShadow = prev.boxShadow || ''
+  } catch {}
+}`
+// Возвращает ровно то же визуальное состояние, что APPLY_PICK_HIGHLIGHT_FUNCTION
+// ставит изначально — но БЕЗ повторной записи атрибута (тот уже хранит
+// оригинальные pre-highlight значения, перезаписывать их значениями
+// SUPPRESS-состояния было бы неверно).
+const RESTORE_PICK_HIGHLIGHT_FUNCTION = `function() {
+  this.style.outline = '2px solid #8b5cf6'
+  this.style.outlineOffset = '-2px'
+  this.style.boxShadow = '0 0 0 1px rgba(139, 92, 246, 0.5), 0 0 16px 2px rgba(139, 92, 246, 0.55)'
+}`
+
 /** Один захваченный (но ещё не обязательно импортированный) элемент очереди
  *  мульти-импорта — полный `conversion`/`assets` держим здесь же, а не
  *  полагаемся на single-slot `lastConversion`/`lastAssets` (те продолжают
@@ -471,7 +500,9 @@ export class ElementPicker {
    *  клика пикера и для `prepareForImport()` (та лишь оборачивает вызов в
    *  `withDesktopViewport`, см. комментарий у CAPTURE_MIN_WIDTH). */
   private async captureAndConvert(wc: WebContents, backendNodeId: number): Promise<SelectionResult> {
-    const { tree: snapshot, truncated, assets } = await buildSnapshotTree(wc, backendNodeId)
+    const { tree: snapshot, truncated, assets } = await this.withoutPickHighlight(wc, backendNodeId, () =>
+      buildSnapshotTree(wc, backendNodeId)
+    )
     this.lastAssets = assets
     const styleMap = toComputedStyleMap(Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value })))
 
@@ -621,6 +652,36 @@ export class ElementPicker {
       })
     } catch (err) {
       log.debug('applyPickHighlight failed', { message: (err as Error).message })
+    }
+  }
+
+  /** Снимает подсветку с backendNodeId на время `fn()` (снятие снапшота
+   *  computed style — см. SUPPRESS/RESTORE_PICK_HIGHLIGHT_FUNCTION выше) и
+   *  всегда возвращает её обратно в `finally`, даже если `fn()` упал —
+   *  иначе постоянная подсветка выбранного элемента могла бы молча пропасть
+   *  после неудачного захвата. Резолв узла/недоступность — не критично
+   *  (страница могла уже уйти), тихо игнорируем, как и в applyPickHighlight. */
+  private async withoutPickHighlight<T>(wc: WebContents, backendNodeId: number, fn: () => Promise<T>): Promise<T> {
+    let objectId: string | undefined
+    try {
+      const { object } = (await wc.debugger.sendCommand('DOM.resolveNode', { backendNodeId })) as {
+        object: { objectId?: string }
+      }
+      objectId = object.objectId
+      if (objectId) {
+        await wc.debugger.sendCommand('Runtime.callFunctionOn', { functionDeclaration: SUPPRESS_PICK_HIGHLIGHT_FUNCTION, objectId })
+      }
+    } catch (err) {
+      log.debug('suppress pick highlight failed', { message: (err as Error).message })
+    }
+    try {
+      return await fn()
+    } finally {
+      if (objectId) {
+        await wc.debugger
+          .sendCommand('Runtime.callFunctionOn', { functionDeclaration: RESTORE_PICK_HIGHLIGHT_FUNCTION, objectId })
+          .catch((err) => log.debug('restore pick highlight failed', { message: (err as Error).message }))
+      }
     }
   }
 

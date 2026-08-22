@@ -1,6 +1,8 @@
 <div align="center">
 
-# 🕸️ Web To Figma
+<img src="apps/desktop/build/icon.png" alt="Web To Figma" width="96" height="96">
+
+# Web To Figma
 
 **Desktop-инструмент, который переносит элементы реальных веб-сайтов в Figma** — встроенный Chromium-браузер, пикер элементов и bridge к companion-плагину Figma, без скриншотов и без вставки картинкой.
 

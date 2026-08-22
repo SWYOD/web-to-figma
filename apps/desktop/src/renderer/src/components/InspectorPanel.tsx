@@ -31,20 +31,29 @@ export function InspectorPanel(): JSX.Element {
       setDiagnostics(result.diagnostics)
       setPick(EMPTY_PICK)
     })
+    const offCleared = window.api.onInspectorSelectionCleared(() => {
+      setSelection(null)
+      setDiagnostics([])
+    })
     return () => {
       offPick()
       offSelection()
+      offCleared()
     }
   }, [])
 
   useEffect(() => {
-    if (!pick.active) return
+    if (!pick.active && !selection) return
     const onKeyDown = (e: KeyboardEvent): void => {
-      if (e.key === 'Escape') window.api.inspectorStopPick()
+      if (e.key !== 'Escape') return
+      if (pick.active) window.api.inspectorStopPick()
+      // Иначе — Esc с уже выбранным элементом снимает выделение (по запросу
+      // пользователя: раньше подсветку на странице нечем было убрать).
+      else window.api.inspectorClearSelection()
     }
     window.addEventListener('keydown', onKeyDown)
     return () => window.removeEventListener('keydown', onKeyDown)
-  }, [pick.active])
+  }, [pick.active, selection])
 
   const showDetails = selection && !pick.active
   const confidence = useMemo(() => computeConfidenceScore(diagnostics), [diagnostics])

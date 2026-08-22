@@ -228,6 +228,17 @@ export class ElementPicker {
   private queueMode = false
   private queue: QueueItem[] = []
   private pendingQueueItem: QueueItem | null = null
+  /** webContents, на котором СЕЙЧАС висит `handleBeforeInput` (Esc) — раньше
+   *  этот listener жил строго внутри активного pick-режима (снимался вместе
+   *  с debugger'ом сразу после каждого клика в `cleanupDebugger`), из-за чего
+   *  Esc переставал что-либо делать сразу после выбора элемента (живой баг,
+   *  поймал пользователь — "выделение никак не убрать, Esc не работает").
+   *  Теперь listener живёт независимо от debugger'а (`before-input-event` —
+   *  обычное Electron-событие, CDP не нужен) — привязан, пока есть ЛИБО
+   *  активный pick, ЛИБО непустой `lastSelectionResult`, и снимается явно
+   *  через `clearSelection()`/переключение вкладки, а не автоматически при
+   *  каждом cleanupDebugger. */
+  private inputListenerWc: WebContents | null = null
   // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
   // private hoverTimer: ReturnType<typeof setInterval> | null = null
   // private hoverBackendNodeId: number | null = null
@@ -242,7 +253,11 @@ export class ElementPicker {
     private readonly onQueuePending: (item: QueueItemSummary) => void,
     /** Очередь изменилась (add/remove/clear/confirm) — драйвит карточки в
      *  левой панели и счётчик на кнопке батч-импорта. */
-    private readonly onQueueChange: (items: QueueItemSummary[]) => void
+    private readonly onQueueChange: (items: QueueItemSummary[]) => void,
+    /** Выделение снято (Esc с уже выбранным элементом, см. `clearSelection()`)
+     *  — сбрасывает hasSelection/показ в панелях, отдельно от onSelect(), у
+     *  которого нет "пустого" состояния. */
+    private readonly onSelectionCleared: () => void
     // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — 6-й и 7-й параметры конструктора:
     // , private readonly getEffectiveTheme: () => Promise<TooltipMode>
     // /** Экранные координаты (не window-relative) прямоугольника WebContentsView
@@ -305,7 +320,7 @@ export class ElementPicker {
       // которую пользователь наводится курсором в процессе пика (живой баг:
       // "Escape не отменяет пик режим"). before-input-event видит ввод в
       // ЭТОТ webContents независимо от фокуса остальных окон/панелей.
-      wc.on('before-input-event', this.handleBeforeInput)
+      this.ensureInputListener(wc)
       // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
       // this.tooltipMode = await this.getEffectiveTheme()
       // await dbg.sendCommand('Runtime.evaluate', { expression: buildHoverTooltipInstallScript(this.tooltipMode) })
@@ -444,12 +459,70 @@ export class ElementPicker {
   private cleanupDebugger(wc: WebContents): void {
     wc.debugger.removeListener('message', this.handleMessage)
     wc.debugger.removeListener('detach', this.handleDetach)
-    wc.removeListener('before-input-event', this.handleBeforeInput)
+    // before-input-event НЕ снимается здесь — он живёт дольше debugger'а,
+    // пока есть что защищать Esc'ом (см. inputListenerWc докстринг выше и
+    // ensureInputListener/removeInputListener ниже).
     if (wc.debugger.isAttached()) wc.debugger.detach()
   }
 
+  /** Привязывает `handleBeforeInput` к `wc`, если он ещё не привязан именно
+   *  к нему (переключение вкладки/навигация могут поменять актуальный
+   *  webContents между вызовами) — без этой проверки повторный `start()` на
+   *  том же wc задвоил бы listener. */
+  private ensureInputListener(wc: WebContents): void {
+    if (this.inputListenerWc === wc) return
+    if (this.inputListenerWc) this.inputListenerWc.removeListener('before-input-event', this.handleBeforeInput)
+    wc.on('before-input-event', this.handleBeforeInput)
+    this.inputListenerWc = wc
+  }
+
+  private removeInputListener(): void {
+    if (!this.inputListenerWc) return
+    this.inputListenerWc.removeListener('before-input-event', this.handleBeforeInput)
+    this.inputListenerWc = null
+  }
+
   private handleBeforeInput = (_event: unknown, input: Electron.Input): void => {
-    if (this.active && input.type === 'keyDown' && input.key === 'Escape') void this.stop()
+    if (input.type !== 'keyDown' || input.key !== 'Escape') return
+    if (this.active) {
+      void this.stop()
+      return
+    }
+    // Pick уже не активен, но остался выбранный элемент с постоянной
+    // подсветкой (см. APPLY_PICK_HIGHLIGHT_FUNCTION) — живой баг, поймал
+    // пользователь: раньше снять эту подсветку было нечем, Esc после выбора
+    // ничего не делал.
+    if (this.lastSelectionResult) void this.clearSelection()
+  }
+
+  /** Снимает текущее выделение: постоянную подсветку на странице (см.
+   *  CLEAR_PICK_HIGHLIGHT_SCRIPT) и весь связанный state
+   *  (lastSelectionResult/lastConversion/lastAssets/lastBackendNodeId) —
+   *  после этого "Import as Frame"/"Apply to Selection" снова недоступны,
+   *  пока не выбран новый элемент. Debugger к этому моменту обычно уже
+   *  отсоединён (снимается в cleanupDebugger сразу после каждого клика) —
+   *  временно подключаем сами, тем же паттерном, что и `prepareForImport()`. */
+  async clearSelection(): Promise<void> {
+    if (!this.lastSelectionResult) return
+    this.lastSelectionResult = null
+    this.lastConversion = null
+    this.lastAssets = {}
+    this.lastBackendNodeId = null
+    this.removeInputListener()
+    this.onSelectionCleared()
+
+    const wc = this.getWebContents()
+    if (!wc) return
+    const dbg = wc.debugger
+    const alreadyAttached = dbg.isAttached()
+    try {
+      if (!alreadyAttached) dbg.attach(CDP_PROTOCOL_VERSION)
+      await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT })
+    } catch (err) {
+      log.debug('clearSelection: failed to clear page highlight', { message: (err as Error).message })
+    } finally {
+      if (!alreadyAttached && dbg.isAttached()) dbg.detach()
+    }
   }
 
   private handleMessage = (_event: unknown, method: string, params: unknown): void => {

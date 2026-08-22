@@ -313,6 +313,10 @@ export interface Api {
   /** Текущий/последний выбор — для гидратации панели, если она была закрыта
    *  в момент клика пикером (см. main/inspector.ts getLastSelection). */
   inspectorGetLastSelection: () => Promise<SelectionResult | null>
+  /** Esc с уже выбранным элементом — снимает постоянную подсветку на странице
+   *  и весь связанный state (см. main/inspector.ts clearSelection). */
+  inspectorClearSelection: () => Promise<void>
+  onInspectorSelectionCleared: (cb: () => void) => () => void
   inspectorImportAsFrame: (
     useMatchedTextStyles: boolean,
     useMatchedColorStyles: boolean,

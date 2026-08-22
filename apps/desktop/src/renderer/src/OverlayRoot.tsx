@@ -36,6 +36,7 @@ export function OverlayRoot(): JSX.Element | null {
     // подхватываем текущий размер очереди при монтировании.
     window.api.inspectorQueueGet().then((items) => setQueueCount(items.length))
     const offSelection = window.api.onInspectorSelection(() => setHasSelection(true))
+    const offSelectionCleared = window.api.onInspectorSelectionCleared(() => setHasSelection(false))
     // Клик В САМУ страницу (другой webContents) — единственный способ узнать
     // о "клике снаружи" popover'а, раз тот теперь не в этом же окне (см.
     // main/index.ts, BrowserController onFocus).
@@ -51,6 +52,7 @@ export function OverlayRoot(): JSX.Element | null {
     })
     return () => {
       offSelection()
+      offSelectionCleared()
       offCollapse()
       offQueuePending()
       offQueueUpdated()

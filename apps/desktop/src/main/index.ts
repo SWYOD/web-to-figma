@@ -14,6 +14,7 @@ import {
 } from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
+import { attachEditContextMenu } from './contextMenu'
 import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
 import { OverlayController } from './overlay'
@@ -237,6 +238,7 @@ function createWindow(): void {
     shell.openExternal(details.url)
     return { action: 'deny' }
   })
+  attachEditContextMenu(mainWindow.webContents)
 
   browserController = new BrowserController(
     mainWindow,
@@ -291,8 +293,16 @@ function createWindow(): void {
     (items: QueueItemSummary[]) => {
       mainWindow?.webContents.send('inspector:queue-updated', items)
       overlayController?.send('inspector:queue-updated', items)
+    },
+    // Esc со уже выбранным элементом (см. inspector.ts clearSelection) — та
+    // же причина double-send, что и у onSelect выше: hasSelection живёт
+    // локальным state и в главном окне (InspectorPanel), и в overlay-
+    // рендерере (PickerFloatBar/OverlayRoot).
+    () => {
+      mainWindow?.webContents.send('inspector:selection-cleared')
+      overlayController?.send('inspector:selection-cleared', undefined)
     }
-    // getEffectiveTheme, getViewScreenBounds // 6-й/7-й аргумент для кастомного тултипа, см. inspector.ts
+    // getEffectiveTheme, getViewScreenBounds // 7-й/8-й аргумент для кастомного тултипа, см. inspector.ts
   )
 
   // Overlay монтируется ПОСЛЕ browser-пейна — addChildView упорядочен по
@@ -438,6 +448,13 @@ function registerIpc(): void {
   ipcMain.handle('inspector:queue-confirm-cancel', (): void => elementPicker?.confirmQueueCancel())
   ipcMain.handle('inspector:queue-remove', (_e, id: string): void => elementPicker?.removeQueueItem(id))
   ipcMain.handle('inspector:queue-clear', (): void => elementPicker?.clearQueue())
+
+  // Esc с уже выбранным элементом (см. inspector.ts clearSelection класс-докстринг
+  // про inputListenerWc) — снимает постоянную подсветку на странице и весь
+  // связанный state, по запросу пользователя ("выделение никак не убрать").
+  ipcMain.handle('inspector:clear-selection', async (): Promise<void> => {
+    await elementPicker?.clearSelection()
+  })
   // Левая панель могла быть смонтирована ПОСЛЕ того, как в очередь уже что-то
   // добавили (тот же класс живых багов, что и get-last-selection выше) —
   // подхватывает текущее состояние при монтировании, не ждёт live-события.

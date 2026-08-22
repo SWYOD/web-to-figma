@@ -47,11 +47,32 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       setImportState({ kind: 'idle' })
       setComponentImportState({ kind: 'idle' })
     })
+    // Esc с уже выбранным элементом (см. main/inspector.ts clearSelection) —
+    // кнопки Import as Frame/Component снова недоступны до нового выбора.
+    const offCleared = window.api.onInspectorSelectionCleared(() => {
+      setHasSelection(false)
+      setImportState({ kind: 'idle' })
+      setComponentImportState({ kind: 'idle' })
+    })
     return () => {
       offPick()
       offSelection()
+      offCleared()
     }
   }, [])
+
+  // Esc, когда фокус ОС на overlay-рендерере (не на встроенной странице,
+  // где это же ловит main/inspector.ts через before-input-event) — снимает
+  // выделение, только если сейчас НЕ идёт активный pick (тот уже обрабатывает
+  // свой Esc сам через inspectorStopPick, см. togglePick ниже).
+  useEffect(() => {
+    if (pick.active || !hasSelection) return
+    const onKeyDown = (e: KeyboardEvent): void => {
+      if (e.key === 'Escape') window.api.inspectorClearSelection()
+    }
+    window.addEventListener('keydown', onKeyDown)
+    return () => window.removeEventListener('keydown', onKeyDown)
+  }, [pick.active, hasSelection])
 
   const togglePick = (): void => {
     if (pick.active) window.api.inspectorStopPick()

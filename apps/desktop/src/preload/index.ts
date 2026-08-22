@@ -71,6 +71,12 @@ const api: Api = {
     return () => ipcRenderer.removeListener('inspector:selection', listener)
   },
   inspectorGetLastSelection: (): Promise<SelectionResult | null> => ipcRenderer.invoke('inspector:get-last-selection'),
+  inspectorClearSelection: (): Promise<void> => ipcRenderer.invoke('inspector:clear-selection'),
+  onInspectorSelectionCleared: (cb: () => void) => {
+    const listener = (): void => cb()
+    ipcRenderer.on('inspector:selection-cleared', listener)
+    return () => ipcRenderer.removeListener('inspector:selection-cleared', listener)
+  },
   inspectorImportAsFrame: (
     useMatchedTextStyles: boolean,
     useMatchedColorStyles: boolean,

@@ -1,6 +1,7 @@
 import { WebContentsView, type BrowserWindow, type Rectangle } from 'electron'
 import { nanoid } from 'nanoid'
 import { createConsoleLogger } from '@web-to-figma/shared'
+import { attachEditContextMenu } from './contextMenu'
 import { START_PAGE_URL } from './startPage'
 import type { BrowserState, TabsSnapshot } from '../shared/types'
 
@@ -143,6 +144,7 @@ export class BrowserController {
       this.newTab(url)
       return { action: 'deny' }
     })
+    attachEditContextMenu(wc)
 
     wc.loadURL(normalizeUrlInput(url)).catch((err: Error) => {
       // did-fail-load уже отражает ошибку в state — тут только не даём unhandled rejection.

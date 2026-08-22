@@ -64,20 +64,21 @@ Web To Figma (шутки ради — WTF) открывает любой сай�
 
 ### Figma-плагин «Bridge Tools»
 
-Плагин не опубликован в Figma Community — устанавливается локально из исходников (dev-плагин через manifest):
+Плагин не опубликован в Figma Community, но устанавливать из исходников/собирать самому не нужно — на странице **[Releases](https://github.com/SWYOD/web-to-figma/releases/latest)** уже лежит готовый `bridge-tools-plugin.zip` (пересобирается для каждого релиза вместе с desktop-приложением):
 
-1. Соберите плагин:
-   ```bash
-   pnpm install
-   pnpm --filter @web-to-figma/figma-plugin build
-   ```
-   Это создаст `apps/figma-plugin/dist/` (`code.js` + `ui.html`).
+1. Скачайте и распакуйте `bridge-tools-plugin.zip` — внутри папка с `manifest.json` и `dist/`.
 2. В Figma desktop-приложении: **Plugins → Development → Import plugin from manifest…**
-3. Укажите файл `apps/figma-plugin/manifest.json` из этого репозитория.
+3. Укажите `manifest.json` из распакованной папки.
 4. Плагин появится в Figma под именем **Bridge Tools** (Plugins → Development → Bridge Tools).
 5. Запустите desktop-приложение Web To Figma, откройте Bridge Tools в нужном Figma-файле — плагин сам найдёт локальный порт и подключится (значок Bridge в тулбаре desktop-приложения покажет статус подключения).
 
-После любого изменения кода плагина — пересоберите (`pnpm --filter @web-to-figma/figma-plugin build`) и заново откройте Bridge Tools в Figma (Development-плагины не обновляются "на лету", нужен ручной перезапуск).
+Обновление — просто скачайте свежий `bridge-tools-plugin.zip` из нового релиза, распакуйте поверх старой папки и заново откройте Bridge Tools в Figma (Development-плагины не обновляются "на лету", нужен ручной перезапуск).
+
+Собрать плагин из исходников самому (для разработки) можно так же, как раньше:
+```bash
+pnpm install
+pnpm --filter @web-to-figma/figma-plugin build   # apps/figma-plugin/dist/
+```
 
 ## 📖 Документация
 

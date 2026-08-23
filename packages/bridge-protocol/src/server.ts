@@ -28,6 +28,7 @@ export interface BridgeServerOptions {
   port?: number
   portFallbackRange?: number
   onConnectionCountChange?: (count: number) => void
+  onAuthenticated?: () => void
   onMessage?: (message: BridgeMessage, reply: (message: BridgeMessage) => void) => void
 }
 
@@ -74,6 +75,13 @@ export class BridgeServer {
       this.pending.set(message.id, { resolve, reject, timeout })
       for (const peer of authenticated) this.replyTo(peer, message)
     })
+  }
+
+  /** Одностороннее сообщение всем уже авторизованным UI плагина. */
+  broadcast(message: BridgeMessage): void {
+    for (const peer of this.peers) {
+      if (peer.authenticated) this.replyTo(peer, message)
+    }
   }
 
   async start(): Promise<{ port: number }> {
@@ -185,6 +193,7 @@ export class BridgeServer {
         payload: { sessionId: peer.sessionId, serverVersion: this.options.serverVersion }
       })
       this.startKeepalive(peer)
+      this.options.onAuthenticated?.()
       return
     }
 

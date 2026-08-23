@@ -1,6 +1,6 @@
 {
   "name": "@web-to-figma/desktop",
-  "version": "0.1.9",
+  "version": "0.1.10",
   "private": true,
   "description": "Desktop-инструмент переноса элементов реальных веб-сайтов в Figma",
   "author": "ilyatrubnikov",

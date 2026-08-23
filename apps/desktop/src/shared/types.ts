@@ -1,5 +1,5 @@
 import type { ConversionWarning } from '@web-to-figma/design-ast'
-import type { ApplyStylesMessage } from '@web-to-figma/bridge-protocol'
+import type { ApplyStylesMessage, ThemeSyncMessage } from '@web-to-figma/bridge-protocol'
 
 /** Дублирует ColorMatchSource из apps/figma-plugin/renderers/styleMatching.ts —
  *  main-процесс desktop не импортирует код Figma-плагина, только этот union. */
@@ -335,6 +335,7 @@ export interface RecentSite {
 export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
+  syncPluginTheme: (theme: ThemeSyncMessage['payload']) => Promise<void>
   getAppVersion: () => Promise<string>
   getBridgeInfo: () => Promise<BridgeInfo>
   onBridgeStatus: (cb: (status: BridgeStatusEvent) => void) => () => void

@@ -1,9 +1,127 @@
-/* Тонкий UI плагина следует системной теме автоматически (без Light/Dark/System
-   тумблера — см. docs/design-system.md §7, п.4: кастомизация темы — не
-   продуктовая ценность для минимального UI внутри Figma). */
+/* Пока desktop bridge отключён, ThemeProvider следует системной/Figma-теме.
+   После подключения desktop передаёт активные токены и переопределяет их
+   inline на .plugin-shell — включая пользовательские темы приложения. */
+
+html,
+body,
+#root {
+  width: 100%;
+  height: 100%;
+}
 
 body {
-  padding: 14px;
+  padding: 0;
+  overflow: hidden;
+}
+
+.plugin-shell {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  background: var(--surface);
+}
+
+.plugin-header {
+  flex: 0 0 64px;
+  min-width: 0;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  padding: 0 12px;
+  border-bottom: 1px solid var(--border);
+  background: color-mix(in srgb, var(--surface-2) 78%, var(--surface));
+}
+
+.plugin-shell.collapsed .plugin-header {
+  border-bottom-color: transparent;
+}
+
+.plugin-collapse-toggle {
+  width: 26px;
+  height: 26px;
+  flex: 0 0 26px;
+  display: grid;
+  place-items: center;
+  padding: 0;
+  border: 1px solid var(--border);
+  border-radius: 8px;
+  background: var(--surface);
+  color: var(--text-dim);
+}
+
+.plugin-collapse-toggle:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+
+.plugin-header-title {
+  min-width: 0;
+  font-size: 11px;
+  font-weight: 700;
+  letter-spacing: 0.2px;
+  color: var(--text);
+  white-space: nowrap;
+}
+
+.connection-badges {
+  min-width: 0;
+  margin-left: auto;
+  display: flex;
+  align-items: center;
+  gap: 5px;
+}
+
+.connection-badge {
+  height: 22px;
+  display: inline-flex;
+  align-items: center;
+  gap: 5px;
+  padding: 0 7px;
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  background: var(--surface);
+  color: var(--text-faint);
+  font-size: 9.5px;
+  font-weight: 650;
+  white-space: nowrap;
+}
+
+.connection-badge-dot {
+  width: 6px;
+  height: 6px;
+  border-radius: 50%;
+  background: var(--text-faint);
+}
+
+.connection-badge[data-state='connected'] {
+  color: var(--success);
+  border-color: color-mix(in srgb, var(--success) 36%, var(--border));
+  background: color-mix(in srgb, var(--success) 9%, var(--surface));
+}
+.connection-badge[data-state='connected'] .connection-badge-dot {
+  background: var(--success);
+  box-shadow: 0 0 0 2px color-mix(in srgb, var(--success) 18%, transparent);
+}
+.connection-badge[data-state='connecting'] {
+  color: var(--warning);
+}
+.connection-badge[data-state='connecting'] .connection-badge-dot {
+  background: var(--warning);
+}
+.connection-badge[data-state='error'] {
+  color: var(--danger);
+  border-color: color-mix(in srgb, var(--danger) 36%, var(--border));
+}
+.connection-badge[data-state='error'] .connection-badge-dot {
+  background: var(--danger);
+}
+
+.plugin-content {
+  min-height: 0;
+  flex: 1;
+  overflow-y: auto;
+  padding: 0 14px 14px;
 }
 
 .plugin-title {

@@ -10,7 +10,8 @@ import {
   type ErrorMessage,
   type ImportNodeMessage,
   type PlaceAssetMessage,
-  type ResponseMessage
+  type ResponseMessage,
+  type ThemeSyncMessage
 } from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { BrowserController } from './browser'
@@ -125,6 +126,7 @@ async function loadOrCreateBridgeSecret(): Promise<BridgeSecret> {
 
 let mainWindow: BrowserWindow | null = null
 let bridgeServer: BridgeServer | null = null
+let latestPluginTheme: ThemeSyncMessage | null = null
 let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
 let elementPicker: ElementPicker | null = null
@@ -401,6 +403,9 @@ async function startBridge(): Promise<void> {
         mainWindow.webContents.send('bridge:status', { connectionCount: count })
       }
     },
+    onAuthenticated: () => {
+      if (latestPluginTheme) bridgeServer?.broadcast(latestPluginTheme)
+    },
     onMessage: (message) => {
       // Ответы на запросы desktop (ImportNode и т.д.) перехватываются
       // BridgeServer.request() раньше этого колбэка — сюда попадают только
@@ -423,6 +428,11 @@ function registerIpc(): void {
 
   ipcMain.handle('settings:save', async (_e, settings: AppSettings): Promise<void> => {
     await writeJson(settingsPath(), settings)
+  })
+
+  ipcMain.handle('theme:sync-plugin', (_e, theme: ThemeSyncMessage['payload']): void => {
+    latestPluginTheme = createMessage<ThemeSyncMessage>('theme-sync', theme)
+    bridgeServer?.broadcast(latestPluginTheme)
   })
 
   ipcMain.handle('app:get-version', (): string => app.getVersion())

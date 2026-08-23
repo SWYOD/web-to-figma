@@ -1,4 +1,5 @@
 import { contextBridge, ipcRenderer } from 'electron'
+import type { ThemeSyncMessage } from '@web-to-figma/bridge-protocol'
 import type {
   Api,
   AppSettings,
@@ -29,6 +30,7 @@ import type {
 const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('settings:save', settings),
+  syncPluginTheme: (theme: ThemeSyncMessage['payload']) => ipcRenderer.invoke('theme:sync-plugin', theme),
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getBridgeInfo: () => ipcRenderer.invoke('bridge:get-info'),
   onBridgeStatus: (cb: (status: BridgeStatusEvent) => void) => {

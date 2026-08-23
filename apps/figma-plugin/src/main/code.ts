@@ -27,12 +27,16 @@ import { runDesignAgentCommand } from './designAgentCommands'
  */
 
 const BRIDGE_TOKEN_KEY = 'bridgeToken'
+const PLUGIN_WIDTH = 320
+const PLUGIN_EXPANDED_HEIGHT = 440
+const PLUGIN_COLLAPSED_HEIGHT = 64
 
-figma.showUI(__html__, { width: 320, height: 440, themeColors: true })
+figma.showUI(__html__, { width: PLUGIN_WIDTH, height: PLUGIN_EXPANDED_HEIGHT, themeColors: true })
 
 type UiToMainMessage =
   | { type: 'get-stored-token' }
   | { type: 'save-token'; token: string }
+  | { type: 'resize-ui'; collapsed: boolean }
   | {
       type: 'import-node'
       requestId: string
@@ -49,6 +53,10 @@ type UiToMainMessage =
   | { type: 'da-command'; id: string; command: string; params: Record<string, unknown> }
 
 figma.ui.onmessage = async (msg: UiToMainMessage) => {
+  if (msg.type === 'resize-ui') {
+    figma.ui.resize(PLUGIN_WIDTH, msg.collapsed ? PLUGIN_COLLAPSED_HEIGHT : PLUGIN_EXPANDED_HEIGHT)
+    return
+  }
   if (msg.type === 'get-stored-token') {
     const token = (await figma.clientStorage.getAsync(BRIDGE_TOKEN_KEY)) as string | undefined
     figma.ui.postMessage({ type: 'stored-token', token: token ?? null })

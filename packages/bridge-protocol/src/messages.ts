@@ -145,6 +145,43 @@ export const PlaceAssetMessageSchema = z.object({
   })
 })
 
+const ThemeVarsSchema = z.object({
+  bg: z.string(),
+  'bg-panel': z.string(),
+  'bg-canvas': z.string(),
+  surface: z.string(),
+  'surface-2': z.string(),
+  hover: z.string(),
+  border: z.string(),
+  'border-strong': z.string(),
+  text: z.string(),
+  'text-dim': z.string(),
+  'text-faint': z.string(),
+  accent: z.string(),
+  'accent-soft': z.string(),
+  'accent-text': z.string(),
+  danger: z.string(),
+  warning: z.string(),
+  info: z.string(),
+  success: z.string(),
+  shadow: z.string()
+})
+
+/**
+ * Односторонняя синхронизация уже разрешённой темы desktop → Figma Plugin.
+ * Плагин получает именно активный вариант кастомной темы, а не пытается
+ * повторно вычислять System/Light/Dark внутри iframe Figma.
+ */
+export const ThemeSyncMessageSchema = z.object({
+  ...base,
+  kind: z.literal('theme-sync'),
+  payload: z.object({
+    themeId: z.string(),
+    mode: z.enum(['light', 'dark']),
+    vars: ThemeVarsSchema
+  })
+})
+
 export const ResponseMessageSchema = z.object({
   ...base,
   kind: z.literal('response'),
@@ -175,6 +212,7 @@ export const BridgeMessageSchema = z.discriminatedUnion('kind', [
   ImportAssetsMessageSchema,
   ApplyStylesMessageSchema,
   PlaceAssetMessageSchema,
+  ThemeSyncMessageSchema,
   ResponseMessageSchema,
   ErrorMessageSchema
 ])
@@ -190,6 +228,7 @@ export type ImportAssetMessage = z.infer<typeof ImportAssetMessageSchema>
 export type ImportAssetsMessage = z.infer<typeof ImportAssetsMessageSchema>
 export type ApplyStylesMessage = z.infer<typeof ApplyStylesMessageSchema>
 export type PlaceAssetMessage = z.infer<typeof PlaceAssetMessageSchema>
+export type ThemeSyncMessage = z.infer<typeof ThemeSyncMessageSchema>
 export type ResponseMessage = z.infer<typeof ResponseMessageSchema>
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>
 export type BridgeMessage = z.infer<typeof BridgeMessageSchema>

@@ -1,4 +1,4 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   BridgeClient,
   createResponse,
@@ -6,11 +6,13 @@ import {
   PORT_FALLBACK_RANGE,
   type BridgeConnectionState,
   type ErrorMessage,
-  type ResponseMessage
+  type ResponseMessage,
+  type ThemeSyncMessage
 } from '@web-to-figma/bridge-protocol'
 import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
 import type { DesignDocument } from '@web-to-figma/design-ast'
 import { DesignAgentClient, type DesignAgentState } from './designAgentClient'
+import { ChevronDown, ChevronUp } from 'lucide-react'
 
 const PLUGIN_VERSION = '0.1.0'
 const DISCOVERY_TIMEOUT_MS = 1200
@@ -85,13 +87,32 @@ interface LastApply {
   detail: string
 }
 
+type CompactConnectionState = BridgeConnectionState | 'disabled' | 'error'
+
+function ConnectionBadge({ label, state, title }: { label: string; state: CompactConnectionState; title: string }): JSX.Element {
+  return (
+    <span className="connection-badge" data-state={state} title={title}>
+      <span className="connection-badge-dot" />
+      {label}
+    </span>
+  )
+}
+
 function Plugin(): JSX.Element {
+  const [collapsed, setCollapsed] = useState(() => {
+    try {
+      return localStorage.getItem('bridge-tools-collapsed') === '1'
+    } catch {
+      return false
+    }
+  })
   const [pairing, setPairing] = useState<Pairing | 'searching'>('searching')
   const [retryNonce, setRetryNonce] = useState(0)
   const [state, setState] = useState<BridgeConnectionState>('disconnected')
   const [authError, setAuthError] = useState<'AUTH_FAILED' | 'VERSION_UNSUPPORTED' | null>(null)
   const [lastImport, setLastImport] = useState<LastImport | null>(null)
   const [lastApply, setLastApply] = useState<LastApply | null>(null)
+  const [syncedTheme, setSyncedTheme] = useState<ThemeSyncMessage['payload'] | null>(null)
   const clientRef = useRef<BridgeClient | null>(null)
 
   // Design Agent bridge (по запросу пользователя) — независимый от desktop
@@ -102,6 +123,16 @@ function Plugin(): JSX.Element {
   const daClientRef = useRef<DesignAgentClient | null>(null)
   const daPendingRef = useRef(new Map<string, (outcome: { ok: boolean; result?: unknown; error?: string }) => void>())
   const daNextIdRef = useRef(0)
+
+  useEffect(() => {
+    try {
+      localStorage.setItem('bridge-tools-collapsed', collapsed ? '1' : '0')
+    } catch {
+      // Некоторые окружения Figma могут запускать iframe с запрещённым storage;
+      // сворачивание всё равно работает в пределах текущей сессии.
+    }
+    postToMain({ type: 'resize-ui', collapsed })
+  }, [collapsed])
 
   // Main sandbox → UI: результат импорта/apply-styles.
   useEffect(() => {
@@ -180,7 +211,10 @@ function Plugin(): JSX.Element {
       url: `ws://localhost:${pairing.port}`,
       token: pairing.token,
       clientVersion: PLUGIN_VERSION,
-      onStateChange: setState,
+      onStateChange: (nextState) => {
+        setState(nextState)
+        if (nextState !== 'connected') setSyncedTheme(null)
+      },
       onAuthFailed: (reason) => {
         setAuthError(reason)
         if (reason === 'AUTH_FAILED') {
@@ -194,7 +228,9 @@ function Plugin(): JSX.Element {
         // ImportNodeMessage/ApplyStylesMessage инициирует desktop (не запрос
         // этого клиента) — main sandbox — единственное место с доступом к
         // figma.*, поэтому релеим.
-        if (message.kind === 'import-node') {
+        if (message.kind === 'theme-sync') {
+          setSyncedTheme(message.payload)
+        } else if (message.kind === 'import-node') {
           postToMain({
             type: 'import-node',
             requestId: message.id,
@@ -261,18 +297,33 @@ function Plugin(): JSX.Element {
     }
   }, [daEnabled])
 
+  const desktopBadgeState: CompactConnectionState =
+    authError ? 'error' : pairing === 'searching' ? 'connecting' : state
+  const desktopBadgeTitle = authError
+    ? 'Desktop bridge: ошибка совместимости или авторизации'
+    : pairing === 'searching'
+      ? 'Desktop bridge: поиск приложения'
+      : `Desktop bridge: ${state}`
+  const agentBadgeState: CompactConnectionState = daEnabled ? daState : 'disabled'
+  const agentBadgeTitle = daEnabled ? `DesignAgent bridge: ${daState}` : 'DesignAgent bridge выключен'
+  const syncedThemeStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!syncedTheme) return undefined
+    const properties: Record<string, string> = { colorScheme: syncedTheme.mode }
+    for (const [key, value] of Object.entries(syncedTheme.vars)) properties[`--${key}`] = value
+    return properties as CSSProperties
+  }, [syncedTheme])
+
+  let desktopContent: JSX.Element
   if (pairing === 'searching') {
-    return (
+    desktopContent = (
       <div className="plugin-section">
         <div className="plugin-title">Web To Figma</div>
         <StatusRow state="connecting">Ищем приложение Web To Figma…</StatusRow>
         <div className="plugin-hint">Откройте desktop-приложение Web To Figma — плагин подключится сам.</div>
       </div>
     )
-  }
-
-  if (authError === 'VERSION_UNSUPPORTED') {
-    return (
+  } else if (authError === 'VERSION_UNSUPPORTED') {
+    desktopContent = (
       <div className="plugin-section">
         <div className="plugin-title">Web To Figma</div>
         <div className="plugin-hint" style={{ color: 'var(--danger)' }}>
@@ -280,22 +331,32 @@ function Plugin(): JSX.Element {
         </div>
       </div>
     )
+  } else {
+    desktopContent = (
+      <>
+        <div className="plugin-section">
+          <div className="plugin-title">Web To Figma</div>
+          <StatusRow state={state}>
+            {state === 'connected'
+              ? 'Desktop bridge connected'
+              : state === 'connecting'
+                ? 'Подключение…'
+                : 'Desktop bridge отключён'}
+          </StatusRow>
+        </div>
+        <div className="plugin-section">
+          <div className="plugin-hint">
+            Выбор элемента, импорт и Apply to Selection запускаются из desktop-приложения
+            (Inspector → Select element → Import as Frame / Apply to Selection).
+          </div>
+        </div>
+      </>
+    )
   }
 
-  return (
+  const content = (
     <>
-      <div className="plugin-section">
-        <div className="plugin-title">Web To Figma</div>
-        <StatusRow state={state}>
-          {state === 'connected' ? 'Desktop bridge connected' : state === 'connecting' ? 'Подключение…' : 'Desktop bridge отключён'}
-        </StatusRow>
-      </div>
-      <div className="plugin-section">
-        <div className="plugin-hint">
-          Выбор элемента, импорт и Apply to Selection запускаются из desktop-приложения
-          (Inspector → Select element → Import as Frame / Apply to Selection).
-        </div>
-      </div>
+      {desktopContent}
       <div className="plugin-section">
         <div className="plugin-title-row">
           <div className="plugin-title">Design Agent</div>
@@ -328,5 +389,27 @@ function Plugin(): JSX.Element {
         </div>
       )}
     </>
+  )
+
+  return (
+    <div className={`plugin-shell${collapsed ? ' collapsed' : ''}`} style={syncedThemeStyle}>
+      <header className="plugin-header">
+        <button
+          className="plugin-collapse-toggle"
+          onClick={() => setCollapsed((value) => !value)}
+          aria-expanded={!collapsed}
+          aria-label={collapsed ? 'Развернуть Bridge Tools' : 'Свернуть Bridge Tools'}
+          title={collapsed ? 'Развернуть' : 'Свернуть'}
+        >
+          {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
+        </button>
+        <div className="plugin-header-title">Bridge Tools</div>
+        <div className="connection-badges">
+          <ConnectionBadge label="Desktop" state={desktopBadgeState} title={desktopBadgeTitle} />
+          <ConnectionBadge label="AI" state={agentBadgeState} title={agentBadgeTitle} />
+        </div>
+      </header>
+      {!collapsed && <main className="plugin-content">{content}</main>}
+    </div>
   )
 }

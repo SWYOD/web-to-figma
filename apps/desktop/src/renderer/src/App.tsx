@@ -1,6 +1,6 @@
 import { useEffect, useRef, useState } from 'react'
 import { PanelLeft, PanelRight } from 'lucide-react'
-import { clamp, isValidThemeDef, ThemeProvider, useResizer } from '@web-to-figma/ui'
+import { clamp, effectiveVariant, isValidThemeDef, ThemeProvider, useResizer, useTheme } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
 import type { AppSettings, ImportProgressEvent } from '../../shared/types'
 import { BridgePopover } from './components/BridgePopover'
@@ -57,10 +57,19 @@ function Shell({
   onThemeIdChange: (themeId: string) => void
   onCustomThemesChange: (customThemes: ThemeDef[]) => void
 }): JSX.Element {
+  const { resolvedMode, theme } = useTheme()
   const [leftOpen, setLeftOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(true)
   const [importProgress, setImportProgress] = useState<ImportProgressEvent | null>(null)
   const progressHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    void window.api.syncPluginTheme({
+      themeId: theme.id,
+      mode: resolvedMode,
+      vars: effectiveVariant(theme, resolvedMode)
+    })
+  }, [resolvedMode, theme])
 
   useEffect(() => {
     const unsubscribe = window.api.onImportProgress((event) => {

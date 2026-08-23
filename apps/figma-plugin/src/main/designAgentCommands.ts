@@ -839,6 +839,26 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       if (parent.type === 'PAGE') placeOnPage(frame, params.x, params.y)
       return selectAndReturn(frame)
     }
+    case 'create_section': {
+      const parent = await resolveParentContainer(params.parentId)
+      const section = figma.createSection()
+      if (params.name) section.name = String(params.name)
+      section.resizeWithoutConstraints(
+        Math.max(1, toNumber(params.width, 1000)),
+        Math.max(1, toNumber(params.height, 600))
+      )
+      if (params.fill != null) section.fills = [solidPaint(params.fill)]
+      parent.appendChild(section)
+      if (parent.type === 'PAGE' && params.x == null && params.y == null) {
+        const pos = nextCanvasPosition(section.id)
+        section.x = pos.x
+        section.y = pos.y
+      } else {
+        if (params.x != null) section.x = toNumber(params.x, section.x)
+        if (params.y != null) section.y = toNumber(params.y, section.y)
+      }
+      return selectAndReturn(section)
+    }
     case 'create_rectangle':
     case 'create_ellipse': {
       const parent = await resolveParentContainer(params.parentId)
@@ -1063,7 +1083,7 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       } else {
         parent.appendChild(node)
       }
-      if (parent.type === 'PAGE' && 'x' in node) {
+      if ('x' in node) {
         const layout = node as SceneNode & LayoutMixin
         if (params.x != null) layout.x = toNumber(params.x, layout.x)
         if (params.y != null) layout.y = toNumber(params.y, layout.y)

@@ -1572,7 +1572,7 @@ Reverse-channel (`server_request`, файловые операции броке�
 designAgentCommands.ts`) — максимально ДОСЛОВНО из реального рабочего кода
 (не переизобретено по описанию): status, list_page_nodes, list_children,
 list_variables_and_styles, focus, select, annotate, apply_fix,
-create_frame/rectangle/ellipse/text, set_text, set_fill/stroke/corner_radius/
+create_frame/section/rectangle/ellipse/text, set_text, set_fill/stroke/corner_radius/
 shadow/text_style/image/opacity/rotation, bind_fill_variable,
 bind_stroke_variable, apply_text_style, set_instance_property, place_image,
 move, resize, reparent, delete, clone, group, ungroup, rename,

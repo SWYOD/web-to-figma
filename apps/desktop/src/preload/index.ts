@@ -5,15 +5,20 @@ import type {
   ApplyStylesResult,
   ApplyStylesTargets,
   AssetScanResult,
+  ComponentScanResult,
+  ComponentPreviewResult,
+  ComponentPreviewReadyEvent,
   BridgeStatusEvent,
   ColorMatchSource,
   ImportResult,
+  ImportProgressEvent,
   OverlaySize,
   PickState,
   QueueImportResult,
   QueueItemSummary,
   RecentSite,
   ScannedAsset,
+  ScannedComponent,
   SelectionResult,
   TabsSnapshot,
   UpdateReadyInfo,
@@ -115,6 +120,7 @@ const api: Api = {
   inspectorQueueConfirmCancel: () => ipcRenderer.invoke('inspector:queue-confirm-cancel'),
   inspectorQueueRemove: (id: string) => ipcRenderer.invoke('inspector:queue-remove', id),
   inspectorQueueClear: () => ipcRenderer.invoke('inspector:queue-clear'),
+  inspectorQueueLocate: (id: string): Promise<ImportResult> => ipcRenderer.invoke('inspector:queue-locate', id),
   inspectorImportQueue: (
     useMatchedTextStyles: boolean,
     useMatchedColorStyles: boolean,
@@ -125,6 +131,21 @@ const api: Api = {
   assetsScan: (): Promise<AssetScanResult> => ipcRenderer.invoke('assets:scan'),
   assetsCopy: (asset: ScannedAsset): Promise<ImportResult> => ipcRenderer.invoke('assets:copy', asset),
   assetsSendToFigma: (asset: ScannedAsset): Promise<ImportResult> => ipcRenderer.invoke('assets:send-to-figma', asset),
+  componentsScan: (): Promise<ComponentScanResult> => ipcRenderer.invoke('components:scan'),
+  componentsPreview: (component: ScannedComponent): Promise<ComponentPreviewResult> =>
+    ipcRenderer.invoke('components:preview', component),
+  onComponentPreviewReady: (cb: (event: ComponentPreviewReadyEvent) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, event: ComponentPreviewReadyEvent): void => cb(event)
+    ipcRenderer.on('components:preview-ready', listener)
+    return () => ipcRenderer.removeListener('components:preview-ready', listener)
+  },
+
+  onImportProgress: (cb: (event: ImportProgressEvent) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, event: ImportProgressEvent): void => cb(event)
+    ipcRenderer.on('import:progress', listener)
+    return () => ipcRenderer.removeListener('import:progress', listener)
+  },
+  componentsImport: (component: ScannedComponent): Promise<ImportResult> => ipcRenderer.invoke('components:import', component),
 
   recentSitesGet: () => ipcRenderer.invoke('recent-sites:get'),
   recentSitesRemove: (url: string) => ipcRenderer.invoke('recent-sites:remove', url),

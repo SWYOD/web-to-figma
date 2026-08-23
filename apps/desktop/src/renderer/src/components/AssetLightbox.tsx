@@ -1,7 +1,6 @@
 import { useEffect, useRef, useState, type PointerEvent as ReactPointerEvent, type WheelEvent as ReactWheelEvent } from 'react'
 import { Minus, Plus, RotateCcw, X } from 'lucide-react'
 import { clamp, IconButton } from '@web-to-figma/ui'
-import type { ScannedAsset } from '../../../shared/types'
 import { usePopoverVisibility } from '../hooks/usePopoverVisibility'
 
 const MIN_ZOOM = 0.25
@@ -11,8 +10,14 @@ const ZOOM_STEP = 0.25
 // кнопке зума и т.п. — иначе clientX/Y меняются на 1px даже без намерения тащить.
 const DRAG_THRESHOLD = 3
 
+export interface LightboxAsset {
+  data: string
+  sourceUrl?: string
+  mimeType: string
+}
+
 interface Props {
-  asset: ScannedAsset
+  asset: LightboxAsset
   onClose: () => void
 }
 

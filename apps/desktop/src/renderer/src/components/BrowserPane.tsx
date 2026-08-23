@@ -1,5 +1,5 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AssetScanResult, BrowserState, ScannedAsset, TabsSnapshot } from '../../../shared/types'
+import type { AssetScanResult, BrowserState, ComponentScanResult, ScannedAsset, ScannedComponent, TabsSnapshot } from '../../../shared/types'
 import { BottomPanel } from './BottomPanel'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserToolbar } from './BrowserToolbar'
@@ -54,6 +54,14 @@ export interface TabAssetScan {
   truncated: boolean
 }
 
+export interface TabComponentScan {
+  tabId: string
+  tabTitle: string
+  pageUrl: string
+  components: ScannedComponent[]
+  truncated: boolean
+}
+
 function hostFromUrl(url: string): string {
   try {
     return new URL(url).host
@@ -77,6 +85,7 @@ function capBatches(batches: PageAssetBatch[], maxTotal: number): { batches: Pag
 export function BrowserPane(): JSX.Element {
   const [tabsState, setTabsState] = useState<TabsSnapshot>(EMPTY_TABS)
   const [scans, setScans] = useState<Record<string, TabAssetScan>>({})
+  const [componentScans, setComponentScans] = useState<Record<string, TabComponentScan>>({})
   const [scanningTabId, setScanningTabId] = useState<string | null>(null)
   const [bottomMaximized, setBottomMaximized] = useState(false)
   const tabsStateRef = useRef(tabsState)
@@ -99,6 +108,7 @@ export function BrowserPane(): JSX.Element {
       // блокировавший UI-поток при накоплении десятков/сотен ассетов (живой
       // баг, жалоба пользователя на многосекундное подвисание панели).
       const result: AssetScanResult = await window.api.assetsScan()
+      const componentResult: ComponentScanResult = await window.api.componentsScan()
 
       setScans((prev) => {
         const existing = prev[activeTabId]
@@ -132,6 +142,16 @@ export function BrowserPane(): JSX.Element {
           [activeTabId]: { tabId: activeTabId, tabTitle: title, domain, batches: cappedBatches, truncated }
         }
       })
+      setComponentScans((prev) => ({
+        ...prev,
+        [activeTabId]: {
+          tabId: activeTabId,
+          tabTitle: title,
+          pageUrl: url,
+          components: componentResult.components,
+          truncated: componentResult.truncated
+        }
+      }))
     } finally {
       setScanningTabId((id) => (id === activeTabId ? null : id))
     }
@@ -166,10 +186,34 @@ export function BrowserPane(): JSX.Element {
     return window.api.onTabsState(handleSnapshot)
   }, [])
 
+  // Offscreen renderer присылает превью постепенно: распознавание и панель не
+  // ждут загрузки второй копии страницы, а карточки сами заполняются картинками.
+  useEffect(
+    () =>
+      window.api.onComponentPreviewReady((event) => {
+        setComponentScans((prev) => {
+          const scan = prev[event.tabId]
+          if (!scan || scan.pageUrl !== event.pageUrl) return prev
+          let changed = false
+          const components = scan.components.map((component) => {
+            if (component.selector !== event.selector || component.thumbnail === event.thumbnail) return component
+            changed = true
+            return { ...component, thumbnail: event.thumbnail }
+          })
+          return changed ? { ...prev, [event.tabId]: { ...scan, components } } : prev
+        })
+      }),
+    []
+  )
+
   // Вкладка закрылась — её скан больше не за чем показывать (страницы уже нет).
   useEffect(() => {
     const openIds = new Set(tabsState.tabs.map((t) => t.id))
     setScans((prev) => {
+      const next = Object.fromEntries(Object.entries(prev).filter(([tabId]) => openIds.has(tabId)))
+      return Object.keys(next).length === Object.keys(prev).length ? prev : next
+    })
+    setComponentScans((prev) => {
       const next = Object.fromEntries(Object.entries(prev).filter(([tabId]) => openIds.has(tabId)))
       return Object.keys(next).length === Object.keys(prev).length ? prev : next
     })
@@ -210,6 +254,7 @@ export function BrowserPane(): JSX.Element {
       <BottomPanel
         tabs={tabsState.tabs}
         scans={scans}
+        componentScans={componentScans}
         scanningTabId={scanningTabId}
         onScan={scanActiveTab}
         maximized={bottomMaximized}

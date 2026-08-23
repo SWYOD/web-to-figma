@@ -48,6 +48,28 @@ describe('convertElement — text leaves (fixture: pure-text leaf, e.g. <h3>/<p>
     expect(node.text).toBe('Hello heading')
   })
 
+  it('marks actually single-line text as nowrap so Figma metrics cannot stack its glyphs', () => {
+    const { node } = convertElement(
+      snapshot({
+        text: '45',
+        box: { width: 29, height: 29, x: 0, y: 0 },
+        computedStyle: { 'font-size': '25px', 'line-height': '36px' }
+      })
+    )
+    expect(node.textWrap).toBe('nowrap')
+  })
+
+  it('keeps genuinely multi-line browser text constrained and wrappable', () => {
+    const { node } = convertElement(
+      snapshot({
+        text: 'Занятия в удобное время',
+        box: { width: 113, height: 39, x: 0, y: 0 },
+        computedStyle: { 'font-size': '15px', 'line-height': '22px' }
+      })
+    )
+    expect(node.textWrap).toBe('wrap')
+  })
+
   it('validates against DesignNodeSchema', () => {
     const { node } = convertElement(snapshot({ text: 'Some text' }))
     expect(DesignNodeSchema.safeParse(node).success).toBe(true)
@@ -60,9 +82,13 @@ describe('convertElement — text leaves (fixture: pure-text leaf, e.g. <h3>/<p>
     expect(node.fills).toEqual([{ type: 'solid', color: { r: 200 / 255, g: 10 / 255, b: 10 / 255, a: 1 } }])
   })
 
-  it('flags a diagnostic (not silent loss) when a text leaf also has an opaque background-color', () => {
-    const { diagnostics } = convertElement(snapshot({ text: 'Badge', computedStyle: { 'background-color': 'rgb(30, 30, 30)' } }))
-    expect(diagnostics.some((d) => d.code === 'text-background-dropped')).toBe(true)
+  it('preserves an opaque text background by promoting the element to a frame', () => {
+    const { node, diagnostics } = convertElement(
+      snapshot({ text: 'Badge', computedStyle: { 'background-color': 'rgb(30, 30, 30)' } })
+    )
+    expect(node.type).toBe('frame')
+    expect(node.children?.[0]).toMatchObject({ type: 'text', text: 'Badge' })
+    expect(diagnostics.some((d) => d.code === 'text-background-dropped')).toBe(false)
   })
 
   it('never produces children for a text node, even if the snapshot carried some (defensive)', () => {
@@ -155,5 +181,67 @@ describe('convertElement — mixed inline content, extraction succeeded (fixture
       })
     )
     expect(node.children).toBeUndefined()
+  })
+})
+
+describe('convertElement — visually styled text containers', () => {
+  it('keeps a text-only button as a frame and moves its label into a text child', () => {
+    const { node, diagnostics } = convertElement(
+      snapshot({
+        tag: 'a',
+        text: 'Подать заявку',
+        box: { width: 191, height: 52, x: 20, y: 30 },
+        textBox: { width: 113, height: 18, x: 59, y: 47 },
+        computedStyle: {
+          display: 'flex',
+          'justify-content': 'center',
+          'align-items': 'center',
+          'padding-top': '0px',
+          'padding-right': '25px',
+          'padding-bottom': '0px',
+          'padding-left': '25px',
+          'background-color': 'rgb(0, 108, 150)',
+          'border-top-width': '1px',
+          'border-top-style': 'solid',
+          'border-top-color': 'rgb(0, 108, 150)',
+          'border-top-left-radius': '10px',
+          'border-top-right-radius': '10px',
+          'border-bottom-right-radius': '10px',
+          'border-bottom-left-radius': '10px',
+          color: 'rgb(255, 255, 255)',
+          'font-size': '15px',
+          'font-weight': '600'
+        }
+      })
+    )
+
+    expect(node.type).toBe('frame')
+    expect(node.fills).toEqual([{ type: 'solid', color: { r: 0, g: 108 / 255, b: 150 / 255, a: 1 } }])
+    expect(node.strokes?.weight).toBe(1)
+    expect(node.cornerRadius).toBe(10)
+    expect(node.children).toHaveLength(1)
+    expect(node.children?.[0]).toMatchObject({
+      type: 'text',
+      text: 'Подать заявку',
+      size: { width: 113, height: 18 },
+      layout: { widthSizing: 'hug', heightSizing: 'hug' }
+    })
+    expect(diagnostics.some((d) => d.code === 'text-background-dropped')).toBe(false)
+    expect(DesignNodeSchema.safeParse(node).success).toBe(true)
+  })
+
+  it('preserves a materialized direct text node next to an element child', () => {
+    const { node } = convertElement(
+      snapshot({
+        tag: 'div',
+        children: [
+          snapshot({ tag: 'div', text: '45', box: { width: 64, height: 64, x: 0, y: 0 } }),
+          snapshot({ tag: '#text', text: 'Выпускные документы', box: { width: 180, height: 18, x: 0, y: 78 } })
+        ]
+      })
+    )
+
+    expect(node.type).toBe('frame')
+    expect(node.children?.map((child) => child.text)).toEqual(['45', 'Выпускные документы'])
   })
 })

@@ -167,6 +167,16 @@ export interface ElementSummary {
   appearance: ElementAppearance
 }
 
+/** Лёгкая проекция DOM-снапшота для компактного дерева в Inspector. */
+export interface ElementTreeNode {
+  key: string
+  tag: string
+  id: string | null
+  classes: string[]
+  text?: string
+  children: ElementTreeNode[]
+}
+
 export interface PickState {
   active: boolean
   error: string | null
@@ -174,6 +184,10 @@ export interface PickState {
 
 export interface SelectionResult {
   element: ElementSummary
+  tree: ElementTreeNode
+  /** Непосредственный DOM-родитель выбранного элемента — только лёгкая
+   *  подпись для контекста в дереве, без захвата всего соседнего поддерева. */
+  treeParent: ElementTreeNode | null
   /** Диагностика conversion-engine (Phase 5) для этого же элемента — см. docs/conversion-rules.md. */
   diagnostics: ConversionWarning[]
 }
@@ -183,6 +197,18 @@ export interface ImportResult {
   error?: string
 }
 
+export interface ImportProgressEvent {
+  id: string
+  state: 'running' | 'success' | 'error'
+  phase: 'preparing' | 'sending' | 'complete'
+  label: string
+  detail?: string
+  /** Нормализованное значение для верхнего progress bar. */
+  progress: number
+  current?: number
+  total?: number
+}
+
 /** Один элемент в очереди мульти-импорта (см. main/inspector.ts ElementPicker
  *  queue-режим) — то же самое, что карточка в левой панели: достаточно
  *  данных для показа (тег/классы/размер), не полный DesignDocument (тот
@@ -190,6 +216,10 @@ export interface ImportResult {
 export interface QueueItemSummary {
   id: string
   element: ElementSummary
+  /** JPEG data: URL элемента в момент пика — качественный источник для
+   *  полноэкранного просмотра, визуально уменьшаемый до миниатюры в карточке.
+   *  Undefined — скриншот не удался (элемент нулевого размера и т.п.). */
+  thumbnail?: string
 }
 
 export interface QueueImportResult {
@@ -240,6 +270,44 @@ export interface AssetScanResult {
   assets: ScannedAsset[]
   /** true — на странице было больше MAX_ASSETS элементов, часть не попала в результат. */
   truncated: boolean
+}
+
+/** Кандидат, найденный read-only распознаванием повторяющихся DOM-структур.
+ * Сам по себе ничего не создаёт в Figma; selector используется только после
+ * явного клика «Создать компонент» во вкладке «Компоненты». */
+export interface ScannedComponent {
+  id: string
+  selector: string
+  name: string
+  tag: string
+  classes: string[]
+  instances: number
+  width: number
+  height: number
+  confidence: number
+  thumbnail?: string
+  /** Координаты в документе на момент атомарного DOM-скана. В фоне позволяют
+   *  снять динамический React-элемент, даже если он перемонтировался между
+   *  последовательными captureScreenshot. */
+  pageBox?: { x: number; y: number; width: number; height: number }
+}
+
+export interface ComponentScanResult {
+  components: ScannedComponent[]
+  truncated: boolean
+}
+
+export interface ComponentPreviewResult {
+  ok: boolean
+  thumbnail?: string
+  error?: string
+}
+
+export interface ComponentPreviewReadyEvent {
+  tabId: string
+  pageUrl: string
+  selector: string
+  thumbnail: string
 }
 
 /** Статус автообновления (electron-updater, см. main/autoUpdater.ts) — та же
@@ -306,6 +374,9 @@ export interface Api {
   browserGetTabs: () => Promise<TabsSnapshot>
   onTabsState: (cb: (snapshot: TabsSnapshot) => void) => () => void
 
+  /** Глобальный статус долгих операций подготовки/импорта в Figma. */
+  onImportProgress: (cb: (event: ImportProgressEvent) => void) => () => void
+
   inspectorStartPick: () => Promise<void>
   inspectorStopPick: () => Promise<void>
   onInspectorPickState: (cb: (state: PickState) => void) => () => void
@@ -345,6 +416,10 @@ export interface Api {
   inspectorQueueConfirmCancel: () => Promise<void>
   inspectorQueueRemove: (id: string) => Promise<void>
   inspectorQueueClear: () => Promise<void>
+  /** Клик по карточке в левой панели "для проверки" — переключает на нужную
+   *  вкладку (если пик был сделан не на текущей) и подсвечивает исходный
+   *  элемент на странице (см. main/inspector.ts highlightBackendNode). */
+  inspectorQueueLocate: (id: string) => Promise<ImportResult>
   inspectorImportQueue: (
     useMatchedTextStyles: boolean,
     useMatchedColorStyles: boolean,
@@ -365,6 +440,14 @@ export interface Api {
   /** Создаёт в Figma отдельную ноду из ассета (image-fill прямоугольник или
    *  vector) — не полноценный DesignNode-импорт, только сам ассет. */
   assetsSendToFigma: (asset: ScannedAsset) => Promise<ImportResult>
+  componentsScan: () => Promise<ComponentScanResult>
+  /** Снимает превью только по явному клику пользователя. Фоновый скан
+   *  намеренно не делает CDP screenshots, чтобы не дёргать compositor сайта. */
+  componentsPreview: (component: ScannedComponent) => Promise<ComponentPreviewResult>
+  /** Миниатюры приходят по одной из скрытого offscreen renderer, не задерживая
+   *  первичный список распознанных компонентов. */
+  onComponentPreviewReady: (cb: (event: ComponentPreviewReadyEvent) => void) => () => void
+  componentsImport: (component: ScannedComponent) => Promise<ImportResult>
 
   checkForUpdate: () => Promise<void>
   installUpdate: () => Promise<void>

@@ -33,10 +33,46 @@ const CONVERT_TO_PNG_MIME = new Set(['image/webp', 'image/avif', 'image/bmp', 'i
  *  путь (см. `return null`), картинка выпадает из снапшота, остальные не
  *  ждут её. */
 const FETCH_TIMEOUT_MS = 8000
+const ASSET_CACHE_TTL_MS = 5 * 60_000
+const FAILED_ASSET_CACHE_TTL_MS = 30_000
+const ASSET_CACHE_MAX_ENTRIES = 256
 
 export interface FetchedAsset {
   bytes: Buffer
   mimeType: string
+}
+
+interface CachedAsset {
+  value: FetchedAsset
+  expiresAt: number
+}
+
+/** Повторные элементы одной страницы часто ссылаются на те же логотипы,
+ * иконки и фотографии. Кэшируем только успешные ответы, а Promise держим
+ * отдельно, чтобы параллельные снапшоты не скачивали один URL несколько раз. */
+const assetCache = new Map<string, CachedAsset>()
+const failedAssetCache = new Map<string, number>()
+const inFlightAssets = new Map<string, Promise<FetchedAsset | null>>()
+
+function rememberAsset(url: string, value: FetchedAsset): void {
+  failedAssetCache.delete(url)
+  assetCache.delete(url)
+  assetCache.set(url, { value, expiresAt: Date.now() + ASSET_CACHE_TTL_MS })
+  while (assetCache.size > ASSET_CACHE_MAX_ENTRIES) {
+    const oldest = assetCache.keys().next().value as string | undefined
+    if (!oldest) break
+    assetCache.delete(oldest)
+  }
+}
+
+function rememberFailedAsset(url: string): void {
+  failedAssetCache.delete(url)
+  failedAssetCache.set(url, Date.now() + FAILED_ASSET_CACHE_TTL_MS)
+  while (failedAssetCache.size > ASSET_CACHE_MAX_ENTRIES) {
+    const oldest = failedAssetCache.keys().next().value as string | undefined
+    if (!oldest) break
+    failedAssetCache.delete(oldest)
+  }
 }
 
 /**
@@ -48,16 +84,41 @@ export interface FetchedAsset {
  * Ошибка — просто `null`, вызывающая сторона решает (diagnostic, не крах).
  */
 export async function fetchAssetBytes(url: string): Promise<FetchedAsset | null> {
+  const cached = assetCache.get(url)
+  if (cached && cached.expiresAt > Date.now()) {
+    // Buffer не мутируется downstream, но отдельная ссылка защищает кэш от
+    // случайной мутации будущим потребителем.
+    return { bytes: Buffer.from(cached.value.bytes), mimeType: cached.value.mimeType }
+  }
+  if (cached) assetCache.delete(url)
+  const failedUntil = failedAssetCache.get(url)
+  if (failedUntil && failedUntil > Date.now()) return null
+  if (failedUntil) failedAssetCache.delete(url)
+
+  const pending = inFlightAssets.get(url)
+  if (pending) return pending
+
+  const request = fetchAssetBytesUncached(url).finally(() => inFlightAssets.delete(url))
+  inFlightAssets.set(url, request)
+  return request
+}
+
+async function fetchAssetBytesUncached(url: string): Promise<FetchedAsset | null> {
   try {
     const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-    if (!res.ok) return null
+    if (!res.ok) {
+      rememberFailedAsset(url)
+      return null
+    }
     const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream'
     const bytes = Buffer.from(await res.arrayBuffer())
 
     if (CONVERT_TO_PNG_MIME.has(mimeType)) {
       try {
         const png = await sharp(bytes).png().toBuffer()
-        return { bytes: png, mimeType: 'image/png' }
+        const value = { bytes: png, mimeType: 'image/png' }
+        rememberAsset(url, value)
+        return value
       } catch {
         // Битый/нераспознанный файл — падаем обратно на исходные байты,
         // downstream-фильтр (SUPPORTED_RASTER_MIME) их и так отбросит как
@@ -65,8 +126,11 @@ export async function fetchAssetBytes(url: string): Promise<FetchedAsset | null>
       }
     }
 
-    return { bytes, mimeType }
+    const value = { bytes, mimeType }
+    rememberAsset(url, value)
+    return value
   } catch {
+    rememberFailedAsset(url)
     return null
   }
 }

@@ -5,8 +5,8 @@ import { parseLength } from './length.js'
 import { parseBoxShadow } from './shadow.js'
 import { parseLayout } from './layout.js'
 import type { DomSnapshotNode } from './domSnapshot.js'
-import { detectComponentGroups } from './componentGroups.js'
 import { pickSemanticClass } from './classHeuristics.js'
+import { hasVisualTextBox } from './visualTextContainer.js'
 
 /**
  * DOM-снапшот (с детьми, Phase 8) → дерево DesignNode. Чистая функция — не
@@ -47,7 +47,8 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   // оба сигнала пришли.
   const hasPlainText = !snapshot.asset && snapshot.text !== undefined
   const hasTextRuns = !snapshot.asset && snapshot.textRuns !== undefined && snapshot.textRuns.length > 0
-  const isTextLeaf = hasPlainText || hasTextRuns
+  const isVisualTextContainer = (hasPlainText || hasTextRuns) && hasVisualTextBox(style)
+  const isTextLeaf = (hasPlainText || hasTextRuns) && !isVisualTextContainer
   const type = snapshot.asset ? (snapshot.asset.kind === 'svg' ? 'vector' : 'image') : isTextLeaf ? 'text' : 'frame'
 
   // Для текстового узла Figma-поле `fills` — это цвет ГЛИФОВ (CSS `color`),
@@ -90,6 +91,7 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     parentContext,
     snapshot.authoredSizing
   )
+  const textWrap = isTextLeaf ? inferTextWrap(snapshot) : undefined
 
   // Чистый translate() на абсолютно спозиционированном узле НЕ нуждается в
   // отдельном diagnostic: box-модель (CDP DOM.getBoxModel), из которой мы
@@ -109,21 +111,10 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     })
   }
 
-  // Component recognition — группировка СРЕДИ ДЕТЕЙ ЭТОГО УЗЛА, до их
-  // конвертации (см. componentGroups.ts): структурно идентичные соседи
-  // (карточки/строки/элементы сетки) размечаются componentRef'ом, который
-  // рендерер (apps/figma-plugin) превращает в Figma-компонент + инстансы
-  // вместо N одинаковых фреймов. Вызывается на КАЖДОМ уровне рекурсии —
-  // вложенные повторы (напр. ряд иконок внутри каждой карточки) находятся
-  // автоматически, без отдельной логики.
-  const componentGroups = !isTextLeaf && snapshot.children ? detectComponentGroups(snapshot.children) : undefined
+  const sourceChildren = isVisualTextContainer ? [makeTextChildSnapshot(snapshot)] : snapshot.children
   const children = isTextLeaf
     ? undefined
-    : snapshot.children?.map((child, i) => {
-        const node = convertNode(child, diagnostics, { mode: layout.mode, align: layout.align })
-        const componentRef = componentGroups?.get(i)
-        return componentRef ? { ...node, componentRef } : node
-      })
+    : sourceChildren?.map((child) => convertNode(child, diagnostics, { mode: layout.mode, align: layout.align }))
 
   // Каждый прогон парсится ТЕМИ ЖЕ функциями, что и typography/цвет узла
   // целиком (parseTypography/parseColor) — единая точка разбора CSS→AST,
@@ -145,8 +136,9 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
     layout,
     typography: parseTypography(style),
     ...(snapshot.asset ? { asset: { assetId: snapshot.asset.assetId } } : {}),
-    ...(hasPlainText ? { text: snapshot.text } : {}),
-    ...(textRuns ? { textRuns } : {}),
+    ...(isTextLeaf && hasPlainText ? { text: snapshot.text } : {}),
+    ...(isTextLeaf && textRuns ? { textRuns } : {}),
+    ...(textWrap ? { textWrap } : {}),
     ...(fills ? { fills } : {}),
     ...(strokes ? { strokes } : {}),
     ...(effects.length > 0 ? { effects } : {}),
@@ -163,6 +155,81 @@ function convertNode(snapshot: DomSnapshotNode, diagnostics: ConversionWarning[]
   }
 
   return node
+}
+
+/** Браузер и Figma считают глифовые метрики немного по-разному. Фиксировать
+ * браузерную ширину однострочного текста пиксель-в-пиксель небезопасно:
+ * Montserrat "45" помещается в DOM bbox, но в Figma второй символ уже
+ * переносится. Фактически однострочный текст делаем nowrap/hug; настоящий
+ * многострочный сохраняет захваченную ширину и переносы. */
+function inferTextWrap(snapshot: DomSnapshotNode): 'wrap' | 'nowrap' {
+  const rawText = snapshot.text ?? (snapshot.textRuns ?? []).map((run) => run.text).join('')
+  if (rawText.includes('\n')) return 'wrap'
+  const whiteSpace = snapshot.computedStyle['white-space'] ?? 'normal'
+  if (['nowrap', 'pre'].includes(whiteSpace)) return 'nowrap'
+
+  const fontSize = parseLength(snapshot.computedStyle['font-size'], 16)
+  const parsedLineHeight = parseLength(snapshot.computedStyle['line-height'], Number.NaN)
+  const lineHeight = Number.isFinite(parsedLineHeight) ? parsedLineHeight : fontSize * 1.2
+  return snapshot.box.height <= lineHeight * 1.25 ? 'nowrap' : 'wrap'
+}
+
+/** Внутренний синтетический DOM-снапшот текста визуальной коробки. Стиль
+ * типографики/цвет наследуем от элемента, но обнуляем box-decoration, иначе
+ * Frame и Text оба получили бы один и тот же фон/бордер. */
+function makeTextChildSnapshot(snapshot: DomSnapshotNode): DomSnapshotNode {
+  const style = snapshot.computedStyle
+  const paddingLeft = parseLength(style['padding-left'], 0)
+  const paddingRight = parseLength(style['padding-right'], 0)
+  const paddingTop = parseLength(style['padding-top'], 0)
+  const paddingBottom = parseLength(style['padding-bottom'], 0)
+  const fontSize = parseLength(style['font-size'], 16)
+  const parsedLineHeight = parseLength(style['line-height'], Number.NaN)
+  const fallbackLineHeight = Number.isFinite(parsedLineHeight) ? parsedLineHeight : fontSize * 1.2
+  const fallbackWidth = Math.max(1, snapshot.box.width - paddingLeft - paddingRight)
+  const fallbackHeight = Math.max(1, Math.min(snapshot.box.height - paddingTop - paddingBottom, fallbackLineHeight))
+  const textBox = snapshot.textBox ?? {
+    x: paddingLeft,
+    y: paddingTop,
+    width: fallbackWidth,
+    height: fallbackHeight
+  }
+  const syntheticStyle: Record<string, string> = {
+    ...style,
+    display: 'block',
+    position: 'static',
+    'background-color': 'rgba(0, 0, 0, 0)',
+    'box-shadow': 'none',
+    'padding-top': '0px',
+    'padding-right': '0px',
+    'padding-bottom': '0px',
+    'padding-left': '0px',
+    'border-top-width': '0px',
+    'border-right-width': '0px',
+    'border-bottom-width': '0px',
+    'border-left-width': '0px',
+    'border-top-left-radius': '0px',
+    'border-top-right-radius': '0px',
+    'border-bottom-right-radius': '0px',
+    'border-bottom-left-radius': '0px'
+  }
+  // У flex/grid-коробки justify-content:center означает и визуальное
+  // центрирование текста; переносим его в text-align, когда ребёнок занимает
+  // доступную ширину (важно для кнопок без отдельного span внутри).
+  if (style['justify-content'] === 'center') syntheticStyle['text-align'] = 'center'
+  return {
+    tag: '#text',
+    id: null,
+    classes: [],
+    computedStyle: syntheticStyle,
+    // Это глифы внутри собственной визуальной коробки, а не прямоугольник с
+    // авторской width/height. HUG позволяет instance text override (`◷` →
+    // `45`) пересчитать ширину, вместо переноса нового текста столбиком.
+    authoredSizing: { width: false, height: false },
+    box: textBox,
+    ...(snapshot.text !== undefined ? { text: snapshot.text } : {}),
+    ...(snapshot.textRuns ? { textRuns: snapshot.textRuns } : {})
+  }
 }
 
 function resolvePositioning(

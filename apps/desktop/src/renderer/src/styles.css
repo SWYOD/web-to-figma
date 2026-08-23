@@ -1,5 +1,45 @@
 /* Desktop-специфичные классы поверх @web-to-figma/ui (см. docs/design-system.md). */
 
+/* Единый scrollbar для ВСЕХ внутренних renderer-поверхностей: сайдбаров,
+   нижней панели, модалок, дерева, списков ассетов и overlay-popover. Встроенный
+   сайт живёт в отдельном WebContentsView и намеренно сюда не попадает. */
+*::-webkit-scrollbar {
+  width: 10px;
+  height: 10px;
+}
+*::-webkit-scrollbar-track {
+  background: transparent;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-button,
+*::-webkit-scrollbar-button:single-button,
+*::-webkit-scrollbar-button:double-button {
+  display: none;
+  -webkit-appearance: none;
+  background: transparent;
+  width: 0;
+  height: 0;
+}
+*::-webkit-scrollbar-thumb {
+  min-width: 28px;
+  min-height: 28px;
+  background: color-mix(in srgb, var(--text-faint) 58%, transparent);
+  background-clip: content-box;
+  border: 3px solid transparent;
+  border-radius: 999px;
+}
+*::-webkit-scrollbar-thumb:hover {
+  background: color-mix(in srgb, var(--accent) 72%, var(--text-dim));
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-thumb:active {
+  background: var(--accent);
+  background-clip: content-box;
+}
+*::-webkit-scrollbar-corner {
+  background: transparent;
+}
+
 .brand {
   font-weight: 650;
   letter-spacing: 0.2px;
@@ -441,11 +481,70 @@ body.overlay-body {
   flex: 0 1 auto;
   max-height: 160px;
 }
-.queue-row {
-  cursor: default;
-}
 .queue-row:hover .recent-row-remove {
   display: inline-flex;
+}
+.queue-row-thumbnail {
+  flex: 0 0 auto;
+  width: 32px;
+  height: 32px;
+  border-radius: 6px;
+  object-fit: cover;
+  background: var(--surface-2);
+  cursor: zoom-in;
+}
+
+/* Глобальный статус подготовки и импорта в Figma — поверх нижней кромки
+   toolbar, не меняет его высоту и не дёргает workspace при появлении. */
+.toolbar {
+  position: relative;
+}
+.import-progress-ui {
+  position: absolute;
+  z-index: 5;
+  inset: auto 0 0;
+  pointer-events: none;
+}
+.import-progress-copy {
+  position: absolute;
+  left: 50%;
+  bottom: 7px;
+  max-width: min(46vw, 620px);
+  display: flex;
+  align-items: center;
+  gap: 7px;
+  padding: 4px 9px;
+  color: var(--text);
+  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  box-shadow: var(--shadow-sm);
+  font-size: 11px;
+  transform: translateX(-50%);
+  white-space: nowrap;
+}
+.import-progress-detail {
+  overflow: hidden;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
+}
+.import-progress-track {
+  width: 100%;
+  height: 3px;
+  overflow: hidden;
+  background: color-mix(in srgb, var(--border) 72%, transparent);
+}
+.import-progress-fill {
+  height: 100%;
+  background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 65%, #60a5fa));
+  border-radius: 0 999px 999px 0;
+  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent);
+  transition: width 180ms ease;
+}
+.import-progress-ui.success .import-progress-fill { background: #22c55e; }
+.import-progress-ui.error .import-progress-fill { background: var(--danger); }
+.queue-row-thumbnail-empty {
+  border: 1px dashed var(--border);
 }
 
 /* ── Нижняя панель центральной области (см. BottomPanel.tsx) ───────────── */
@@ -686,6 +785,104 @@ body.overlay-body {
   background: var(--danger);
 }
 
+/* ── Read-only распознавание компонентов ───────────────────────────────── */
+.components-panel {
+  flex: 1 1 auto;
+  min-width: 0;
+  min-height: 0;
+  overflow-y: auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 14px;
+}
+.components-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(210px, 1fr));
+  gap: 8px;
+  min-width: 0;
+}
+.component-card {
+  min-width: 0;
+  height: 66px;
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr) 30px;
+  align-items: center;
+  gap: 8px;
+  padding: 5px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 7px;
+}
+.component-card-preview {
+  width: 76px;
+  height: 54px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  overflow: hidden;
+  color: var(--text-faint);
+  background: var(--bg-canvas);
+  border-radius: 5px;
+}
+.component-card-preview img {
+  width: 100%;
+  height: 100%;
+  object-fit: contain;
+}
+.component-card-preview.clickable {
+  cursor: zoom-in;
+}
+.component-card-preview.clickable:hover {
+  outline: 1px solid var(--accent);
+}
+.component-card-preview-loading {
+  width: 100%;
+  height: 100%;
+  background: linear-gradient(100deg, transparent 20%, rgba(255, 255, 255, 0.07) 45%, transparent 70%), var(--bg-canvas);
+  background-size: 220% 100%;
+  animation: component-preview-loading 1.25s ease-in-out infinite;
+}
+@keyframes component-preview-loading {
+  from { background-position: 100% 0; }
+  to { background-position: -120% 0; }
+}
+.component-card-info {
+  min-width: 0;
+}
+.component-card-name {
+  overflow: hidden;
+  color: var(--text);
+  font-size: 12px;
+  font-weight: 600;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.component-card-meta {
+  margin-top: 4px;
+  color: var(--text-faint);
+  font-size: 10.5px;
+}
+.component-card-send {
+  width: 26px;
+  height: 26px;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 6px;
+}
+.component-card-send:hover {
+  color: var(--accent-text);
+  border-color: var(--accent);
+}
+.component-card-send.error {
+  color: #fff;
+  background: var(--danger);
+}
+
 /* ── Просмотр ассета на весь экран с зумом (клик по тайлу) ──────────────── */
 .lightbox {
   width: min(90vw, 1100px);
@@ -799,6 +996,68 @@ body.overlay-body {
   padding: 1px 5px;
   overflow-wrap: anywhere;
   max-width: 100%;
+}
+
+.element-tree {
+  max-height: 190px;
+  overflow: auto;
+  padding: 4px;
+  background: color-mix(in srgb, var(--bg-canvas) 74%, transparent);
+  border: 1px solid var(--border);
+  border-radius: var(--radius);
+}
+.element-tree-branch {
+  min-width: max-content;
+}
+.element-tree-row {
+  width: 100%;
+  min-height: 25px;
+  display: flex;
+  align-items: center;
+  gap: 3px;
+  padding-top: 3px;
+  padding-right: 7px;
+  padding-bottom: 3px;
+  color: var(--text-dim);
+  background: transparent;
+  border: 0;
+  border-radius: 5px;
+  text-align: left;
+  white-space: nowrap;
+  cursor: default;
+}
+.element-tree-row:hover {
+  background: var(--surface-2);
+}
+.element-tree-row.selected {
+  color: var(--text);
+  background: color-mix(in srgb, var(--accent) 12%, transparent);
+}
+.element-tree-chevron {
+  width: 12px;
+  height: 12px;
+  flex: 0 0 12px;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+}
+.element-tree-tag,
+.element-tree-id,
+.element-tree-class,
+.element-tree-more,
+.element-tree-text {
+  font-family: 'SF Mono', ui-monospace, monospace;
+  font-size: 10.5px;
+}
+.element-tree-tag { color: var(--accent); font-weight: 650; }
+.element-tree-id { color: #d977d5; }
+.element-tree-class { color: var(--text-dim); }
+.element-tree-more { color: var(--text-faint); }
+.element-tree-text {
+  max-width: 150px;
+  overflow: hidden;
+  color: var(--text-faint);
+  text-overflow: ellipsis;
 }
 
 .prop-row {

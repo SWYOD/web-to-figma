@@ -17,6 +17,10 @@ export function applyLayout(frame: AutoLayoutCapable, layout: LayoutInfo | undef
   if (!layout || layout.mode === 'none') return
 
   frame.layoutMode = layout.mode === 'horizontal' ? 'HORIZONTAL' : 'VERTICAL'
+  frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'
+  if (layout.wrap) {
+    frame.counterAxisSpacing = layout.mode === 'horizontal' ? (layout.rowGap ?? 0) : (layout.columnGap ?? 0)
+  }
   frame.primaryAxisSizingMode = 'FIXED'
   frame.counterAxisSizingMode = 'FIXED'
   frame.itemSpacing = layout.gap ?? 0

@@ -37,6 +37,8 @@ interface StubNode {
   characters?: string
   fontName?: { family: string; style: string }
   mainComponent?: StubNode
+  textAutoResize?: string
+  resizeCalls: Array<{ width: number; height: number }>
   resize(w: number, h: number): void
   appendChild(child: StubNode): void
 }
@@ -58,7 +60,9 @@ function makeStubNode(type: string): StubNode {
     layoutMode: 'NONE',
     layoutSizingHorizontal: undefined,
     layoutSizingVertical: undefined,
+    resizeCalls: [],
     resize(w, h) {
+      this.resizeCalls.push({ width: w, height: h })
       this.width = w
       this.height = h
     },
@@ -114,8 +118,8 @@ function baseNode(overrides: Partial<DesignNode> = {}): DesignNode {
   }
 }
 
-describe('designNode: component recognition rendering', () => {
-  it('promotes the main group member to a component and creates instances for the rest, with text overrides applied', async () => {
+describe('designNode: explicit component creation only', () => {
+  it('ignores legacy nested componentRef metadata during an ordinary frame import', async () => {
     installFigmaStub()
 
     const card = (title: string, groupRole: 'main' | 'instance', overrides?: { text?: Record<string, string> }): DesignNode =>
@@ -141,15 +145,11 @@ describe('designNode: component recognition rendering', () => {
     const result = ((await renderDesignNode(root, {})).primary as unknown) as StubNode
     expect(result.children).toHaveLength(2)
 
-    const [mainNode, instanceNode] = result.children
-    expect(mainNode!.type).toBe('COMPONENT')
-    expect(instanceNode!.type).toBe('INSTANCE')
-    expect(instanceNode!.mainComponent).toBe(mainNode)
-
-    // Override текста применился на клонированной инстанс-ноде по индексу 0
-    // (единственный ребёнок карточки — заголовок), main остался нетронутым.
-    expect(instanceNode!.children[0]!.characters).toBe('Beta')
-    expect(mainNode!.children[0]!.characters).toBe('Alpha')
+    const [firstNode, secondNode] = result.children
+    expect(firstNode!.type).toBe('FRAME')
+    expect(secondNode!.type).toBe('FRAME')
+    expect(firstNode!.children[0]!.characters).toBe('Alpha')
+    expect(secondNode!.children[0]!.characters).toBe('Beta')
   })
 
   it('leaves children without componentRef untouched (no grouping, plain frames as before)', async () => {
@@ -163,6 +163,60 @@ describe('designNode: component recognition rendering', () => {
     })
     const result = ((await renderDesignNode(root, {})).primary as unknown) as StubNode
     expect(result.children.map((c) => c.type)).toEqual(['FRAME', 'FRAME'])
+  })
+})
+
+describe('designNode: text sizing inside Auto Layout', () => {
+  it('does not overwrite nowrap HUG text with the captured glyph-box after appendChild', async () => {
+    installFigmaStub()
+    const root = baseNode({
+      id: 'icon',
+      name: 'icon',
+      size: { width: 64, height: 64 },
+      layout: { mode: 'vertical', align: 'center', justify: 'center', positioning: 'auto' },
+      children: [
+        baseNode({
+          id: 'icon-label',
+          type: 'text',
+          name: '45',
+          text: '45',
+          textWrap: 'nowrap',
+          size: { width: 29, height: 29 },
+          layout: { mode: 'none', widthSizing: 'hug', heightSizing: 'hug', positioning: 'auto' }
+        })
+      ]
+    })
+
+    const result = ((await renderDesignNode(root, {})).primary as unknown) as StubNode
+    const label = result.children[0]!
+    expect(label.textAutoResize).toBe('WIDTH_AND_HEIGHT')
+    expect(label.layoutSizingHorizontal).toBe('HUG')
+    expect(label.layoutSizingVertical).toBe('HUG')
+    expect(label.resizeCalls).toEqual([])
+  })
+
+  it('restores a visual frame browser box even when its Auto Layout sizing is HUG', async () => {
+    installFigmaStub()
+    const root = baseNode({
+      id: 'actions',
+      name: 'actions',
+      size: { width: 734, height: 87 },
+      layout: { mode: 'horizontal', positioning: 'auto' },
+      children: [
+        baseNode({
+          id: 'button',
+          name: 'button',
+          size: { width: 191, height: 52 },
+          layout: { mode: 'horizontal', widthSizing: 'hug', heightSizing: 'hug', positioning: 'auto' }
+        })
+      ]
+    })
+
+    const result = ((await renderDesignNode(root, {})).primary as unknown) as StubNode
+    const button = result.children[0]!
+    expect(button.resizeCalls.at(-1)).toEqual({ width: 191, height: 52 })
+    expect(button.width).toBe(191)
+    expect(button.height).toBe(52)
   })
 })
 

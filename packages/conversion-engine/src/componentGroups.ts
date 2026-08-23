@@ -2,6 +2,7 @@ import { nanoid } from 'nanoid'
 import type { ComponentRef } from '@web-to-figma/design-ast'
 import type { DomSnapshotNode } from './domSnapshot.js'
 import { pickSemanticClass } from './classHeuristics.js'
+import { hasVisualTextBox } from './visualTextContainer.js'
 
 /**
  * Component recognition (последний пункт бэклога после Phase 11) — находит
@@ -77,7 +78,11 @@ function diffOverrides(main: DomSnapshotNode, instance: DomSnapshotNode): Compon
       assets[path] = inst.asset.assetId
     }
     if (isTextLeaf(inst) && nodeText(inst) !== nodeText(m)) {
-      text[path] = nodeText(inst)
+      // Визуальный текстовый контейнер после convertElement становится
+      // Frame + Text, поэтому override должен указывать не на исходный path
+      // фрейма, а на его синтетического текстового ребёнка `.0`.
+      const textPath = hasVisualTextBox(inst.computedStyle) ? (path ? `${path}.0` : '0') : path
+      text[textPath] = nodeText(inst)
     }
     const mChildren = m.children ?? []
     const iChildren = inst.children ?? []
@@ -92,6 +97,27 @@ function diffOverrides(main: DomSnapshotNode, instance: DomSnapshotNode): Compon
   const hasAssets = Object.keys(assets).length > 0
   if (!hasText && !hasAssets) return undefined
   return { ...(hasText ? { text } : {}), ...(hasAssets ? { assets } : {}) }
+}
+
+/** Figma character override внутри Instance не может надёжно менять геометрию
+ * вложенного TextNode: ширина master остаётся прежней (`◷` 20px → `45`
+ * переносится столбиком). Поэтому повтор можно превращать в Component только
+ * когда все отличающиеся текстовые листья имеют ту же захваченную геометрию.
+ * В противном случае отдельные Frame точнее исходного сайта. */
+function hasUnsafeTextGeometryOverride(main: DomSnapshotNode, instance: DomSnapshotNode): boolean {
+  if (isTextLeaf(instance) && nodeText(instance) !== nodeText(main)) {
+    const mainBox = main.textBox ?? main.box
+    const instanceBox = instance.textBox ?? instance.box
+    if (Math.abs(mainBox.width - instanceBox.width) > 0.5 || Math.abs(mainBox.height - instanceBox.height) > 0.5) return true
+  }
+
+  const mainChildren = main.children ?? []
+  const instanceChildren = instance.children ?? []
+  const len = Math.min(mainChildren.length, instanceChildren.length)
+  for (let i = 0; i < len; i++) {
+    if (hasUnsafeTextGeometryOverride(mainChildren[i]!, instanceChildren[i]!)) return true
+  }
+  return false
 }
 
 /**
@@ -115,9 +141,14 @@ export function detectComponentGroups(children: DomSnapshotNode[]): Map<number, 
 
   for (const indices of bySignature.values()) {
     if (indices.length < 2) continue
-    const groupId = nanoid()
     const mainIndex = indices[0]!
     const mainNode = children[mainIndex]!
+    // Fidelity first: если хотя бы один instance потребовал бы менять размеры
+    // текста master-компонента, вся визуально единая группа остаётся обычными
+    // Frame — иначе порядок/контент сохранится, а геометрия нет.
+    if (indices.slice(1).some((idx) => hasUnsafeTextGeometryOverride(mainNode, children[idx]!))) continue
+
+    const groupId = nanoid()
     assignments.set(mainIndex, { groupId, role: 'main' })
     for (const idx of indices.slice(1)) {
       const overrides = diffOverrides(mainNode, children[idx]!)
@@ -126,4 +157,127 @@ export function detectComponentGroups(children: DomSnapshotNode[]): Map<number, 
   }
 
   return assignments
+}
+
+export interface RecognizedComponentCandidate {
+  selector: string
+  name: string
+  tag: string
+  classes: string[]
+  instances: number
+  width: number
+  height: number
+  confidence: number
+  pageBox?: { x: number; y: number; width: number; height: number }
+}
+
+const RECOGNITION_STYLE_KEYS = [
+  'display',
+  'position',
+  'flex-direction',
+  'flex-wrap',
+  'justify-content',
+  'align-items',
+  'gap',
+  'padding-top',
+  'padding-right',
+  'padding-bottom',
+  'padding-left',
+  'border-top-width',
+  'border-right-width',
+  'border-bottom-width',
+  'border-left-width',
+  'border-top-left-radius',
+  'border-top-right-radius',
+  'border-bottom-right-radius',
+  'border-bottom-left-radius',
+  'box-shadow',
+  'animation-name'
+] as const
+
+function recognitionSignature(node: DomSnapshotNode): string {
+  if (isTextLeaf(node)) return 'text'
+  if (node.asset) return `asset:${node.asset.kind}`
+  const semanticClass = pickSemanticClass(node.classes) ?? ''
+  const styles = RECOGNITION_STYLE_KEYS.map((key) => node.computedStyle[key] ?? '').join('|')
+  const children = (node.children ?? []).map(recognitionSignature).join(',')
+  return `${node.tag}.${semanticClass}{${styles}}[${children}]`
+}
+
+function nearlyEqual(a: number, b: number): boolean {
+  return Math.abs(a - b) <= Math.max(2, Math.max(Math.abs(a), Math.abs(b)) * 0.06)
+}
+
+function hasCompatibleGeometry(a: DomSnapshotNode, b: DomSnapshotNode): boolean {
+  // Text is component content, not component geometry. Repeated cards with
+  // identical structure routinely have labels of very different lengths
+  // ("Orders" vs "Financial and procurement activity"). Comparing their
+  // glyph boxes rejected a real component family even though the card,
+  // image slot and all styles were identical.
+  if (isTextLeaf(a) && isTextLeaf(b)) return true
+  if (!nearlyEqual(a.box.width, b.box.width) || !nearlyEqual(a.box.height, b.box.height)) return false
+  const aChildren = a.children ?? []
+  const bChildren = b.children ?? []
+  if (aChildren.length !== bChildren.length) return false
+  return aChildren.every((child, index) => hasCompatibleGeometry(child, bChildren[index]!))
+}
+
+function isUsefulCandidateRoot(node: DomSnapshotNode, parent: DomSnapshotNode): boolean {
+  if (!node.sourceSelector || isTextLeaf(node) || node.asset) return false
+  if (node.box.width < 16 || node.box.height < 12) return false
+  // Infinite marquees/carousels commonly duplicate one oversized animated
+  // strip. Those siblings are implementation machinery, not reusable UI
+  // components (GitHub's logo marquee produced two 2473×32 false positives).
+  const animationName = node.computedStyle['animation-name']?.trim()
+  if (animationName && animationName !== 'none') return false
+  if (parent.box.width > 0 && node.box.width > parent.box.width * 1.8) return false
+  const tag = node.tag.toLowerCase()
+  return Boolean(pickSemanticClass(node.classes)) || ['button', 'a', 'input', 'select', 'textarea'].includes(tag) || (node.children?.length ?? 0) >= 2
+}
+
+/**
+ * Отдельный read-only проход распознавания для вкладки «Компоненты».
+ * В отличие от legacy detectComponentGroups результат — только инвентарь:
+ * он никогда не попадает в Design AST и не может сам создать Component.
+ */
+export function detectComponentCandidates(root: DomSnapshotNode): RecognizedComponentCandidate[] {
+  const result = new Map<string, RecognizedComponentCandidate>()
+
+  const visit = (parent: DomSnapshotNode): void => {
+    const bySignature = new Map<string, DomSnapshotNode[]>()
+    for (const child of parent.children ?? []) {
+      if (!isUsefulCandidateRoot(child, parent)) continue
+      const signature = recognitionSignature(child)
+      const group = bySignature.get(signature)
+      if (group) group.push(child)
+      else bySignature.set(signature, [child])
+    }
+
+    for (const [signature, group] of bySignature) {
+      if (group.length < 2) continue
+      const representative = group[0]!
+      const compatible = group.filter((node) => hasCompatibleGeometry(representative, node))
+      if (compatible.length < 2) continue
+      const semanticClass = pickSemanticClass(representative.classes)
+      const candidate: RecognizedComponentCandidate = {
+        selector: representative.sourceSelector!,
+        name: semanticClass ?? representative.tag,
+        tag: representative.tag,
+        classes: representative.classes,
+        instances: compatible.length,
+        width: Math.round(representative.box.width),
+        height: Math.round(representative.box.height),
+        confidence: Math.min(0.99, 0.72 + Math.min(compatible.length, 6) * 0.035 + (semanticClass ? 0.06 : 0)),
+        ...(representative.pageBox ? { pageBox: representative.pageBox } : {})
+      }
+      const key = `${signature}:${candidate.width}x${candidate.height}`
+      const existing = result.get(key)
+      if (!existing || existing.instances < candidate.instances) result.set(key, candidate)
+    }
+
+    for (const child of parent.children ?? []) visit(child)
+  }
+
+  visit(root)
+  return [...result.values()].sort((a, b) => b.confidence - a.confidence || b.instances - a.instances)
 }

@@ -3,6 +3,7 @@ import { Globe, Trash2, X } from 'lucide-react'
 import { IconButton, Panel, PanelHead, PanelHeadActions, PanelTitle } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
 import type { QueueItemSummary, RecentSite } from '../../../shared/types'
+import { AssetLightbox, type LightboxAsset } from './AssetLightbox'
 import { SettingsPopover } from './SettingsPopover'
 
 interface Props {
@@ -42,6 +43,7 @@ export function LeftSidebar({
 }: Props): JSX.Element {
   const [sites, setSites] = useState<RecentSite[]>([])
   const [queueItems, setQueueItems] = useState<QueueItemSummary[]>([])
+  const [previewAsset, setPreviewAsset] = useState<LightboxAsset | null>(null)
 
   useEffect(() => {
     window.api.recentSitesGet().then(setSites)
@@ -61,6 +63,12 @@ export function LeftSidebar({
   const handleQueueItemRemove = (e: React.MouseEvent, id: string): void => {
     e.stopPropagation()
     window.api.inspectorQueueRemove(id)
+  }
+
+  const handleQueueThumbnailPreview = (e: React.MouseEvent, item: QueueItemSummary): void => {
+    e.stopPropagation()
+    if (!item.thumbnail) return
+    setPreviewAsset({ data: item.thumbnail, mimeType: 'image/jpeg', sourceUrl: queueLabel(item) })
   }
 
   const queueLabel = (item: QueueItemSummary): string =>
@@ -124,7 +132,23 @@ export function LeftSidebar({
           </PanelHead>
           <div className="recent-scroll queue-scroll">
             {queueItems.map((item) => (
-              <div key={item.id} className="recent-row queue-row" title={queueLabel(item)}>
+              <button
+                key={item.id}
+                className="recent-row queue-row"
+                title={`${queueLabel(item)} — нажмите, чтобы найти на странице`}
+                onClick={() => window.api.inspectorQueueLocate(item.id)}
+              >
+                {item.thumbnail ? (
+                  <img
+                    className="queue-row-thumbnail"
+                    src={item.thumbnail}
+                    alt=""
+                    title="Открыть полноэкранный просмотр"
+                    onClick={(e) => handleQueueThumbnailPreview(e, item)}
+                  />
+                ) : (
+                  <span className="queue-row-thumbnail queue-row-thumbnail-empty" aria-hidden="true" />
+                )}
                 <span className="recent-row-text">
                   <span className="recent-row-title">{queueLabel(item)}</span>
                   <span className="recent-row-host">
@@ -138,7 +162,7 @@ export function LeftSidebar({
                 >
                   <X size={12} />
                 </span>
-              </div>
+              </button>
             ))}
           </div>
         </>
@@ -152,6 +176,7 @@ export function LeftSidebar({
         onThemeIdChange={onThemeIdChange}
         onCustomThemesChange={onCustomThemesChange}
       />
+      {previewAsset && <AssetLightbox asset={previewAsset} onClose={() => setPreviewAsset(null)} />}
     </Panel>
   )
 }

@@ -22,6 +22,9 @@ export const SizingModeSchema = z.enum(['fixed', 'hug', 'fill'])
 
 export const LayoutInfoSchema = z.object({
   mode: z.enum(['horizontal', 'vertical', 'grid', 'none']),
+  /** CSS flex-wrap. Figma Auto Layout умеет WRAP для горизонтального и
+   * вертикального потока; без этого дети выходят за фиксированную ширину. */
+  wrap: z.boolean().optional(),
   gap: z.number().optional(),
   rowGap: z.number().optional(),
   columnGap: z.number().optional(),
@@ -132,20 +135,9 @@ export const AssetReferenceSchema = z.object({
   assetId: z.string()
 })
 
-/**
- * Распознавание компонентов (Phase "component recognition", последний пункт
- * из бэклога после Phase 11) — conversion-engine находит СТРУКТУРНО
- * идентичные соседние узлы (карточки, элементы списка, строки таблицы) и
- * помечает первый как `role:'main'`, остальные — `role:'instance'` с этим же
- * `groupId`; рендерер (apps/figma-plugin) превращает main в
- * `figma.createComponentFromNode`, инстансы — в `mainComponent.createInstance()`.
- * `overrides` — единственное, что реально может отличаться между
- * структурно идентичными повторами: текст и картинки/векторы (позиция,
- * размер, стили — наследуются от компонента, раз структура доказанно
- * идентична). Ключи — path из индексов детей ("0.2.1") ОТ ЭТОГО узла
- * (узла с role:'instance') вниз, по той же структуре, что и у main (числа
- * совпадают у main/instance по построению — сравнение шло по идентичной
- * форме дерева). Только на `role:'instance'` узлах. */
+/** @deprecated Оставлено только для чтения документов старого desktop.
+ * Новое распознавание возвращает отдельный inventory и никогда не вкладывает
+ * команду создания Component/Instance в DesignNode. Рендерер это поле игнорирует. */
 export const ComponentRefSchema = z.object({
   groupId: z.string(),
   role: z.enum(['main', 'instance']),
@@ -167,6 +159,11 @@ export interface DesignNode {
   layout?: z.infer<typeof LayoutInfoSchema>
   typography?: z.infer<typeof TypographyInfoSchema>
   text?: string
+  /** Фактическое поведение строки в браузере. nowrap применяется не только
+   * для CSS white-space:nowrap, но и когда захваченный текст реально занял
+   * одну строку — защищает от отличий метрик шрифта Figma, превращающих
+   * горизонтальный текст вроде "45" в столбик. */
+  textWrap?: 'wrap' | 'nowrap'
   /** Смешанный текст (п.3 запроса пользователя) — присутствует ВМЕСТО `text`,
    *  когда узел содержит "голый" текст вперемешку с инлайновыми тегами
    *  форматирования (`<b>`/`<a>`/`<i>`/...), которые раньше конвертировались
@@ -190,6 +187,7 @@ export interface DesignNode {
   clipsContent?: boolean
   asset?: z.infer<typeof AssetReferenceSchema>
   source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }
+  /** @deprecated См. ComponentRefSchema. */
   componentRef?: z.infer<typeof ComponentRefSchema>
   children?: DesignNode[]
 }
@@ -203,6 +201,7 @@ export const DesignNodeSchema: z.ZodType<DesignNode> = z.lazy(() =>
     layout: LayoutInfoSchema.optional(),
     typography: TypographyInfoSchema.optional(),
     text: z.string().optional(),
+    textWrap: z.enum(['wrap', 'nowrap']).optional(),
     textRuns: z.array(TextRunSchema).optional(),
     fills: z.array(PaintSchema).optional(),
     strokes: StrokeInfoSchema.optional(),

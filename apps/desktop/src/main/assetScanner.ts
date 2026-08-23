@@ -75,16 +75,22 @@ export async function scanPageAssets(wc: WebContents): Promise<AssetScanResult> 
   // отсоединяет debugger сразу после каждого клика, поэтому к моменту вызова
   // сканера сессии обычно нет, подключаем сами и отсоединяем в finally. Если
   // сессия УЖЕ была (пикер в процессе работы) — переиспользуем, не рвём чужую.
-  const alreadyAttached = dbg.isAttached()
-  if (!alreadyAttached) dbg.attach(CDP_PROTOCOL_VERSION)
+  // Не переиспользуем чужую сессию: иначе автоскан начинает слать команды в
+  // активный picker и оба владельца в итоге рвут target друг у друга.
+  if (dbg.isAttached()) return { assets: [], truncated: false }
+  dbg.attach(CDP_PROTOCOL_VERSION)
   try {
-    return await scanWithAttachedDebugger(dbg)
+    return await scanWithAttachedDebugger(dbg, () => {
+      // Вся DOM/CDP-фаза уже завершена. Сетевые fetch+sharp ниже могут идти
+      // секунды, но debugger страницы пикеру для них больше не нужен.
+      if (dbg.isAttached()) dbg.detach()
+    })
   } finally {
-    if (!alreadyAttached && dbg.isAttached()) dbg.detach()
+    if (dbg.isAttached()) dbg.detach()
   }
 }
 
-async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<AssetScanResult> {
+async function scanWithAttachedDebugger(dbg: WebContents['debugger'], releaseDebugger: () => void): Promise<AssetScanResult> {
   // CSS.getComputedStyleForNode (нужен для currentColor ниже) молча не
   // работает, пока домен не включён явно — тот же шаг, что ElementPicker
   // делает перед пиком (inspector.ts) — DOM.getDocument/getOuterHTML/
@@ -205,6 +211,7 @@ async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<A
       : { nodeIds: [] }
   const nodeIdByBackendId = new Map(svgNodes.map((n, i) => [n.backendNodeId, svgNodeIds.nodeIds[i]]))
 
+  const imageSources: { absoluteUrl: string; width?: number; height?: number }[] = []
   await Promise.all([
     ...svgNodes.map(async (node) => {
       try {
@@ -231,22 +238,33 @@ async function scanWithAttachedDebugger(dbg: WebContents['debugger']): Promise<A
       if (!src) return
       try {
         const absoluteUrl = new URL(src, baseURL).href
-        const fetched = await fetchAssetBytes(absoluteUrl)
-        if (!fetched) return
         const box = (await dbg.sendCommand('DOM.getBoxModel', { backendNodeId: node.backendNodeId }).catch(() => null)) as BoxModelResult | null
-
-        // <img src="x.svg"> — SVG, загруженный как обычная картинка, не inline.
-        if (fetched.mimeType === 'image/svg+xml') {
-          addSvg(fetched.bytes.toString('utf-8'), absoluteUrl, box?.model.width, box?.model.height)
-          return
-        }
-        if (!SUPPORTED_RASTER_MIME.has(fetched.mimeType)) return
-        await addRaster(fetched.bytes, fetched.mimeType, absoluteUrl, box?.model.width, box?.model.height)
+        imageSources.push({ absoluteUrl, width: box?.model.width, height: box?.model.height })
       } catch (err) {
-        log.debug('failed to fetch img asset', { src, message: (err as Error).message })
+        log.debug('failed to inspect img asset', { src, message: (err as Error).message })
       }
     })
   ])
+
+  releaseDebugger()
+
+  await Promise.all(
+    imageSources.map(async ({ absoluteUrl, width, height }) => {
+      try {
+        const fetched = await fetchAssetBytes(absoluteUrl)
+        if (!fetched) return
+        // <img src="x.svg"> — SVG, загруженный как обычная картинка, не inline.
+        if (fetched.mimeType === 'image/svg+xml') {
+          addSvg(fetched.bytes.toString('utf-8'), absoluteUrl, width, height)
+          return
+        }
+        if (!SUPPORTED_RASTER_MIME.has(fetched.mimeType)) return
+        await addRaster(fetched.bytes, fetched.mimeType, absoluteUrl, width, height)
+      } catch (err) {
+        log.debug('failed to fetch img asset', { src: absoluteUrl, message: (err as Error).message })
+      }
+    })
+  )
 
   return { assets: [...byHash.values()], truncated }
 }

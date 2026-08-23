@@ -19,21 +19,26 @@ import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
 import { OverlayController } from './overlay'
 import { scanPageAssets } from './assetScanner'
+import { captureComponentDocument, captureComponentPreviewsOffscreen, scanPageComponents } from './componentScanner'
 import { registerAutoUpdater, scheduleUpdateChecks } from './autoUpdater'
 import type {
   AppSettings,
   ApplyStylesResult,
   ApplyStylesTargets,
   AssetScanResult,
+  ComponentScanResult,
+  ComponentPreviewResult,
   BridgeInfo,
   ColorMatchSource,
   ImportResult,
+  ImportProgressEvent,
   OverlaySize,
   PickState,
   QueueImportResult,
   QueueItemSummary,
   RecentSite,
   ScannedAsset,
+  ScannedComponent,
   SelectionResult,
   TabsSnapshot,
   ViewBounds
@@ -124,6 +129,36 @@ let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
 let elementPicker: ElementPicker | null = null
 let overlayController: OverlayController | null = null
+const componentPreviewJobs = new Map<string, symbol>()
+let importProgressSequence = 0
+
+function createImportProgress(label: string, total = 1): {
+  update: (phase: ImportProgressEvent['phase'], progress: number, detail?: string, current?: number) => void
+  finish: (ok: boolean, detail?: string) => void
+} {
+  const id = `import-${Date.now()}-${++importProgressSequence}`
+  const emit = (event: Omit<ImportProgressEvent, 'id' | 'label' | 'total'>): void => {
+    mainWindow?.webContents.send('import:progress', { id, label, total, ...event } satisfies ImportProgressEvent)
+  }
+  emit({ state: 'running', phase: 'preparing', progress: 0, detail: 'Подготовка…' })
+  return {
+    update: (phase, progress, detail, current) =>
+      emit({
+        state: 'running',
+        phase,
+        progress: Math.max(0, Math.min(1, progress)),
+        ...(detail ? { detail } : {}),
+        ...(current !== undefined ? { current } : {})
+      }),
+    finish: (ok, detail) =>
+      emit({
+        state: ok ? 'success' : 'error',
+        phase: 'complete',
+        progress: 1,
+        detail: detail ?? (ok ? 'Готово' : 'Ошибка')
+      })
+  }
+}
 
 // Отступ снизу — тот же 16px, что раньше был в CSS `.picker-float-bar{bottom:16px}`.
 // Ширина/высота — стартовая оценка ДО первого `overlay:report-size` от
@@ -301,8 +336,11 @@ function createWindow(): void {
     () => {
       mainWindow?.webContents.send('inspector:selection-cleared')
       overlayController?.send('inspector:selection-cleared', undefined)
-    }
-    // getEffectiveTheme, getViewScreenBounds // 7-й/8-й аргумент для кастомного тултипа, см. inspector.ts
+    },
+    () => browserController?.getActiveTabId() ?? null,
+    (tabId) => browserController?.getWebContentsForTab(tabId) ?? null,
+    () => browserController?.getViewportSize() ?? { width: 0, height: 0 }
+    // getEffectiveTheme, getViewScreenBounds // 8-й/9-й аргумент для кастомного тултипа, см. inspector.ts
   )
 
   // Overlay монтируется ПОСЛЕ browser-пейна — addChildView упорядочен по
@@ -449,6 +487,23 @@ function registerIpc(): void {
   ipcMain.handle('inspector:queue-remove', (_e, id: string): void => elementPicker?.removeQueueItem(id))
   ipcMain.handle('inspector:queue-clear', (): void => elementPicker?.clearQueue())
 
+  // Клик по карточке очереди "для проверки" (по запросу пользователя) —
+  // переключает вкладку на ту, где был сделан пик (если сейчас активна другая),
+  // затем подсвечивает исходный элемент и скроллит его в видимую область.
+  ipcMain.handle('inspector:queue-locate', async (_e, id: string): Promise<ImportResult> => {
+    const loc = elementPicker?.getQueueItemLocation(id)
+    if (!loc) return { ok: false, error: 'Элемент не найден в очереди' }
+    if (loc.tabId && browserController?.getActiveTabId() !== loc.tabId) browserController?.switchTab(loc.tabId)
+    // Исходную вкладку могли закрыть после добавления элемента в очередь.
+    // Не ищем backendNodeId в другой вкладке: CDP id не глобален и может
+    // случайно совпасть с совершенно другим DOM-узлом.
+    if (!loc.tabId || browserController?.getActiveTabId() !== loc.tabId) {
+      return { ok: false, error: 'Исходная вкладка уже закрыта' }
+    }
+    const ok = (await elementPicker?.highlightBackendNode(loc.backendNodeId)) ?? false
+    return ok ? { ok: true } : { ok: false, error: 'Элемент больше не найден на странице — возможно, она изменилась' }
+  })
+
   // Esc с уже выбранным элементом (см. inspector.ts clearSelection класс-докстринг
   // про inputListenerWc) — снимает постоянную подсветку на странице и весь
   // связанный state, по запросу пользователя ("выделение никак не убрать").
@@ -473,16 +528,24 @@ function registerIpc(): void {
       useMatchedColorStyles: boolean,
       colorMatchSource: ColorMatchSource
     ): Promise<ImportResult> => {
+      const progress = createImportProgress('Импорт фрейма')
+      const startedAt = performance.now()
       // См. inspector.ts CAPTURE_MIN_WIDTH — desktop-ширина применяется здесь,
       // один раз перед реальным импортом, а не на каждом клике пикера
       // (это раньше вызывало заметный "дёрг" видимой страницы на каждый клик).
+      progress.update('preparing', 0.08, 'Чтение DOM, стилей и ассетов…')
       await elementPicker?.prepareForImport()
+      const preparedAt = performance.now()
       const document = elementPicker?.buildDocument(
         browserController?.getState().url ?? '',
         browserController?.getViewportSize() ?? { width: 0, height: 0 }
       )
-      if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+      if (!document) {
+        progress.finish(false, 'Элемент не выбран')
+        return { ok: false, error: 'Сначала выберите элемент' }
+      }
       if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        progress.finish(false, 'Figma не подключена')
         return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
       }
 
@@ -494,11 +557,19 @@ function registerIpc(): void {
         colorMatchSource
       })
       try {
+        progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
         const response = await bridgeServer.request(message)
-        if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+        if (response.kind === 'error') {
+          const error = (response as ErrorMessage).payload.message
+          progress.finish(false, error)
+          return { ok: false, error }
+        }
+        progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
         return { ok: true }
       } catch (err) {
-        return { ok: false, error: (err as Error).message }
+        const error = (err as Error).message
+        progress.finish(false, error)
+        return { ok: false, error }
       }
     }
   )
@@ -516,13 +587,21 @@ function registerIpc(): void {
       colorMatchSource: ColorMatchSource,
       alsoCreateInstance: boolean
     ): Promise<ImportResult> => {
+      const progress = createImportProgress('Импорт компонента')
+      const startedAt = performance.now()
+      progress.update('preparing', 0.08, 'Чтение DOM, стилей и ассетов…')
       await elementPicker?.prepareForImport()
+      const preparedAt = performance.now()
       const document = elementPicker?.buildDocument(
         browserController?.getState().url ?? '',
         browserController?.getViewportSize() ?? { width: 0, height: 0 }
       )
-      if (!document) return { ok: false, error: 'Сначала выберите элемент' }
+      if (!document) {
+        progress.finish(false, 'Элемент не выбран')
+        return { ok: false, error: 'Сначала выберите элемент' }
+      }
       if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        progress.finish(false, 'Figma не подключена')
         return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
       }
 
@@ -535,11 +614,19 @@ function registerIpc(): void {
         alsoCreateInstance
       })
       try {
+        progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
         const response = await bridgeServer.request(message)
-        if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+        if (response.kind === 'error') {
+          const error = (response as ErrorMessage).payload.message
+          progress.finish(false, error)
+          return { ok: false, error }
+        }
+        progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
         return { ok: true }
       } catch (err) {
-        return { ok: false, error: (err as Error).message }
+        const error = (err as Error).message
+        progress.finish(false, error)
+        return { ok: false, error }
       }
     }
   )
@@ -557,22 +644,39 @@ function registerIpc(): void {
       useMatchedColorStyles: boolean,
       colorMatchSource: ColorMatchSource
     ): Promise<QueueImportResult> => {
-      const documents = elementPicker?.buildQueueDocuments(
-        browserController?.getState().url ?? '',
-        browserController?.getViewportSize() ?? { width: 0, height: 0 }
-      )
-      if (!documents || documents.length === 0) return { ok: false, imported: 0, failed: 0, error: 'Очередь пуста' }
       if (!bridgeServer || bridgeServer.connectionCount === 0) {
         return { ok: false, imported: 0, failed: 0, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
       }
+      // Queue-mode автоматически запускает следующий pick после каждого Add.
+      // Перед тяжёлой подготовкой освобождаем его CDP-сессию явно, иначе
+      // очередь ждала собственный debugger и помечала элементы ошибочными.
+      await elementPicker?.stop()
+      const queued = elementPicker?.getQueue() ?? []
+      if (queued.length === 0) return { ok: false, imported: 0, failed: 0, error: 'Очередь пуста' }
+      const progress = createImportProgress('Импорт очереди', queued.length)
+      const startedAt = performance.now()
+      const prepared = await elementPicker!.prepareQueueDocuments(
+        browserController?.getViewportSize() ?? { width: 0, height: 0 },
+        (completed, total) => {
+          progress.update('preparing', 0.05 + (completed / Math.max(1, total)) * 0.45, `Подготовка ${completed} из ${total}`, completed)
+        }
+      )
+      const documents = prepared.documents
+      const preparedAt = performance.now()
 
       // Последовательно, не параллельно — один запрос за раз к тому же
       // единственному подключённому плагину (bridgeServer.request() и так
       // резолвится по одному in-flight запросу за раз, см. docs/bridge-protocol.md).
       let imported = 0
-      let failed = 0
+      let failed = prepared.failed
       let x = 0
-      for (const document of documents) {
+      for (const [index, document] of documents.entries()) {
+        progress.update(
+          'sending',
+          0.5 + (index / Math.max(1, documents.length)) * 0.5,
+          `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание ${index + 1} из ${documents.length} в Figma`,
+          index + 1
+        )
         const message = createMessage<ImportNodeMessage>('import-node', {
           document,
           as: 'frame',
@@ -596,6 +700,12 @@ function registerIpc(): void {
       // (успех/ошибка сразу видны в результате, зависать в панели нечему
       // возвращаться: DOM-снапшот уже захвачен и не обновится сам собой).
       elementPicker?.clearQueue()
+      progress.finish(
+        failed === 0,
+        failed === 0
+          ? `Импортировано: ${imported} за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`
+          : `Импортировано: ${imported}, ошибок: ${failed}`
+      )
       return { ok: failed === 0, imported, failed }
     }
   )
@@ -609,15 +719,24 @@ function registerIpc(): void {
     if (!bridgeServer || bridgeServer.connectionCount === 0) {
       return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
     }
+    const progress = createImportProgress('Применение стилей')
 
     const message = createMessage<ApplyStylesMessage>('apply-styles', { document, targets })
     try {
+      progress.update('sending', 0.55, 'Обновление выделения в Figma…')
       const response = await bridgeServer.request(message)
-      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+      if (response.kind === 'error') {
+        const error = (response as ErrorMessage).payload.message
+        progress.finish(false, error)
+        return { ok: false, error }
+      }
       const payload = (response as ResponseMessage).payload as { appliedTo?: number; skipped?: string[] }
+      progress.finish(true, `Обновлено: ${payload.appliedTo ?? 0}`)
       return { ok: true, appliedTo: payload.appliedTo, skipped: payload.skipped }
     } catch (err) {
-      return { ok: false, error: (err as Error).message }
+      const error = (err as Error).message
+      progress.finish(false, error)
+      return { ok: false, error }
     }
   })
 
@@ -651,6 +770,7 @@ function registerIpc(): void {
     if (!bridgeServer || bridgeServer.connectionCount === 0) {
       return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
     }
+    const progress = createImportProgress('Импорт ассета')
     const message = createMessage<PlaceAssetMessage>('place-asset', {
       assetKind: asset.kind,
       mimeType: asset.mimeType,
@@ -659,11 +779,131 @@ function registerIpc(): void {
       data: asset.data
     })
     try {
+      progress.update('sending', 0.55, 'Отправка ассета в Figma…')
       const response = await bridgeServer.request(message)
-      if (response.kind === 'error') return { ok: false, error: (response as ErrorMessage).payload.message }
+      if (response.kind === 'error') {
+        const error = (response as ErrorMessage).payload.message
+        progress.finish(false, error)
+        return { ok: false, error }
+      }
+      progress.finish(true)
       return { ok: true }
     } catch (err) {
-      return { ok: false, error: (err as Error).message }
+      const error = (err as Error).message
+      progress.finish(false, error)
+      return { ok: false, error }
+    }
+  })
+
+  ipcMain.handle('components:scan', async (): Promise<ComponentScanResult> => {
+    const wc = browserController?.getWebContents()
+    if (!wc) return { components: [], truncated: false }
+    let result: ComponentScanResult
+    try {
+      result = await scanPageComponents(wc)
+    } catch (err) {
+      // Навигация может закрыть target между load-finished и автосканом. Это
+      // нормальная отмена устаревшей работы, а не ошибка всего IPC-пайплайна.
+      log.debug('component scan cancelled', { message: (err as Error).message })
+      return { components: [], truncated: false }
+    }
+    const tabId = browserController?.getActiveTabId()
+    const pageUrl = browserController?.getState().url ?? ''
+    const viewport = browserController?.getViewportSize() ?? { width: 0, height: 0 }
+    if (tabId && pageUrl && result.components.length > 0) {
+      const token = Symbol(pageUrl)
+      componentPreviewJobs.set(tabId, token)
+      // Список кандидатов возвращается сразу. Скрытый renderer стартует на
+      // следующем tick и присылает готовые изображения по одному.
+      setTimeout(() => {
+        void captureComponentPreviewsOffscreen(
+          wc,
+          pageUrl,
+          result.components,
+          viewport,
+          (selector, thumbnail) => {
+            if (componentPreviewJobs.get(tabId) !== token || mainWindow?.isDestroyed()) return
+            mainWindow?.webContents.send('components:preview-ready', { tabId, pageUrl, selector, thumbnail })
+          },
+          () => componentPreviewJobs.get(tabId) === token
+        ).finally(() => {
+          if (componentPreviewJobs.get(tabId) === token) componentPreviewJobs.delete(tabId)
+        })
+      }, 0)
+    }
+    return result
+  })
+
+  ipcMain.handle(
+    'components:preview',
+    async (_e, component: ScannedComponent): Promise<ComponentPreviewResult> => {
+      const wc = browserController?.getWebContents()
+      if (!wc) return { ok: false, error: 'Нет открытой страницы' }
+      if (!component.selector || component.selector.length > 4000) {
+        return { ok: false, error: 'Некорректный кандидат компонента' }
+      }
+      let thumbnail: string | undefined
+      await captureComponentPreviewsOffscreen(
+        wc,
+        browserController?.getState().url ?? '',
+        [component],
+        browserController?.getViewportSize() ?? { width: 0, height: 0 },
+        (_selector, value) => {
+          thumbnail = value
+        }
+      )
+      return thumbnail
+        ? { ok: true, thumbnail }
+        : { ok: false, error: 'Элемент больше не найден на странице — запустите скан ещё раз' }
+    }
+  )
+
+  ipcMain.handle('components:import', async (_e, component: ScannedComponent): Promise<ImportResult> => {
+    if (!bridgeServer || bridgeServer.connectionCount === 0) {
+      return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+    }
+    const wc = browserController?.getWebContents()
+    if (!wc) return { ok: false, error: 'Нет открытой страницы' }
+    if (!component.selector || component.selector.length > 4000) return { ok: false, error: 'Некорректный кандидат компонента' }
+    const progress = createImportProgress('Импорт распознанного компонента')
+    const startedAt = performance.now()
+
+    try {
+      progress.update('preparing', 0.08, 'Чтение DOM, стилей и ассетов…')
+      const document = await captureComponentDocument(
+        wc,
+        component.selector,
+        browserController?.getState().url ?? '',
+        browserController?.getViewportSize() ?? { width: 0, height: 0 }
+      )
+      if (!document) {
+        progress.finish(false, 'Элемент больше не найден')
+        return { ok: false, error: 'Элемент больше не найден на странице — запустите скан ещё раз' }
+      }
+      const preparedAt = performance.now()
+      const saved = await readJson<Partial<AppSettings>>(settingsPath())
+      const settings = { ...DEFAULT_SETTINGS, ...(saved ?? {}) }
+      const message = createMessage<ImportNodeMessage>('import-node', {
+        document,
+        as: 'component',
+        useMatchedTextStyles: settings.useMatchedTextStyles,
+        useMatchedColorStyles: settings.useMatchedColorStyles,
+        colorMatchSource: settings.colorMatchSource,
+        alsoCreateInstance: settings.alsoCreateInstance
+      })
+      progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
+      const response = await bridgeServer.request(message)
+      if (response.kind === 'error') {
+        const error = (response as ErrorMessage).payload.message
+        progress.finish(false, error)
+        return { ok: false, error }
+      }
+      progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
+      return { ok: true }
+    } catch (err) {
+      const error = (err as Error).message
+      progress.finish(false, error)
+      return { ok: false, error }
     }
   })
 }

@@ -88,14 +88,12 @@ export async function loadStyleCatalog(opts: {
 
 async function loadColorVariables(): Promise<ColorVariableCandidate[]> {
   const variables = await figma.variables.getLocalVariablesAsync('COLOR')
-  const collectionCache = new Map<string, VariableCollection | null>()
+  const collectionIds = [...new Set(variables.map((variable) => variable.variableCollectionId))]
+  const collections = await Promise.all(collectionIds.map((id) => figma.variables.getVariableCollectionByIdAsync(id)))
+  const collectionCache = new Map(collectionIds.map((id, index) => [id, collections[index] ?? null]))
   const candidates: ColorVariableCandidate[] = []
   for (const variable of variables) {
-    let collection = collectionCache.get(variable.variableCollectionId)
-    if (collection === undefined) {
-      collection = await figma.variables.getVariableCollectionByIdAsync(variable.variableCollectionId)
-      collectionCache.set(variable.variableCollectionId, collection)
-    }
+    const collection = collectionCache.get(variable.variableCollectionId)
     if (!collection) continue
     const value = variable.valuesByMode[collection.defaultModeId]
     // Пропускаем алиасы (VariableAlias) и не-RGBA значения — только прямой цвет.

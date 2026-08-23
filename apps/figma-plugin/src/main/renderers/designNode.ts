@@ -1,5 +1,5 @@
 /// <reference types="@figma/plugin-typings" />
-import type { AssetManifest, ComponentRef, DesignNode, LayoutInfo } from '@web-to-figma/design-ast'
+import type { AssetManifest, DesignNode, LayoutInfo } from '@web-to-figma/design-ast'
 import { toFigmaPaints } from './paint'
 import { toFigmaEffects } from './effects'
 import { applyLayout } from './layout'
@@ -138,131 +138,19 @@ async function buildFrame(node: DesignNode, assets: AssetManifest, styleMatch: S
   if (node.opacity !== undefined) frame.opacity = node.opacity
   if (node.rotationDeg !== undefined) frame.rotation = node.rotationDeg
 
-  // Component recognition (см. componentGroups.ts в conversion-engine) —
-  // дети с componentRef обрабатываются ГРУППОЙ (первый componentRef каждого
-  // ещё не встречавшегося groupId запускает всю группу сразу: main →
-  // компонент, остальные → инстансы с override'ами), остальные — как раньше,
-  // по одному. Группа обрабатывается ПОЛНОСТЬЮ в момент первого попавшегося
-  // члена — если члены группы не идут подряд в исходном списке (на практике
-  // почти всегда идут, т.к. это прямые DOM-соседи), более поздние "перепрыгнут"
-  // вперёд относительно неgrouped-соседей между ними; осознанный компромисс
-  // ради простоты, не отдельный проход с восстановлением позиций.
-  const processedGroups = new Set<string>()
-  for (const child of node.children ?? []) {
-    const groupId = child.componentRef?.groupId
-    if (groupId) {
-      if (processedGroups.has(groupId)) continue
-      processedGroups.add(groupId)
-      const members = (node.children ?? []).filter((c) => c.componentRef?.groupId === groupId)
-      await appendComponentGroup(frame, members, assets, styleMatch)
-      continue
-    }
-
-    const childNode = await buildFrame(child, assets, styleMatch)
+  // Независимые sibling-ветки можно строить одновременно. Порядок сохраняет
+  // Promise.all, а append выполняется после подготовки — иерархия/stacking
+  // остаются теми же, зато ожидания шрифтов разных веток не суммируются.
+  const children = node.children ?? []
+  const builtChildren = await Promise.all(children.map((child) => buildFrame(child, assets, styleMatch)))
+  for (let index = 0; index < children.length; index++) {
+    const child = children[index]!
+    const childNode = builtChildren[index]!
     frame.appendChild(childNode)
     finishChildPlacement(frame, childNode, child)
   }
 
   return frame
-}
-
-/**
- * Один член группы component recognition → Figma-компонент (main) или его
- * инстанс (остальные), с override'ами текста/картинок (см. componentGroups.ts
- * в conversion-engine — там же формат `overrides`). `figma.createComponentFromNode`
- * превращает УЖЕ добавленную в дерево ноду в компонент НА МЕСТЕ (тот же
- * родитель/позиция) — поэтому main сперва строится и добавляется как обычный
- * child, и только потом промотируется.
- */
-async function appendComponentGroup(
-  parentFrame: FrameNode,
-  members: DesignNode[],
-  assets: AssetManifest,
-  styleMatch: StyleMatchOptions
-): Promise<void> {
-  const mainDesignNode = members.find((m) => m.componentRef?.role === 'main') ?? members[0]!
-  const mainSceneNode = await buildFrame(mainDesignNode, assets, styleMatch)
-  parentFrame.appendChild(mainSceneNode)
-  finishChildPlacement(parentFrame, mainSceneNode, mainDesignNode)
-
-  let mainComponent: ComponentNode
-  try {
-    mainComponent = figma.createComponentFromNode(mainSceneNode)
-  } catch (err) {
-    // Не удалось превратить ноду в компонент (неподходящий тип и т.п.) —
-    // тихо деградируем: остальные члены рендерятся ОБЫЧНЫМИ отдельными
-    // фреймами, как до этой фичи, а не роняют весь импорт.
-    console.warn('createComponentFromNode failed, falling back to plain frames', (err as Error).message)
-    for (const member of members) {
-      if (member === mainDesignNode) continue
-      const childNode = await buildFrame(member, assets, styleMatch)
-      parentFrame.appendChild(childNode)
-      finishChildPlacement(parentFrame, childNode, member)
-    }
-    return
-  }
-
-  for (const member of members) {
-    if (member === mainDesignNode) continue
-    const instance = mainComponent.createInstance()
-    parentFrame.appendChild(instance)
-    await applyInstanceOverrides(instance, member.componentRef?.overrides, assets)
-    finishChildPlacement(parentFrame, instance, member)
-  }
-}
-
-/**
- * Path-ключи override'ов ("0.2.1", индексы детей от узла группы вниз, см.
- * componentGroups.ts) резолвятся на РЕАЛЬНОЙ Figma-ноде инстанса тем же
- * индексированием `.children[i]` — main/instance гарантированно одной формы
- * (сигнатуры совпали на этапе группировки), поэтому индексы совпадают 1:1.
- * Текст — единственное, что требует `loadFontAsync` перед записью
- * `characters` (Figma-ограничение); картинки — простой swap заливки, только
- * для узлов, у которых реально есть `fills` (raster-картинки; svg-вектора
- * туда осознанно не попадают, см. componentGroups.ts diffOverrides).
- */
-async function applyInstanceOverrides(
-  instance: InstanceNode,
-  overrides: ComponentRef['overrides'],
-  assets: AssetManifest
-): Promise<void> {
-  if (!overrides) return
-
-  const resolvePath = (path: string): SceneNode | null => {
-    if (path === '') return instance
-    let current: SceneNode = instance
-    for (const raw of path.split('.')) {
-      const index = Number(raw)
-      if (!('children' in current)) return null
-      const next: SceneNode | undefined = (current as FrameNode).children[index]
-      if (!next) return null
-      current = next
-    }
-    return current
-  }
-
-  for (const [path, text] of Object.entries(overrides.text ?? {})) {
-    const target = resolvePath(path)
-    if (!target || target.type !== 'TEXT') continue
-    try {
-      const fontName = target.fontName
-      // Разные шрифты внутри одного текстового узла (mixed textRuns) —
-      // пропускаем override, безопаснее оставить текст main-компонента, чем
-      // упасть на попытке загрузить "смешанный" fontName.
-      if (fontName === figma.mixed) continue
-      await figma.loadFontAsync(fontName)
-      target.characters = text
-    } catch (err) {
-      console.debug('text override failed', path, (err as Error).message)
-    }
-  }
-
-  for (const [path, assetId] of Object.entries(overrides.assets ?? {})) {
-    const target = resolvePath(path)
-    if (!target || !('fills' in target)) continue
-    const imagePaint = createImagePaint(assetId, assets)
-    if (imagePaint) (target as FrameNode).fills = [imagePaint]
-  }
 }
 
 /** positioning:'auto' — child.layout.mode пуст, доверяем Auto Layout
@@ -299,10 +187,25 @@ function finishChildPlacement(frame: FrameNode, childNode: SceneNode, child: Des
     // испорченный размер, не восстанавливая исходный (проверено живьём:
     // картинки-логотипы в горизонтальном flex-ряду импортировались шириной
     // 1px при верной высоте). Переприменяем захваченный пиксельный размер
-    // ПОСЛЕ назначения sizing-режимов — на FILL/HUG-осях это безвредный
-    // no-op (auto-layout пересчитает их сам на следующем layout pass), на
-    // FIXED — гарантированно восстанавливает то, что реально было на странице.
-    if ('resize' in childNode) {
+    // ПОСЛЕ назначения sizing-режимов. Важно: resize() не no-op для
+    // TextNode на HUG-оси — он сбрасывает естественную ширину/высоту текста.
+    // Именно так `45` сжималось обратно в DOM glyph-box 29×29, переносило
+    // второй символ и выталкивало глифы вниз из-за line-height 36. Поэтому
+    // восстанавливаем захваченный размер только на FIXED-осях; HUG/FILL оставляем
+    // в распоряжении Auto Layout/Text Auto Resize.
+    if ('resize' in childNode && childNode.type === 'TEXT') {
+      const widthIsFixed = !('layoutSizingHorizontal' in childNode) || childNode.layoutSizingHorizontal === 'FIXED'
+      const heightIsFixed = !('layoutSizingVertical' in childNode) || childNode.layoutSizingVertical === 'FIXED'
+      if (widthIsFixed || heightIsFixed) {
+        childNode.resize(
+          widthIsFixed ? Math.max(1, child.size.width) : childNode.width,
+          heightIsFixed ? Math.max(1, child.size.height) : childNode.height
+        )
+      }
+    } else if ('resize' in childNode) {
+      // Visual frames must retain the captured browser box. Figma HUG cannot
+      // reproduce CSS min-height/grid sizing: a 191x52 button otherwise
+      // collapses to its 168x24 content box.
       childNode.resize(Math.max(1, child.size.width), Math.max(1, child.size.height))
     }
   }

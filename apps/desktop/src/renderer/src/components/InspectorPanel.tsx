@@ -1,9 +1,9 @@
 import { useEffect, useMemo, useState } from 'react'
-import { Check, Copy } from 'lucide-react'
+import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
 import { Block, BlockHead, Panel, PanelHead, PanelTitle, Segmented, Switch } from '@web-to-figma/ui'
 import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
-import type { AppSettings, ElementSummary, PickState } from '../../../shared/types'
+import type { AppSettings, ElementSummary, ElementTreeNode, PickState } from '../../../shared/types'
 
 const LEVEL_LABEL: Record<ConfidenceLevel, string> = { high: 'высокая', medium: 'средняя', low: 'низкая' }
 
@@ -13,6 +13,8 @@ const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 export function InspectorPanel(): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [selection, setSelection] = useState<ElementSummary | null>(null)
+  const [elementTree, setElementTree] = useState<ElementTreeNode | null>(null)
+  const [elementTreeParent, setElementTreeParent] = useState<ElementTreeNode | null>(null)
   const [diagnostics, setDiagnostics] = useState<ConversionWarning[]>([])
 
   useEffect(() => {
@@ -22,17 +24,23 @@ export function InspectorPanel(): JSX.Element {
     window.api.inspectorGetLastSelection().then((result) => {
       if (!result) return
       setSelection(result.element)
+      setElementTree(result.tree)
+      setElementTreeParent(result.treeParent)
       setDiagnostics(result.diagnostics)
     })
 
     const offPick = window.api.onInspectorPickState(setPick)
     const offSelection = window.api.onInspectorSelection((result) => {
       setSelection(result.element)
+      setElementTree(result.tree)
+      setElementTreeParent(result.treeParent)
       setDiagnostics(result.diagnostics)
       setPick(EMPTY_PICK)
     })
     const offCleared = window.api.onInspectorSelectionCleared(() => {
       setSelection(null)
+      setElementTree(null)
+      setElementTreeParent(null)
       setDiagnostics([])
     })
     return () => {
@@ -92,6 +100,12 @@ export function InspectorPanel(): JSX.Element {
         )}
         {showDetails && <SelectionCard element={selection} />}
       </Block>
+      {showDetails && elementTree && (
+        <Block>
+          <BlockHead>Element tree</BlockHead>
+          <CompactElementTree tree={elementTree} parent={elementTreeParent} />
+        </Block>
+      )}
       <ImportStylesBlock />
       {showDetails && (
         <Block>
@@ -162,6 +176,59 @@ export function InspectorPanel(): JSX.Element {
       )}
     </Panel>
   )
+}
+
+function CompactElementTree({ tree, parent }: { tree: ElementTreeNode; parent: ElementTreeNode | null }): JSX.Element {
+  const displayTree = useMemo<ElementTreeNode>(() => (parent ? { ...parent, children: [tree] } : tree), [parent, tree])
+  const defaultExpanded = (): Set<string> => new Set([displayTree.key, tree.key])
+  const [expanded, setExpanded] = useState<Set<string>>(defaultExpanded)
+
+  // Изначально видны ровно три смысловых уровня: parent → current → children.
+  // Внуки остаются свёрнутыми, пока пользователь явно не раскроет ветку.
+  useEffect(() => setExpanded(defaultExpanded()), [displayTree, tree.key])
+
+  const toggle = (key: string): void => {
+    setExpanded((current) => {
+      const next = new Set(current)
+      if (next.has(key)) next.delete(key)
+      else next.add(key)
+      return next
+    })
+  }
+
+  const renderNode = (node: ElementTreeNode, depth: number): JSX.Element => {
+    const hasChildren = node.children.length > 0
+    const isExpanded = expanded.has(node.key)
+    const visibleClasses = node.classes.slice(0, 2)
+    return (
+      <div className="element-tree-branch" key={node.key}>
+        <button
+          type="button"
+          className={`element-tree-row${node.key === tree.key ? ' selected' : ''}`}
+          style={{ paddingLeft: `${6 + depth * 13}px` }}
+          onClick={() => hasChildren && toggle(node.key)}
+          aria-expanded={hasChildren ? isExpanded : undefined}
+          title={node.text || undefined}
+        >
+          <span className="element-tree-chevron">
+            {hasChildren ? isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
+          </span>
+          <span className="element-tree-tag">{node.tag}</span>
+          {node.id && <span className="element-tree-id">#{node.id}</span>}
+          {visibleClasses.map((name) => (
+            <span className="element-tree-class" key={name}>.{name}</span>
+          ))}
+          {node.classes.length > visibleClasses.length && (
+            <span className="element-tree-more">+{node.classes.length - visibleClasses.length}</span>
+          )}
+          {node.text && <span className="element-tree-text">“{node.text}”</span>}
+        </button>
+        {hasChildren && isExpanded && node.children.map((child) => renderNode(child, depth + 1))}
+      </div>
+    )
+  }
+
+  return <div className="element-tree">{renderNode(displayTree, 0)}</div>
 }
 
 /**

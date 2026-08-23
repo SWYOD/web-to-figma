@@ -2,9 +2,10 @@ import type { WebContents } from 'electron'
 import { nanoid } from 'nanoid'
 // import { screen, type Rectangle } from 'electron' // нужно для кастомного hover-тултипа ниже
 import { createConsoleLogger } from '@web-to-figma/shared'
-import { convertElement } from '@web-to-figma/conversion-engine'
+import { convertElement, type DomSnapshotNode } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning, DesignAsset, DesignDocument, DesignNode } from '@web-to-figma/design-ast'
-import { buildSnapshotTree } from './domSnapshot'
+import { buildPreviewSnapshotTree, buildSnapshotTree } from './domSnapshot'
+import { captureElementPreviewOffscreen } from './componentScanner'
 import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } from './computedStyle'
 // Кастомный hover-тултип (тема + Accessibility-секция) — временно отключён
 // по запросу пользователя в пользу стокового тултипа Chrome DevTools
@@ -22,13 +23,87 @@ import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } fro
 //   type TooltipAccessibilityInfo,
 //   type TooltipMode
 // } from './hoverTooltip'
-import type { ElementSummary, PickState, QueueItemSummary, SelectionResult } from '../shared/types'
+import type { ElementSummary, ElementTreeNode, PickState, QueueItemSummary, SelectionResult } from '../shared/types'
 
 const log = createConsoleLogger('inspector')
 
 // Debugger.attach() принимает конкретную версию протокола — фиксируем, а не
 // оставляем "latest", чтобы поведение не менялось молча между версиями Chromium.
 const CDP_PROTOCOL_VERSION = '1.3'
+const PICK_DEBUGGER_WAIT_MS = 2500
+const PICK_START_TIMEOUT_MS = 5000
+const PICK_FEEDBACK_TIMEOUT_MS = 1200
+const PICK_CAPTURE_TIMEOUT_MS = 15_000
+const PICK_PREVIEW_MAX_NODES = 80
+
+function withTimeout<T>(promise: Promise<T>, timeoutMs: number, label: string): Promise<T> {
+  return new Promise<T>((resolve, reject) => {
+    const timer = setTimeout(() => reject(new Error(`${label} timed out after ${timeoutMs}ms`)), timeoutMs)
+    promise.then(
+      (value) => {
+        clearTimeout(timer)
+        resolve(value)
+      },
+      (err) => {
+        clearTimeout(timer)
+        reject(err)
+      }
+    )
+  })
+}
+
+async function waitForDebuggerRelease(dbg: WebContents['debugger']): Promise<void> {
+  const deadline = Date.now() + PICK_DEBUGGER_WAIT_MS
+  while (dbg.isAttached() && Date.now() < deadline) {
+    await new Promise((resolve) => setTimeout(resolve, 40))
+  }
+  if (dbg.isAttached()) throw new Error('debugger is busy')
+}
+
+function toElementTree(node: DomSnapshotNode, key = '0'): ElementTreeNode {
+  const elementChildren = (node.children ?? []).filter((child) => child.tag !== '#text')
+  const text = node.text?.replace(/\s+/g, ' ').trim()
+  return {
+    key,
+    tag: node.tag,
+    id: node.id,
+    classes: node.classes,
+    ...(text ? { text: text.slice(0, 80) } : {}),
+    children: elementChildren.map((child, index) => toElementTree(child, `${key}.${index}`))
+  }
+}
+
+async function getElementTreeParent(wc: WebContents, backendNodeId: number): Promise<ElementTreeNode | null> {
+  let objectId: string | undefined
+  try {
+    const resolved = (await wc.debugger.sendCommand('DOM.resolveNode', { backendNodeId })) as {
+      object: { objectId?: string }
+    }
+    objectId = resolved.object.objectId
+    if (!objectId) return null
+    const result = (await wc.debugger.sendCommand('Runtime.callFunctionOn', {
+      objectId,
+      functionDeclaration: `function () {
+        const parent = this.parentElement
+        if (!parent) return null
+        const classValue = typeof parent.className === 'string' ? parent.className : (parent.getAttribute('class') || '')
+        return {
+          key: 'parent',
+          tag: parent.tagName.toLowerCase(),
+          id: parent.id || null,
+          classes: classValue.split(/\\s+/).filter(Boolean),
+          children: []
+        }
+      }`,
+      returnByValue: true
+    })) as { result: { value?: ElementTreeNode | null } }
+    return result.result.value ?? null
+  } catch {
+    return null
+  } finally {
+    if (objectId) void wc.debugger.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined)
+  }
+}
 
 // Снапшот берётся при ТЕКУЩЕМ размере встроенного browser pane, который
 // часто уже стандартных desktop-брейкпоинтов сайтов (панели/сайдбар отъедают
@@ -185,14 +260,29 @@ const RESTORE_PICK_HIGHLIGHT_FUNCTION = `function() {
 /** Один захваченный (но ещё не обязательно импортированный) элемент очереди
  *  мульти-импорта — полный `conversion`/`assets` держим здесь же, а не
  *  полагаемся на single-slot `lastConversion`/`lastAssets` (те продолжают
- *  перезаписываться каждым новым пиком, как и раньше). */
+ *  перезаписываться каждым новым пиком, как и раньше). `backendNodeId`/`tabId`
+ *  — по запросу пользователя: клик по карточке в левой панели должен
+ *  подсветить исходный элемент на странице "для проверки" (см.
+ *  `getQueueItemLocation`/`highlightBackendNode` ниже) — нужно и НА КАКОЙ
+ *  вкладке искать узел, и сам backendNodeId. `thumbnail` — маленький
+ *  JPEG-скриншот элемента догружается отдельным offscreen renderer (см.
+ *  `scheduleQueueThumbnail`), чтобы не трогать compositor видимой страницы. */
 interface QueueItem {
   id: string
   result: SelectionResult
   conversion: { node: DesignNode; diagnostics: ConversionWarning[] }
   assets: Record<string, DesignAsset>
+  backendNodeId: number
+  tabId: string
+  sourceUrl: string
+  sourceSelector?: string
+  thumbnail?: string
 }
 
+/** Храним достаточно крупный кадр для полноэкранного lightbox; в строке
+ *  очереди браузер сам уменьшает его до 32px через CSS. 240px из первой
+ *  реализации хватало для миниатюры, но в просмотрщике изображение было
+ *  заметно пикселизировано уже при масштабе 100%. */
 /**
  * Element picker — Phase 3. Изолирован от IPC/React, как и BrowserController.
  * Debugger подключается лениво (только на время активного pick-режима), чтобы
@@ -201,6 +291,12 @@ interface QueueItem {
  */
 export class ElementPicker {
   private active = false
+  /** Защищает от двойного клика по кнопке до того, как async CDP setup успел
+   *  выставить active=true. Без mutex два start() вешали парные listeners. */
+  private starting = false
+  /** Overlay теоретически может прислать повторный inspectNodeRequested до
+   *  отключения режима; второй тяжёлый snapshot нам не нужен. */
+  private capturing = false
   private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
   private lastAssets: Record<string, DesignAsset> = {}
   /** backendNodeId последнего клика — нужен, чтобы `prepareForImport()` мог
@@ -213,6 +309,10 @@ export class ElementPicker {
    *  выбор при повторном открытии (закрыта в момент клика → пропустила
    *  live-событие onSelect). */
   private lastSelectionResult: SelectionResult | null = null
+  private lastSourceSelector: string | null = null
+  /** Offscreen-превью очереди выполняются последовательно, чтобы быстрые
+   * клики не создавали пачку скрытых Chromium-окон одновременно. */
+  private queueThumbnailJobs: Promise<void> = Promise.resolve()
   /**
    * Queue-mode (мульти-импорт, по запросу пользователя — "поочерёдный выбор
    * с добавлением по одному, потом импорт разом"). Overlay.setInspectMode
@@ -257,7 +357,15 @@ export class ElementPicker {
     /** Выделение снято (Esc с уже выбранным элементом, см. `clearSelection()`)
      *  — сбрасывает hasSelection/показ в панелях, отдельно от onSelect(), у
      *  которого нет "пустого" состояния. */
-    private readonly onSelectionCleared: () => void
+    private readonly onSelectionCleared: () => void,
+    /** Для QueueItem.tabId (см. класс-докстринг у QueueItem) — знать, на
+     *  какой вкладке был сделан конкретный пик очереди, чтобы клик по
+     *  карточке мог переключиться на нужную вкладку перед подсветкой. */
+    private readonly getActiveTabId: () => string | null,
+    /** Полный queue capture выполняется позже и может читать скрытую вкладку,
+     * не переключая её перед глазами пользователя. */
+    private readonly getWebContentsForTab: (tabId: string) => WebContents | null,
+    private readonly getViewportSize: () => { width: number; height: number }
     // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — 6-й и 7-й параметры конструктора:
     // , private readonly getEffectiveTheme: () => Promise<TooltipMode>
     // /** Экранные координаты (не window-relative) прямоугольника WebContentsView
@@ -291,28 +399,43 @@ export class ElementPicker {
   }
 
   async start(): Promise<void> {
-    if (this.active) return
+    if (this.active || this.starting) return
+    this.starting = true
     const wc = this.getWebContents()
     if (!wc) {
+      this.starting = false
       this.onStateChange({ active: false, error: 'Сначала откройте страницу в браузере' })
       return
     }
 
     const dbg = wc.debugger
+    let attachedByPicker = false
     try {
-      if (!dbg.isAttached()) dbg.attach(CDP_PROTOCOL_VERSION)
+      // Автоскан компонентов тоже кратковременно использует CDP. Нельзя
+      // piggyback'нуться на его attach: когда скан завершится, он detach'нет
+      // debugger прямо из-под активного picker. Ждём освобождения и только
+      // затем создаём собственную сессию.
+      await waitForDebuggerRelease(dbg)
+      dbg.attach(CDP_PROTOCOL_VERSION)
+      attachedByPicker = true
       dbg.on('message', this.handleMessage)
       dbg.on('detach', this.handleDetach)
-      await dbg.sendCommand('DOM.enable')
-      await dbg.sendCommand('CSS.enable')
-      await dbg.sendCommand('Overlay.enable')
+      await withTimeout(
+        (async () => {
+          await dbg.sendCommand('DOM.enable')
+          await dbg.sendCommand('CSS.enable')
+          await dbg.sendCommand('Overlay.enable')
       // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
       // await dbg.sendCommand('Accessibility.enable')
       // Снимает outline-подсветку с ранее выбранного элемента (см. константы
       // выше) — новый pick начинается "с чистого листа". Не критично, если
       // страница уже ушла/элемент исчез — тихо игнорируем.
-      await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
-      await dbg.sendCommand('Overlay.setInspectMode', { mode: 'searchForNode', highlightConfig: HIGHLIGHT_CONFIG })
+          await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
+          await dbg.sendCommand('Overlay.setInspectMode', { mode: 'searchForNode', highlightConfig: HIGHLIGHT_CONFIG })
+        })(),
+        PICK_START_TIMEOUT_MS,
+        'picker setup'
+      )
       // Esc-отмена читается ЗДЕСЬ, на webContents самой страницы через
       // before-input-event, а не обычным DOM `keydown`-листенером в React —
       // тот сработал бы, только если фокус ОС сейчас именно на renderer'е
@@ -326,11 +449,13 @@ export class ElementPicker {
       // await dbg.sendCommand('Runtime.evaluate', { expression: buildHoverTooltipInstallScript(this.tooltipMode) })
     } catch (err) {
       log.warn('failed to start pick mode', { message: (err as Error).message })
-      this.cleanupDebugger(wc)
-      this.onStateChange({ active: false, error: 'Не удалось включить инспектор (возможно, открыты DevTools страницы)' })
+      if (attachedByPicker) this.cleanupDebugger(wc)
+      this.onStateChange({ active: false, error: 'Инспектор занят сканированием или страница недоступна — попробуйте ещё раз' })
+      this.starting = false
       return
     }
 
+    this.starting = false
     this.active = true
     // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА:
     // this.hoverBackendNodeId = null
@@ -572,11 +697,18 @@ export class ElementPicker {
    *  lastConversion/lastAssets/lastSelectionResult — общий путь для обычного
    *  клика пикера и для `prepareForImport()` (та лишь оборачивает вызов в
    *  `withDesktopViewport`, см. комментарий у CAPTURE_MIN_WIDTH). */
-  private async captureAndConvert(wc: WebContents, backendNodeId: number): Promise<SelectionResult> {
+  private async captureAndConvert(
+    wc: WebContents,
+    backendNodeId: number,
+    options: { preview?: boolean } = {}
+  ): Promise<SelectionResult> {
     const { tree: snapshot, truncated, assets } = await this.withoutPickHighlight(wc, backendNodeId, () =>
-      buildSnapshotTree(wc, backendNodeId)
+      options.preview
+        ? buildPreviewSnapshotTree(wc, backendNodeId, PICK_PREVIEW_MAX_NODES)
+        : buildSnapshotTree(wc, backendNodeId)
     )
     this.lastAssets = assets
+    this.lastSourceSelector = snapshot.sourceSelector ?? null
     const styleMap = toComputedStyleMap(Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value })))
 
     const summary: ElementSummary = {
@@ -600,7 +732,8 @@ export class ElementPicker {
       })
     }
 
-    return { element: summary, diagnostics: this.lastConversion.diagnostics }
+    const treeParent = await getElementTreeParent(wc, backendNodeId)
+    return { element: summary, tree: toElementTree(snapshot), treeParent, diagnostics: this.lastConversion.diagnostics }
   }
 
   /**
@@ -618,13 +751,27 @@ export class ElementPicker {
    * его раньше времени и уронила бы саму `captureAndConvert`).
    */
   private async handleInspectNodeRequested(params: InspectNodeRequestedParams): Promise<void> {
+    if (this.capturing) return
+    this.capturing = true
     const wc = this.getWebContents()
-    if (!wc) return
+    if (!wc) {
+      this.capturing = false
+      return
+    }
+    // Фиксируем вкладку до любых await: captureAndConvert может ждать сетевые
+    // ассеты, и за это время пользователь успеет переключиться на другую.
+    const sourceTabId = this.getActiveTabId() ?? ''
 
     this.lastBackendNodeId = params.backendNodeId
-    await this.applyPickHighlight(wc, params.backendNodeId)
+    await withTimeout(this.applyPickHighlight(wc, params.backendNodeId), PICK_FEEDBACK_TIMEOUT_MS, 'picker highlight').catch((err) => {
+      log.debug('picker highlight skipped', { message: (err as Error).message })
+    })
     try {
-      await wc.debugger.sendCommand('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} })
+      await withTimeout(
+        wc.debugger.sendCommand('Overlay.setInspectMode', { mode: 'none', highlightConfig: {} }),
+        PICK_FEEDBACK_TIMEOUT_MS,
+        'exit inspect mode'
+      )
     } catch (err) {
       log.debug('exit inspect mode failed', { message: (err as Error).message })
     }
@@ -632,7 +779,11 @@ export class ElementPicker {
     this.onStateChange({ active: false, error: null })
 
     try {
-      const result = await this.captureAndConvert(wc, params.backendNodeId)
+      const result = await withTimeout(
+        this.captureAndConvert(wc, params.backendNodeId, { preview: true }),
+        PICK_CAPTURE_TIMEOUT_MS,
+        'picker snapshot'
+      )
       this.lastSelectionResult = result
       if (this.queueMode) {
         // Не onSelect — ждём явного confirmQueueAdd()/confirmQueueCancel()
@@ -640,15 +791,27 @@ export class ElementPicker {
         // класс-докстринг про queueMode. lastConversion/lastAssets успели
         // перезаписаться выше в captureAndConvert — копируем СЕЙЧАС, а не
         // полагаемся на них позже (следующий клик их снова перезапишет).
-        this.pendingQueueItem = { id: nanoid(), result, conversion: this.lastConversion!, assets: this.lastAssets }
+        this.pendingQueueItem = {
+          id: nanoid(),
+          result,
+          conversion: this.lastConversion!,
+          assets: this.lastAssets,
+          backendNodeId: params.backendNodeId,
+          tabId: sourceTabId,
+          sourceUrl: wc.getURL(),
+          ...(this.lastSourceSelector ? { sourceSelector: this.lastSourceSelector } : {})
+        }
         this.onQueuePending({ id: this.pendingQueueItem.id, element: result.element })
+        this.scheduleQueueThumbnail(this.pendingQueueItem, wc)
       } else {
         this.onSelect(result)
       }
     } catch (err) {
       log.warn('failed to describe selected node', { message: (err as Error).message })
+      this.onStateChange({ active: false, error: 'Элемент не удалось прочитать — выберите его ещё раз' })
     } finally {
       this.cleanupDebugger(wc)
+      this.capturing = false
     }
   }
 
@@ -666,7 +829,86 @@ export class ElementPicker {
   }
 
   getQueue(): QueueItemSummary[] {
-    return this.queue.map((item) => ({ id: item.id, element: item.result.element }))
+    return this.queue.map((item) => ({ id: item.id, element: item.result.element, thumbnail: item.thumbnail }))
+  }
+
+  /** Где искать исходный элемент карточки очереди — клик по карточке "для
+   *  проверки" (по запросу пользователя) сначала должен переключиться на
+   *  правильную вкладку (если пик был сделан не на текущей), а уже потом
+   *  подсветить сам узел; переключение вкладок — забота index.ts
+   *  (BrowserController), поэтому здесь просто чистый lookup. */
+  getQueueItemLocation(id: string): { tabId: string; backendNodeId: number } | null {
+    const item = this.queue.find((i) => i.id === id)
+    return item ? { tabId: item.tabId, backendNodeId: item.backendNodeId } : null
+  }
+
+  /** Подсвечивает произвольный backendNodeId НА ТЕКУЩЕЙ активной вкладке (см.
+   *  getQueueItemLocation — вызывающий код в index.ts обязан переключить
+   *  вкладку заранее, если нужно) тем же персистентным outline/box-shadow,
+   *  что и обычный пик, плюс скроллит его в видимую область — иначе
+   *  "подсветка для проверки" элемента за пределами текущего скролла была бы
+   *  бесполезна. Возвращает false, если узел больше не существует (страница
+   *  ушла/перезагрузилась после того, как элемент попал в очередь) — узнать
+   *  это можно ТОЛЬКО явным `DOM.resolveNode`, поэтому не переиспользует
+   *  `applyPickHighlight` (та глотает ошибку резолва молча, это ей ОК как
+   *  чистой косметике, но здесь пользователю нужна обратная связь). */
+  async highlightBackendNode(backendNodeId: number): Promise<boolean> {
+    const wc = this.getWebContents()
+    if (!wc) return false
+    const dbg = wc.debugger
+    const alreadyAttached = dbg.isAttached()
+    try {
+      if (!alreadyAttached) dbg.attach(CDP_PROTOCOL_VERSION)
+      await dbg.sendCommand('DOM.enable').catch(() => {})
+      const { object } = (await dbg.sendCommand('DOM.resolveNode', { backendNodeId })) as {
+        object: { objectId?: string }
+      }
+      if (!object.objectId) return false
+      // Снимаем ЛЮБУЮ предыдущую подсветку (могла остаться от другого
+      // элемента очереди/обычного выбора) перед тем, как поставить новую.
+      await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
+      await dbg.sendCommand('Runtime.callFunctionOn', {
+        functionDeclaration: APPLY_PICK_HIGHLIGHT_FUNCTION,
+        objectId: object.objectId
+      })
+      await dbg.sendCommand('Runtime.callFunctionOn', {
+        functionDeclaration: `function() { this.scrollIntoView({ block: 'center', inline: 'nearest', behavior: 'instant' }) }`,
+        objectId: object.objectId
+      }).catch(() => {})
+      return true
+    } catch (err) {
+      log.debug('highlightBackendNode failed', { message: (err as Error).message })
+      return false
+    } finally {
+      if (!alreadyAttached && dbg.isAttached()) dbg.detach()
+    }
+  }
+
+  private scheduleQueueThumbnail(item: QueueItem, sourceWc: WebContents): void {
+    if (!item.sourceSelector) return
+    this.queueThumbnailJobs = this.queueThumbnailJobs
+      .catch(() => undefined)
+      .then(async () => {
+        const thumbnail = await captureElementPreviewOffscreen(
+          sourceWc,
+          item.sourceUrl,
+          item.sourceSelector!,
+          this.getViewportSize(),
+          {
+            tag: item.result.element.tag,
+            id: item.result.element.id,
+            classes: item.result.element.classes,
+            width: item.result.element.width,
+            height: item.result.element.height
+          }
+        )
+        if (!thumbnail) return
+        item.thumbnail = thumbnail
+        if (this.pendingQueueItem?.id === item.id) {
+          this.onQueuePending({ id: item.id, element: item.result.element, thumbnail })
+        }
+        if (this.queue.some((queued) => queued.id === item.id)) this.onQueueChange(this.getQueue())
+      })
   }
 
   /** "Добавить" в попапе подтверждения — переносит pending-item в очередь и,
@@ -706,6 +948,59 @@ export class ElementPicker {
       diagnostics: item.conversion.diagnostics,
       metadata: { sourceUrl, capturedAt: new Date().toISOString(), viewport }
     }))
+  }
+
+  /**
+   * Тяжёлая часть мульти-импорта вынесена с каждого клика на одно явное
+   * действие Import Queue. Элементы читаются из своих WebContents напрямую,
+   * включая скрытые вкладки, поэтому UI не прыгает между страницами. Ошибка
+   * одного устаревшего backendNodeId не отменяет остальные документы.
+   */
+  async prepareQueueDocuments(
+    viewport: { width: number; height: number },
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<{ documents: DesignDocument[]; failed: number }> {
+    const documents: DesignDocument[] = []
+    let failed = 0
+    let completed = 0
+
+    for (const item of this.queue) {
+      const wc = this.getWebContentsForTab(item.tabId)
+      if (!wc || wc.isDestroyed() || wc.getURL() !== item.sourceUrl) {
+        failed++
+        continue
+      }
+      const dbg = wc.debugger
+      let attached = false
+      try {
+        await waitForDebuggerRelease(dbg)
+        dbg.attach(CDP_PROTOCOL_VERSION)
+        attached = true
+        await dbg.sendCommand('DOM.enable')
+        await dbg.sendCommand('CSS.enable')
+        const result = await this.withDesktopViewport(dbg, () => this.captureAndConvert(wc, item.backendNodeId))
+        if (!this.lastConversion) throw new Error('Queue conversion is empty')
+        item.result = result
+        item.conversion = this.lastConversion
+        item.assets = this.lastAssets
+        documents.push({
+          version: 1,
+          root: item.conversion.node,
+          assets: item.assets,
+          diagnostics: item.conversion.diagnostics,
+          metadata: { sourceUrl: item.sourceUrl, capturedAt: new Date().toISOString(), viewport }
+        })
+      } catch (err) {
+        failed++
+        log.warn('failed to prepare queue item', { id: item.id, message: (err as Error).message })
+      } finally {
+        if (attached && dbg.isAttached()) dbg.detach()
+        completed++
+        onProgress?.(completed, this.queue.length)
+      }
+    }
+
+    return { documents, failed }
   }
 
   /** Ставит персистентный (переживающий detach debugger'а) outline на

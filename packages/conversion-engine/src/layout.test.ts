@@ -37,6 +37,15 @@ describe('parseLayout', () => {
     expect(layout.gap).toBe(16)
   })
 
+  it('captures flex-wrap and keeps both axis gaps for Figma Wrap', () => {
+    const layout = parseLayout(
+      style({ display: 'flex', 'flex-direction': 'row', 'flex-wrap': 'wrap', 'column-gap': '12px', 'row-gap': '7px' }),
+      'n1',
+      []
+    )
+    expect(layout).toMatchObject({ mode: 'horizontal', wrap: true, gap: 12, columnGap: 12, rowGap: 7 })
+  })
+
   it('defaults flex-direction to row when unset', () => {
     expect(parseLayout(style({ display: 'flex' }), 'n1', []).mode).toBe('horizontal')
   })
@@ -106,9 +115,9 @@ describe('parseLayout', () => {
     expect(layout.mode).toBe('none')
   })
 
-  it('grid axis mapping is inverted vs flex: vertical grid reads justify-items for align, align-content for justify', () => {
+  it('single-column grid maps item alignment on both axes (place-items:center)', () => {
     const layout = parseLayout(
-      style({ display: 'grid', 'justify-items': 'center', 'align-content': 'center' }),
+      style({ display: 'grid', 'justify-items': 'center', 'align-items': 'center' }),
       'n1',
       []
     )

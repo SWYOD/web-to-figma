@@ -7,6 +7,35 @@ import { matchColor, matchNearestTextStyle, NO_STYLE_MATCHING, weightToStyle, ty
 /** Гарантированно доступен в любом Figma-файле — безопасный откат, если
  *  запрошенный шрифт/начертание не установлены (см. createTextNode). */
 const FALLBACK_FONT: FontName = { family: 'Inter', style: 'Regular' }
+const fontLoadCache = new Map<string, Promise<{ font: FontName; fontFallback: boolean }>>()
+
+function fontKey(font: FontName): string {
+  return `${font.family}::${font.style}`
+}
+
+/** figma.loadFontAsync заметно дорог на больших деревьях. Один и тот же
+ * family/style загружаем ровно один раз, включая одновременно создаваемые
+ * текстовые узлы и fallback после отсутствующего шрифта сайта. */
+function loadFontCached(requested: FontName): Promise<{ font: FontName; fontFallback: boolean }> {
+  const key = fontKey(requested)
+  const cached = fontLoadCache.get(key)
+  if (cached) return cached
+  const pending = figma.loadFontAsync(requested).then(
+    () => ({ font: requested, fontFallback: false }),
+    async () => {
+      const fallbackKey = fontKey(FALLBACK_FONT)
+      let fallback = fontLoadCache.get(fallbackKey)
+      if (!fallback) {
+        fallback = figma.loadFontAsync(FALLBACK_FONT).then(() => ({ font: FALLBACK_FONT, fontFallback: false }))
+        fontLoadCache.set(fallbackKey, fallback)
+      }
+      await fallback
+      return { font: FALLBACK_FONT, fontFallback: true }
+    }
+  )
+  fontLoadCache.set(key, pending)
+  return pending
+}
 
 export interface CreateTextNodeResult {
   textNode: TextNode
@@ -33,19 +62,9 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
   const typography = node.typography
   const requested: FontName | null = typography ? { family: typography.fontFamily, style: weightToStyle(typography.fontWeight) } : null
 
-  let font = FALLBACK_FONT
-  let fontFallback = false
-  if (requested) {
-    try {
-      await figma.loadFontAsync(requested)
-      font = requested
-    } catch {
-      await figma.loadFontAsync(FALLBACK_FONT)
-      fontFallback = true
-    }
-  } else {
-    await figma.loadFontAsync(FALLBACK_FONT)
-  }
+  const loaded = await loadFontCached(requested ?? FALLBACK_FONT)
+  const font = loaded.font
+  const fontFallback = loaded.fontFallback
 
   const textNode = figma.createText()
   textNode.fontName = font
@@ -95,11 +114,7 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
     textNode.fills = toFigmaPaints(node.fills)
   }
 
-  // Фиксированный размер по факту захваченного box, а не auto-resize —
-  // тот же принцип, что у фреймов (widthSizing/heightSizing всегда 'fixed'
-  // пока conversion-engine не научился hug/fill, см. layout.ts).
-  textNode.textAutoResize = 'NONE'
-  textNode.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
+  applyTextSizing(textNode, node)
 
   if (node.opacity !== undefined) textNode.opacity = node.opacity
   if (node.rotationDeg !== undefined) textNode.rotation = node.rotationDeg
@@ -128,23 +143,12 @@ export async function createTextNode(node: DesignNode, styleMatch: StyleMatchOpt
 async function createMixedTextNode(node: DesignNode): Promise<CreateTextNodeResult> {
   const runs = node.textRuns!
 
-  const fontCache = new Map<string, FontName>()
   let fontFallback = false
   const resolveFont = async (typography: TypographyInfo): Promise<FontName> => {
     const requested: FontName = { family: typography.fontFamily, style: weightToStyle(typography.fontWeight) }
-    const key = `${requested.family}::${requested.style}`
-    const cached = fontCache.get(key)
-    if (cached) return cached
-    try {
-      await figma.loadFontAsync(requested)
-      fontCache.set(key, requested)
-      return requested
-    } catch {
-      fontFallback = true
-      await figma.loadFontAsync(FALLBACK_FONT)
-      fontCache.set(key, FALLBACK_FONT)
-      return FALLBACK_FONT
-    }
+    const loaded = await loadFontCached(requested)
+    if (loaded.fontFallback) fontFallback = true
+    return loaded.font
   }
 
   // Все шрифты грузятся ДО createText()/characters — Figma требует, чтобы
@@ -189,11 +193,23 @@ async function createMixedTextNode(node: DesignNode): Promise<CreateTextNodeResu
         : { unit: 'PIXELS', value: node.typography.lineHeight }
   }
 
-  textNode.textAutoResize = 'NONE'
-  textNode.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
+  applyTextSizing(textNode, node)
 
   if (node.opacity !== undefined) textNode.opacity = node.opacity
   if (node.rotationDeg !== undefined) textNode.rotation = node.rotationDeg
 
   return { textNode, fontFallback }
+}
+
+/** HUG по обеим осям должен быть настоящим textAutoResize, а не только
+ * layoutSizingHorizontal/Vertical после appendChild. Это особенно важно для
+ * текста внутри компонента: character override инстанса может быть шире
+ * master (`◷` → `45`) и обязан расширить TextNode без переноса. */
+function applyTextSizing(textNode: TextNode, node: DesignNode): void {
+  if (node.textWrap === 'nowrap' || (node.layout?.widthSizing === 'hug' && node.layout?.heightSizing === 'hug')) {
+    textNode.textAutoResize = 'WIDTH_AND_HEIGHT'
+    return
+  }
+  textNode.textAutoResize = 'NONE'
+  textNode.resize(Math.max(1, node.size.width), Math.max(1, node.size.height))
 }

@@ -28,6 +28,11 @@ export interface DomSnapshotNode {
   authoredSizing?: { width: boolean; height: boolean }
   /** width/height — border-box; x/y — позиция относительно padding-box родителя (0,0 для корня). */
   box: { width: number; height: number; x: number; y: number }
+  /** Только для полного скана страницы: устойчивый CSS path, по которому
+   * desktop позже повторно находит кандидата перед явным импортом. */
+  sourceSelector?: string
+  /** Координаты в документе для превью кандидата в панели компонентов. */
+  pageBox?: { x: number; y: number; width: number; height: number }
   children?: DomSnapshotNode[]
   /** Заполнено только для узлов, материализованных из ::before/::after. */
   pseudoType?: 'before' | 'after'
@@ -40,6 +45,11 @@ export interface DomSnapshotNode {
    * специально НЕ сюда — см. `droppedInlineText`.
    */
   text?: string
+  /** Точный bounding box видимого прямого DOM-текста относительно border-box
+   *  элемента. Нужен, когда сам элемент визуально является коробкой
+   *  (button/badge: background, border, padding, flex/grid): такой элемент
+   *  конвертируется в Frame, а текст — в отдельный дочерний TextNode. */
+  textBox?: { width: number; height: number; x: number; y: number }
   /**
    * Смешанный контент (текст вперемешку с инлайновыми тегами форматирования,
    * напр. `<p>текст <b>жирный</b> ещё текст</p>`) — заполнено ВМЕСТО `text`,

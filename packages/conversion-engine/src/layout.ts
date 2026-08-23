@@ -97,11 +97,18 @@ function buildAutoLayout(
   const gap = mode === 'horizontal' ? columnGap : rowGap
 
   const alignSource = isGrid ? (mode === 'vertical' ? style['justify-items'] : style['align-items']) : style['align-items']
-  const justifySource = isGrid ? (mode === 'vertical' ? style['align-content'] : style['justify-content']) : style['justify-content']
+  // В single-track grid выравнивается САМ item внутри своей grid-area:
+  // vertical → align-items по Y, horizontal → justify-items по X.
+  // align/justify-content двигают сетку треков целиком и для одного трека
+  // часто остаются normal, из-за чего иконка прижималась к верхнему краю.
+  const justifySource = isGrid ? (mode === 'vertical' ? style['align-items'] : style['justify-items']) : style['justify-content']
 
   return {
     mode,
+    ...(!isGrid && (style['flex-wrap'] ?? 'nowrap') !== 'nowrap' ? { wrap: true } : {}),
     gap,
+    rowGap,
+    columnGap,
     padding,
     align: mapAlignItems(alignSource),
     justify: mapJustifyContent(justifySource, nodeId, diagnostics),

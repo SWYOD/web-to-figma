@@ -3,7 +3,8 @@ import { ChevronDown, ChevronUp, Maximize2, Minimize2, RefreshCw } from 'lucide-
 import { clamp, IconButton } from '@web-to-figma/ui'
 import type { TabState } from '../../../shared/types'
 import { AssetsPanel } from './AssetsPanel'
-import type { TabAssetScan } from './BrowserPane'
+import { ComponentsPanel } from './ComponentsPanel'
+import type { TabAssetScan, TabComponentScan } from './BrowserPane'
 
 const DEFAULT_HEIGHT = 280
 const MIN_HEIGHT = 140
@@ -14,15 +15,16 @@ const MIN_HEIGHT = 140
 const MIN_BROWSER_RESERVE = 160
 const HEADER_HEIGHT = 37
 
-/** Пока одна вкладка — "Ассеты"; структура-массив специально, чтобы
- *  добавить вторую ("Компоненты", следующая фича по списку пользователя)
- *  было расширением массива, а не переписыванием разметки. */
-const PANEL_TABS = [{ value: 'assets', label: 'Ассеты' }] as const
+const PANEL_TABS = [
+  { value: 'assets', label: 'Ассеты' },
+  { value: 'components', label: 'Компоненты' }
+] as const
 type PanelTab = (typeof PANEL_TABS)[number]['value']
 
 interface Props {
   tabs: TabState[]
   scans: Record<string, TabAssetScan>
+  componentScans: Record<string, TabComponentScan>
   scanningTabId: string | null
   onScan: () => void
   maximized: boolean
@@ -37,7 +39,7 @@ interface Props {
  * (не размонтируется вместе с переключением вкладок ЭТОЙ панели) — здесь
  * только высота/collapsed/maximized и текущая внутренняя вкладка.
  */
-export function BottomPanel({ tabs, scans, scanningTabId, onScan, maximized, onMaximizedChange }: Props): JSX.Element {
+export function BottomPanel({ tabs, scans, componentScans, scanningTabId, onScan, maximized, onMaximizedChange }: Props): JSX.Element {
   const [collapsed, setCollapsed] = useState(true)
   const [bodyHeight, setBodyHeight] = useState(DEFAULT_HEIGHT)
   const [panelTab, setPanelTab] = useState<PanelTab>('assets')
@@ -134,6 +136,7 @@ export function BottomPanel({ tabs, scans, scanningTabId, onScan, maximized, onM
       {!collapsed && (
         <div className="bottom-panel-body" style={maximized ? { flex: '1 1 auto' } : { flex: '0 0 auto', height: bodyHeight }}>
           {panelTab === 'assets' && <AssetsPanel tabs={tabs} scans={scans} />}
+          {panelTab === 'components' && <ComponentsPanel tabs={tabs} scans={componentScans} />}
         </div>
       )}
     </div>

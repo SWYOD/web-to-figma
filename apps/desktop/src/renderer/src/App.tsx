@@ -1,8 +1,8 @@
-import { useEffect, useState } from 'react'
+import { useEffect, useRef, useState } from 'react'
 import { PanelLeft, PanelRight } from 'lucide-react'
 import { clamp, isValidThemeDef, ThemeProvider, useResizer } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
-import type { AppSettings } from '../../shared/types'
+import type { AppSettings, ImportProgressEvent } from '../../shared/types'
 import { BridgePopover } from './components/BridgePopover'
 import { BrowserPane } from './components/BrowserPane'
 import { InspectorPanel } from './components/InspectorPanel'
@@ -59,6 +59,22 @@ function Shell({
 }): JSX.Element {
   const [leftOpen, setLeftOpen] = useState(true)
   const [rightOpen, setRightOpen] = useState(true)
+  const [importProgress, setImportProgress] = useState<ImportProgressEvent | null>(null)
+  const progressHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+
+  useEffect(() => {
+    const unsubscribe = window.api.onImportProgress((event) => {
+      if (progressHideTimer.current) clearTimeout(progressHideTimer.current)
+      setImportProgress(event)
+      if (event.state !== 'running') {
+        progressHideTimer.current = setTimeout(() => setImportProgress(null), 2200)
+      }
+    })
+    return () => {
+      unsubscribe()
+      if (progressHideTimer.current) clearTimeout(progressHideTimer.current)
+    }
+  }, [])
 
   return (
     <div className="app">
@@ -85,6 +101,17 @@ function Shell({
             <PanelRight size={17} />
           </button>
         </div>
+        {importProgress && (
+          <div className={`import-progress-ui ${importProgress.state}`} role="status" aria-live="polite">
+            <div className="import-progress-copy">
+              <span>{importProgress.label}</span>
+              {importProgress.detail && <span className="import-progress-detail">{importProgress.detail}</span>}
+            </div>
+            <div className="import-progress-track">
+              <div className="import-progress-fill" style={{ width: `${Math.round(importProgress.progress * 100)}%` }} />
+            </div>
+          </div>
+        )}
       </div>
       <Workspace
         leftOpen={leftOpen}

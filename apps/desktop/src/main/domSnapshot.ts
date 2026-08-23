@@ -10,6 +10,136 @@ const log = createConsoleLogger('domSnapshot')
  *  см. docs/architecture.md §6.1. За пределами лимита узлы просто не входят
  *  в дерево, вызывающая сторона решает, показывать ли об этом диагностику. */
 const MAX_NODES = 400
+const CDP_NODE_CONCURRENCY = 32
+const ASSET_CONCURRENCY = 8
+
+async function mapWithConcurrency<T>(tasks: Array<() => Promise<T>>, concurrency: number): Promise<T[]> {
+  const results = new Array<T>(tasks.length)
+  let cursor = 0
+  const workers = Array.from({ length: Math.min(concurrency, tasks.length) }, async () => {
+    while (cursor < tasks.length) {
+      const index = cursor++
+      results[index] = await tasks[index]!()
+    }
+  })
+  await Promise.all(workers)
+  return results
+}
+
+export interface SnapshotOptions {
+  /** Более низкий лимит подходит для мгновенного preview в Inspector. */
+  maxNodes?: number
+  /** Сетевые ассеты нужны при импорте, но не должны блокировать сам выбор. */
+  includeAssets?: boolean
+}
+
+interface RuntimePreviewResult {
+  result: { value?: { tree: DomSnapshotNode | null; truncated: boolean } }
+}
+
+/**
+ * Быстрый снимок только для Inspector sidebar. В отличие от полного
+ * buildSnapshotTree не делает по 2–3 CDP round-trip на каждый DOM-узел:
+ * браузер собирает ограниченное дерево и computed styles одним
+ * Runtime.callFunctionOn. Полный точный снимок с authored CSS и ассетами всё
+ * равно пересобирается перед импортом.
+ */
+export async function buildPreviewSnapshotTree(
+  wc: WebContents,
+  rootBackendNodeId: number,
+  maxNodes = 80
+): Promise<SnapshotResult> {
+  const dbg = wc.debugger
+  const resolved = (await dbg.sendCommand('DOM.resolveNode', { backendNodeId: rootBackendNodeId })) as {
+    object: { objectId?: string }
+  }
+  const objectId = resolved.object.objectId
+  if (!objectId) throw new Error('Selected element is no longer available')
+
+  try {
+    const evaluated = (await dbg.sendCommand('Runtime.callFunctionOn', {
+      objectId,
+      arguments: [{ value: maxNodes }],
+      returnByValue: true,
+      functionDeclaration: `function (limit) {
+        const SKIP = new Set(['SCRIPT','STYLE','TEMPLATE','LINK','META','NOSCRIPT','HEAD'])
+        const path = (el) => {
+          if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id)
+          const parts = []
+          let current = el
+          while (current && current.nodeType === 1) {
+            const tag = current.tagName.toLowerCase()
+            const parent = current.parentElement
+            if (!parent) { parts.unshift(tag); break }
+            const siblings = Array.from(parent.children)
+            parts.unshift(tag + ':nth-child(' + (siblings.indexOf(current) + 1) + ')')
+            current = parent
+          }
+          return parts.join(' > ')
+        }
+        const STYLE_KEYS = [
+          'display','position','box-sizing','overflow','overflow-x','overflow-y',
+          'width','height','min-width','min-height','max-width','max-height',
+          'flex-direction','flex-wrap','flex-grow','flex-shrink','flex-basis',
+          'justify-content','align-items','align-content','align-self','gap','row-gap','column-gap',
+          'grid-template-columns','grid-template-rows','grid-auto-flow',
+          'margin-top','margin-right','margin-bottom','margin-left',
+          'padding-top','padding-right','padding-bottom','padding-left',
+          'background-color','background-image','color','opacity','visibility',
+          'border-top-width','border-right-width','border-bottom-width','border-left-width',
+          'border-top-style','border-right-style','border-bottom-style','border-left-style',
+          'border-top-color','border-right-color','border-bottom-color','border-left-color',
+          'border-top-left-radius','border-top-right-radius','border-bottom-right-radius','border-bottom-left-radius',
+          'box-shadow','font-family','font-size','font-style','font-weight','line-height',
+          'letter-spacing','text-align','text-decoration-line','text-transform','white-space'
+        ]
+        let count = 0
+        let truncated = false
+        const build = (el, parentRect) => {
+          if (count >= limit) { truncated = true; return null }
+          if (!el || el.nodeType !== 1 || SKIP.has(el.tagName)) return null
+          const style = getComputedStyle(el)
+          const rect = el.getBoundingClientRect()
+          if (style.display === 'none' || style.visibility === 'hidden' || rect.width <= 0 || rect.height <= 0) return null
+          count++
+          const computedStyle = {}
+          for (const key of STYLE_KEYS) computedStyle[key] = style.getPropertyValue(key)
+          const classValue = typeof el.className === 'string' ? el.className : (el.getAttribute('class') || '')
+          const elementChildren = el.tagName === 'SVG' ? [] : Array.from(el.children)
+          const children = []
+          for (const child of elementChildren) {
+            const value = build(child, rect)
+            if (value) children.push(value)
+            if (count >= limit) { truncated = true; break }
+          }
+          const ownText = elementChildren.length === 0 ? (el.textContent || '').replace(/\\s+/g, ' ').trim() : ''
+          return {
+            tag: el.tagName.toLowerCase(),
+            id: el.id || null,
+            classes: classValue.split(/\\s+/).filter(Boolean),
+            sourceSelector: path(el),
+            computedStyle,
+            authoredSizing: { width: el.style.width !== '', height: el.style.height !== '' },
+            box: {
+              width: rect.width,
+              height: rect.height,
+              x: parentRect ? rect.x - parentRect.x : 0,
+              y: parentRect ? rect.y - parentRect.y : 0
+            },
+            ...(ownText ? { text: ownText } : {}),
+            ...(children.length ? { children } : {})
+          }
+        }
+        return { tree: build(this, null), truncated }
+      }`
+    })) as RuntimePreviewResult
+    const payload = evaluated.result.value
+    if (!payload?.tree) throw new Error('Selected element has no visible box')
+    return { tree: payload.tree, truncated: payload.truncated, assets: {} }
+  } finally {
+    await dbg.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined)
+  }
+}
 
 const ELEMENT_NODE = 1
 const TEXT_NODE = 3
@@ -175,7 +305,11 @@ export interface SnapshotResult {
 function extractTextContent(
   cdpNode: CdpNode,
   dataByBackendId: Map<number, FetchedNodeData>
-): { text?: string; textRuns?: { text: string; style: Record<string, string> }[]; droppedInlineText?: boolean } {
+): {
+  text?: string
+  textRuns?: { text: string; style: Record<string, string> }[]
+  materializeDirectText?: boolean
+} {
   let hasElementChild = false
   let hasDirectText = false
 
@@ -197,7 +331,7 @@ function extractTextContent(
   }
 
   const rawRuns = extractTextRuns(cdpNode, dataByBackendId)
-  if (rawRuns === null) return hasDirectText ? { droppedInlineText: true } : {}
+  if (rawRuns === null) return hasDirectText ? { materializeDirectText: true } : {}
   const trimmed = trimRunsEdges(rawRuns)
   if (trimmed.length === 0) return {}
   return { textRuns: trimmed }
@@ -291,22 +425,31 @@ function getAttr(node: CdpNode, name: string): string | undefined {
  * целиком становится одним vector-ассетом через `DOM.getOuterHTML`, внутрь
  * его собственного DOM (path/circle/...) не спускаемся.
  */
-export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: number): Promise<SnapshotResult> {
+export async function buildSnapshotTree(
+  wc: WebContents,
+  rootBackendNodeId: number,
+  options: SnapshotOptions = {}
+): Promise<SnapshotResult> {
+  const startedAt = performance.now()
   const dbg = wc.debugger
+  const maxNodes = options.maxNodes ?? MAX_NODES
+  const includeAssets = options.includeAssets ?? true
   const [described, doc] = await Promise.all([
     dbg.sendCommand('DOM.describeNode', { backendNodeId: rootBackendNodeId, depth: -1 }) as Promise<DescribeNodeResult>,
     dbg.sendCommand('DOM.getDocument', {}) as Promise<GetDocumentResult>
   ])
+  const describedAt = performance.now()
   const baseURL = doc.root.baseURL
 
   const toFetch: number[] = []
+  const textBackendIds = new Set<number>()
   const svgBackendIds = new Set<number>()
   const imgNodes = new Map<number, CdpNode>()
   let truncated = false
 
   const collect = (node: CdpNode): void => {
     for (const id of [node.backendNodeId, ...(node.pseudoElements ?? []).map((p) => p.backendNodeId)]) {
-      if (toFetch.length >= MAX_NODES) {
+      if (toFetch.length >= maxNodes) {
         truncated = true
         return
       }
@@ -314,17 +457,20 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
     }
 
     const tag = node.nodeName.toUpperCase()
-    if (tag === 'SVG') {
+    if (tag === 'SVG' && includeAssets) {
       svgBackendIds.add(node.backendNodeId)
       return // не спускаемся во внутренний DOM svg — это один vector-ассет, не поддерево
     }
-    if (tag === 'IMG') {
+    if (tag === 'IMG' && includeAssets) {
       imgNodes.set(node.backendNodeId, node)
     }
 
     for (const child of node.children ?? []) {
-      if (child.nodeType !== ELEMENT_NODE || SKIP_TAGS.has(child.nodeName)) continue
-      collect(child)
+      if (child.nodeType === TEXT_NODE && (child.nodeValue ?? '').trim() !== '') {
+        textBackendIds.add(child.backendNodeId)
+        continue
+      }
+      if (child.nodeType === ELEMENT_NODE && !SKIP_TAGS.has(child.nodeName)) collect(child)
     }
   }
   collect(described.node)
@@ -335,8 +481,8 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
   const nodeIdByBackendId = new Map(toFetch.map((backendId, i) => [backendId, pushed.nodeIds[i]]))
 
   const dataByBackendId = new Map<number, FetchedNodeData>()
-  await Promise.all(
-    toFetch.map(async (backendId) => {
+  await mapWithConcurrency(
+    toFetch.map((backendId) => async () => {
       const nodeId = nodeIdByBackendId.get(backendId)
       if (nodeId === undefined) return
       try {
@@ -354,14 +500,33 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
         // Не отрендерен (display:none и т.п.) — узел и его поддерево просто выпадают из снапшота.
         log.debug('skipping node without box model', { backendId, message: (err as Error).message })
       }
-    })
+    }),
+    CDP_NODE_CONCURRENCY
+  )
+  const stylesAt = performance.now()
+
+  // DOM.getBoxModel работает и для DOM TextNode (проверено в Chromium): это
+  // даёт точную геометрию прямого текста, который раньше терялся рядом с
+  // дочерним элементом, а также внутренний glyph-box кнопок/бейджей.
+  const textBoxByBackendId = new Map<number, BoxModelResult['model']>()
+  await mapWithConcurrency(
+    [...textBackendIds].map((backendNodeId) => async () => {
+      try {
+        const box = (await dbg.sendCommand('DOM.getBoxModel', { backendNodeId })) as BoxModelResult
+        textBoxByBackendId.set(backendNodeId, box.model)
+      } catch (err) {
+        log.debug('skipping text node without box model', { backendNodeId, message: (err as Error).message })
+      }
+    }),
+    CDP_NODE_CONCURRENCY
   )
 
   const collector = new AssetCollector()
   const assetByBackendId = new Map<number, { assetId: string; kind: 'raster' | 'svg' }>()
 
-  await Promise.all([
-    ...[...svgBackendIds].map(async (backendId) => {
+  await mapWithConcurrency(
+    [
+    ...[...svgBackendIds].map((backendId) => async () => {
       try {
         const outer = (await dbg.sendCommand('DOM.getOuterHTML', { backendNodeId: backendId })) as OuterHtmlResult
         const data = dataByBackendId.get(backendId)
@@ -375,7 +540,7 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
         log.debug('failed to capture inline svg', { backendId, message: (err as Error).message })
       }
     }),
-    ...[...imgNodes.entries()].map(async ([backendId, node]) => {
+    ...[...imgNodes.entries()].map(([backendId, node]) => async () => {
       const src = getAttr(node, 'src')
       if (!src) return
       try {
@@ -415,13 +580,28 @@ export async function buildSnapshotTree(wc: WebContents, rootBackendNodeId: numb
         log.debug('failed to fetch img asset', { backendId, src, message: (err as Error).message })
       }
     })
-  ])
+    ],
+    ASSET_CONCURRENCY
+  )
+  const assetsAt = performance.now()
 
   const rootData = dataByBackendId.get(rootBackendNodeId)
   if (!rootData) throw new Error('Selected element has no box model (not rendered)')
 
-  const tree = buildNode(described.node, rootData, null, undefined, dataByBackendId, assetByBackendId)
+  const tree = buildNode(described.node, rootData, null, undefined, dataByBackendId, textBoxByBackendId, assetByBackendId)
   if (!tree) throw new Error('Failed to build snapshot tree for selected element')
+  const finishedAt = performance.now()
+  log.info('snapshot timing', {
+    nodes: toFetch.length,
+    textNodes: textBackendIds.size,
+    images: imgNodes.size,
+    svgs: svgBackendIds.size,
+    describeMs: Math.round(describedAt - startedAt),
+    stylesMs: Math.round(stylesAt - describedAt),
+    assetsMs: Math.round(assetsAt - stylesAt),
+    buildMs: Math.round(finishedAt - assetsAt),
+    totalMs: Math.round(finishedAt - startedAt)
+  })
   return { tree, truncated, assets: collector.manifest() }
 }
 
@@ -435,6 +615,7 @@ function buildNode(
   parentOrigin: { x: number; y: number } | null,
   pseudoType: 'before' | 'after' | undefined,
   dataByBackendId: Map<number, FetchedNodeData>,
+  textBoxByBackendId: Map<number, BoxModelResult['model']>,
   assetByBackendId: Map<number, { assetId: string; kind: 'raster' | 'svg' }>
 ): DomSnapshotNode | null {
   if (pseudoType && isEmptyPseudo(data)) return null
@@ -447,7 +628,12 @@ function buildNode(
   for (let i = 0; i < attrs.length; i += 2) attrMap.set(attrs[i] as string, attrs[i + 1] ?? '')
 
   const asset = assetByBackendId.get(cdpNode.backendNodeId)
-  const directText = asset ? {} : extractTextContent(cdpNode, dataByBackendId)
+  const extractedText = asset ? {} : extractTextContent(cdpNode, dataByBackendId)
+  const materializeDirectText = extractedText.materializeDirectText === true
+  const directText = {
+    ...(extractedText.text !== undefined ? { text: extractedText.text } : {}),
+    ...(extractedText.textRuns ? { textRuns: extractedText.textRuns } : {})
+  }
   const children: DomSnapshotNode[] = []
 
   // Узел с успешно развёрнутыми textRuns не нуждается в отдельных дочерних
@@ -460,18 +646,34 @@ function buildNode(
     for (const pseudo of cdpNode.pseudoElements ?? []) {
       const pseudoData = dataByBackendId.get(pseudo.backendNodeId)
       if (!pseudoData) continue
-      const converted = buildNode(pseudo, pseudoData, nodeOrigin, pseudo.nodeName === '::after' ? 'after' : 'before', dataByBackendId, assetByBackendId)
+      const converted = buildNode(
+        pseudo,
+        pseudoData,
+        nodeOrigin,
+        pseudo.nodeName === '::after' ? 'after' : 'before',
+        dataByBackendId,
+        textBoxByBackendId,
+        assetByBackendId
+      )
       if (converted) children.push(converted)
     }
 
     for (const child of cdpNode.children ?? []) {
-      if (child.nodeType !== ELEMENT_NODE || SKIP_TAGS.has(child.nodeName)) continue
-      const childData = dataByBackendId.get(child.backendNodeId)
-      if (!childData) continue
-      const converted = buildNode(child, childData, nodeOrigin, undefined, dataByBackendId, assetByBackendId)
-      if (converted) children.push(converted)
+      if (child.nodeType === TEXT_NODE && materializeDirectText && (child.nodeValue ?? '').trim() !== '') {
+        const textBox = textBoxByBackendId.get(child.backendNodeId)
+        if (textBox) children.push(buildDirectTextNode(child, textBox, nodeOrigin, data.style))
+        continue
+      }
+      if (child.nodeType === ELEMENT_NODE && !SKIP_TAGS.has(child.nodeName)) {
+        const childData = dataByBackendId.get(child.backendNodeId)
+        if (!childData) continue
+        const converted = buildNode(child, childData, nodeOrigin, undefined, dataByBackendId, textBoxByBackendId, assetByBackendId)
+        if (converted) children.push(converted)
+      }
     }
   }
+
+  const textBox = directText.text ? unionDirectTextBoxes(cdpNode, textBoxByBackendId, nodeOrigin) : undefined
 
   return {
     tag: pseudoType ? `::${pseudoType}` : cdpNode.nodeName.toLowerCase(),
@@ -483,7 +685,78 @@ function buildNode(
     ...(children.length > 0 ? { children } : {}),
     ...(pseudoType ? { pseudoType } : {}),
     ...(asset ? { asset } : {}),
+    ...(textBox ? { textBox } : {}),
     ...directText
+  }
+}
+
+/** Прямой DOM TextNode в смешанном block-контенте → обычный синтетический
+ * DomSnapshotNode в том же месте и DOM-порядке. */
+function buildDirectTextNode(
+  textNode: CdpNode,
+  model: BoxModelResult['model'],
+  parentOrigin: { x: number; y: number },
+  inheritedStyle: Record<string, string>
+): DomSnapshotNode {
+  const origin = boxOrigin(model)
+  return {
+    tag: '#text',
+    id: null,
+    classes: [],
+    computedStyle: withoutBoxDecoration(inheritedStyle),
+    authoredSizing: { width: true, height: true },
+    box: {
+      width: model.width,
+      height: model.height,
+      x: Math.round(origin.x - parentOrigin.x),
+      y: Math.round(origin.y - parentOrigin.y)
+    },
+    text: (textNode.nodeValue ?? '').replace(/\s+/g, ' ').trim()
+  }
+}
+
+/** Union glyph-box'ов всех прямых текстовых детей элемента. */
+function unionDirectTextBoxes(
+  cdpNode: CdpNode,
+  textBoxByBackendId: Map<number, BoxModelResult['model']>,
+  nodeOrigin: { x: number; y: number }
+): DomSnapshotNode['textBox'] | undefined {
+  const boxes = (cdpNode.children ?? [])
+    .filter((child) => child.nodeType === TEXT_NODE && (child.nodeValue ?? '').trim() !== '')
+    .map((child) => textBoxByBackendId.get(child.backendNodeId))
+    .filter((box): box is BoxModelResult['model'] => box !== undefined)
+  if (boxes.length === 0) return undefined
+  const left = Math.min(...boxes.map((box) => boxOrigin(box).x))
+  const top = Math.min(...boxes.map((box) => boxOrigin(box).y))
+  const right = Math.max(...boxes.map((box) => boxOrigin(box).x + box.width))
+  const bottom = Math.max(...boxes.map((box) => boxOrigin(box).y + box.height))
+  return {
+    width: Math.max(1, right - left),
+    height: Math.max(1, bottom - top),
+    x: Math.round(left - nodeOrigin.x),
+    y: Math.round(top - nodeOrigin.y)
+  }
+}
+
+function withoutBoxDecoration(style: Record<string, string>): Record<string, string> {
+  return {
+    ...style,
+    display: 'block',
+    position: 'static',
+    'background-color': 'rgba(0, 0, 0, 0)',
+    'box-shadow': 'none',
+    'padding-top': '0px',
+    'padding-right': '0px',
+    'padding-bottom': '0px',
+    'padding-left': '0px',
+    'border-top-width': '0px',
+    'border-right-width': '0px',
+    'border-bottom-width': '0px',
+    'border-left-width': '0px',
+    'border-top-left-radius': '0px',
+    'border-top-right-radius': '0px',
+    'border-bottom-right-radius': '0px',
+    'border-bottom-left-radius': '0px'
   }
 }
 

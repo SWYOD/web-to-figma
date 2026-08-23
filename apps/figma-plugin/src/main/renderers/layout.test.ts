@@ -30,6 +30,7 @@ describe('applyLayout', () => {
     applyLayout(frame as never, baseLayout)
     expect(frame).toMatchObject({
       layoutMode: 'HORIZONTAL',
+      layoutWrap: 'NO_WRAP',
       primaryAxisSizingMode: 'FIXED',
       counterAxisSizingMode: 'FIXED',
       itemSpacing: 16,
@@ -46,6 +47,13 @@ describe('applyLayout', () => {
     const frame = mockFrame()
     applyLayout(frame as never, { ...baseLayout, mode: 'vertical' })
     expect(frame.layoutMode).toBe('VERTICAL')
+  })
+
+  it('maps horizontal flex-wrap and row-gap to Figma WRAP/counterAxisSpacing', () => {
+    const frame = mockFrame()
+    applyLayout(frame as never, { ...baseLayout, wrap: true, rowGap: 7, columnGap: 12 })
+    expect(frame.layoutWrap).toBe('WRAP')
+    expect(frame.counterAxisSpacing).toBe(7)
   })
 
   it('maps justify start/end to Figma MIN/MAX', () => {

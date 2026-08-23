@@ -9,6 +9,34 @@ const log = createConsoleLogger('browser')
 
 const START_URL = START_PAGE_URL
 
+/** User-origin CSS только для scrollbar встроенных сайтов. `!important`
+ * нужен, чтобы авторский `::-webkit-scrollbar` страницы не выбивал браузер
+ * из общей темы приложения; остальные DOM/CSS-свойства не затрагиваются. */
+const BROWSER_SCROLLBAR_CSS = `
+  *::-webkit-scrollbar { width: 10px !important; height: 10px !important; }
+  *::-webkit-scrollbar-track { background: transparent !important; border-radius: 999px !important; }
+  *::-webkit-scrollbar-button,
+  *::-webkit-scrollbar-button:single-button,
+  *::-webkit-scrollbar-button:double-button {
+    display: none !important;
+    -webkit-appearance: none !important;
+    background: transparent !important;
+    width: 0 !important;
+    height: 0 !important;
+  }
+  *::-webkit-scrollbar-thumb {
+    min-width: 28px !important;
+    min-height: 28px !important;
+    background: rgba(90, 93, 108, 0.72) !important;
+    background-clip: content-box !important;
+    border: 3px solid transparent !important;
+    border-radius: 999px !important;
+  }
+  *::-webkit-scrollbar-thumb:hover { background: rgba(139, 92, 246, 0.9) !important; background-clip: content-box !important; }
+  *::-webkit-scrollbar-thumb:active { background: rgb(139, 92, 246) !important; background-clip: content-box !important; }
+  *::-webkit-scrollbar-corner { background: transparent !important; }
+`
+
 /** -3 = ERR_ABORTED — обычная штатная ситуация (редирект/навигация прервана
  *  новой навигацией до завершения предыдущей), не настоящая ошибка загрузки. */
 const ERR_ABORTED = -3
@@ -110,6 +138,14 @@ export class BrowserController {
 
     const wc = view.webContents
     wc.on('focus', () => this.onFocus?.())
+    // insertCSS живёт в document lifecycle, поэтому внедряем заново после
+    // каждой полной навигации. SPA-переходы документ не меняют и повторной
+    // вставки не требуют.
+    wc.on('dom-ready', () => {
+      void wc.insertCSS(BROWSER_SCROLLBAR_CSS, { cssOrigin: 'user' }).catch((err: Error) => {
+        log.debug('browser scrollbar CSS failed', { message: err.message })
+      })
+    })
     wc.on('did-start-loading', () => this.patchTab(id, { isLoading: true, loadError: null }))
     wc.on('did-stop-loading', () =>
       this.patchTab(id, {
@@ -195,6 +231,12 @@ export class BrowserController {
 
   getActiveTabId(): string | null {
     return this.activeTabId
+  }
+
+  /** Доступ к содержимому конкретной вкладки без визуального переключения —
+   * нужен отложенной подготовке очереди мульти-импорта. */
+  getWebContentsForTab(id: string): Electron.WebContents | null {
+    return this.tabs.get(id)?.view.webContents ?? null
   }
 
   getTabsSnapshot(): TabsSnapshot {

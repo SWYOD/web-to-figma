@@ -319,6 +319,9 @@
 .picker-float-bar-label.error {
   color: var(--danger);
 }
+.picker-float-bar-label.warning {
+  color: var(--warning);
+}
 /* Счётчик элементов в очереди мульти-импорта (по запросу пользователя) —
    маленький бейдж поверх кнопки "Импортировать очередь", видим, только пока
    очередь не пуста (см. PickerFloatBar.tsx). */

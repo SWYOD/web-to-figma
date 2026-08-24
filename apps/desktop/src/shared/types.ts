@@ -195,6 +195,11 @@ export interface SelectionResult {
 export interface ImportResult {
   ok: boolean
   error?: string
+  /** Сколько картинок не удалось скачать при импорте (по запросу
+   *  пользователя — жёлтое предупреждение в тулбаре вместо тихой потери,
+   *  см. main/domSnapshot.ts failedAssets). Undefined/0 — все картинки
+   *  загрузились. */
+  failedAssets?: number
 }
 
 export interface ImportProgressEvent {

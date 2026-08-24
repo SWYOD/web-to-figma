@@ -299,6 +299,10 @@ export class ElementPicker {
   private capturing = false
   private lastConversion: { node: DesignNode; diagnostics: ConversionWarning[] } | null = null
   private lastAssets: Record<string, DesignAsset> = {}
+  /** Сколько картинок не удалось скачать при последнем захвате (по запросу
+   *  пользователя — источник числа для жёлтого предупреждения в тулбаре,
+   *  см. IPC-хендлеры импорта в index.ts). */
+  private lastFailedAssets = 0
   /** backendNodeId последнего клика — нужен, чтобы `prepareForImport()` мог
    *  пересобрать `lastConversion` на desktop-ширине перед реальным импортом
    *  (см. комментарий у CAPTURE_MIN_WIDTH выше), не заставляя обычный клик
@@ -380,6 +384,10 @@ export class ElementPicker {
 
   getLastSelection(): SelectionResult | null {
     return this.lastSelectionResult
+  }
+
+  getLastFailedAssetsCount(): number {
+    return this.lastFailedAssets
   }
 
   /** Оборачивает lastConversion в полноценный DesignDocument для отправки через bridge (Phase 6). */
@@ -700,14 +708,15 @@ export class ElementPicker {
   private async captureAndConvert(
     wc: WebContents,
     backendNodeId: number,
-    options: { preview?: boolean } = {}
+    options: { preview?: boolean; maxNodes?: number } = {}
   ): Promise<SelectionResult> {
-    const { tree: snapshot, truncated, assets } = await this.withoutPickHighlight(wc, backendNodeId, () =>
+    const { tree: snapshot, truncated, assets, failedAssets } = await this.withoutPickHighlight(wc, backendNodeId, () =>
       options.preview
         ? buildPreviewSnapshotTree(wc, backendNodeId, PICK_PREVIEW_MAX_NODES)
-        : buildSnapshotTree(wc, backendNodeId)
+        : buildSnapshotTree(wc, backendNodeId, { maxNodes: options.maxNodes })
     )
     this.lastAssets = assets
+    this.lastFailedAssets = failedAssets
     this.lastSourceSelector = snapshot.sourceSelector ?? null
     const styleMap = toComputedStyleMap(Object.entries(snapshot.computedStyle).map(([name, value]) => ({ name, value })))
 
@@ -729,6 +738,18 @@ export class ElementPicker {
         code: 'subtree-truncated',
         severity: 'warning',
         message: 'Поддерево слишком большое — часть вложенных элементов не импортирована.'
+      })
+    }
+    // По запросу пользователя — CDN сайта иногда "тарпитит" запрос картинки
+    // до таймаута случайно от попытки к попытке (см. fetchAsset.ts), ретраи
+    // снижают, но не гарантируют — жёлтое предупреждение в тулбаре должно
+    // явно показывать РЕАЛЬНОЕ число потерянных картинок, а не тихо молчать.
+    if (failedAssets > 0) {
+      this.lastConversion.diagnostics.push({
+        nodeId: this.lastConversion.node.id,
+        code: 'asset-fetch-failed',
+        severity: 'warning',
+        message: `Не удалось загрузить картинок: ${failedAssets}.`
       })
     }
 
@@ -1095,7 +1116,16 @@ export class ElementPicker {
     }
   }
 
-  async prepareForImport(): Promise<boolean> {
+  /** `maxNodes` — по умолчанию обычный лимит (см. MAX_NODES в domSnapshot.ts,
+   *  рассчитан на "один выбранный элемент"). "Импортировать страницу
+   *  целиком" (см. selectFullPage выше) захватывает ВЕСЬ `<body>` — живой
+   *  баг, поймал пользователь: реальная страница (шапка+навигация+герой+
+   *  несколько секций) легко превышает 400 узлов, из-за чего часть DOM'а
+   *  (в конкретном случае — герой-картинка) молча не попадала в снапшот
+   *  (`subtree-truncated` диагностика это подтвердила). index.ts передаёт
+   *  сюда заметно больший лимит именно для полного импорта страницы, а
+   *  обычный Import as Frame/Component продолжает использовать дефолт. */
+  async prepareForImport(maxNodes?: number): Promise<boolean> {
     if (this.lastBackendNodeId === null) return false
     const wc = this.getWebContents()
     if (!wc) return false
@@ -1108,7 +1138,7 @@ export class ElementPicker {
         await dbg.sendCommand('DOM.enable')
         await dbg.sendCommand('CSS.enable')
       }
-      const result = await this.withDesktopViewport(dbg, () => this.captureAndConvert(wc, this.lastBackendNodeId!))
+      const result = await this.withDesktopViewport(dbg, () => this.captureAndConvert(wc, this.lastBackendNodeId!, { maxNodes }))
       this.lastSelectionResult = result
       return true
     } catch (err) {

@@ -5,7 +5,13 @@ import type { PickState } from '../../../shared/types'
 
 const EMPTY_PICK: PickState = { active: false, error: null }
 
-type ImportUiState = { kind: 'idle' | 'loading' } | { kind: 'ok' } | { kind: 'error'; message: string }
+type ImportUiState =
+  | { kind: 'idle' | 'loading' }
+  // failedAssets — по запросу пользователя: сколько картинок не удалось
+  // загрузить (см. main/domSnapshot.ts) — импорт формально успешен, но
+  // часть картинок молча потерялась бы без явного предупреждения.
+  | { kind: 'ok'; failedAssets?: number }
+  | { kind: 'error'; message: string }
 
 interface Props {
   applyOpen: boolean
@@ -90,7 +96,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       settings.useMatchedColorStyles,
       settings.colorMatchSource
     )
-    setImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
+    setImportState(result.ok ? { kind: 'ok', failedAssets: result.failedAssets } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 
   const handleImportComponent = async (): Promise<void> => {
@@ -103,7 +109,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       settings.colorMatchSource,
       settings.alsoCreateInstance
     )
-    setComponentImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
+    setComponentImportState(result.ok ? { kind: 'ok', failedAssets: result.failedAssets } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 
   /** "Импортировать страницу целиком" (по запросу пользователя) — не требует
@@ -120,7 +126,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       settings.useMatchedColorStyles,
       settings.colorMatchSource
     )
-    setFullPageImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
+    setFullPageImportState(result.ok ? { kind: 'ok', failedAssets: result.failedAssets } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 
   const handleImportQueue = async (): Promise<void> => {
@@ -138,6 +144,14 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
     )
   }
 
+  // По запросу пользователя — импорт формально успешен (ok:true), но если
+  // часть картинок не загрузилась (CDN сайта иногда "тарпитит" запрос, см.
+  // main/domSnapshot.ts/fetchAsset.ts), тулбар должен явно показать РЕАЛЬНОЕ
+  // число, а не молчать. `okLabel` — базовый текст успеха для конкретного
+  // действия; если у него есть `failedAssets`, к нему добавляется предупреждение.
+  const okLabel = (base: string, failedAssets: number | undefined): string =>
+    failedAssets ? `${base}, но не загрузилось картинок: ${failedAssets}` : base
+
   const label = pick.active
     ? queueMode
       ? 'Кликните на следующий элемент'
@@ -147,15 +161,15 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       : queueImportState.kind === 'error'
         ? queueImportState.message
         : fullPageImportState.kind === 'ok'
-          ? 'Страница импортирована в Figma'
+          ? okLabel('Страница импортирована в Figma', fullPageImportState.failedAssets)
           : fullPageImportState.kind === 'error'
             ? fullPageImportState.message
             : componentImportState.kind === 'ok'
-              ? 'Component создан в Figma'
+              ? okLabel('Component создан в Figma', componentImportState.failedAssets)
               : componentImportState.kind === 'error'
                 ? componentImportState.message
                 : importState.kind === 'ok'
-                  ? 'Frame создан в Figma'
+                  ? okLabel('Frame создан в Figma', importState.failedAssets)
                   : importState.kind === 'error'
                     ? importState.message
                     : null
@@ -164,6 +178,10 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
     componentImportState.kind === 'error' ||
     queueImportState.kind === 'error' ||
     fullPageImportState.kind === 'error'
+  const hasWarning =
+    (importState.kind === 'ok' && !!importState.failedAssets) ||
+    (componentImportState.kind === 'ok' && !!componentImportState.failedAssets) ||
+    (fullPageImportState.kind === 'ok' && !!fullPageImportState.failedAssets)
 
   return (
     <div className="picker-float-bar">
@@ -209,7 +227,9 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
         </IconButton>
         {queueCount > 0 && <span className="picker-float-bar-queue-badge">{queueCount}</span>}
       </div>
-      {label && <span className={`picker-float-bar-label${hasError ? ' error' : ''}`}>{label}</span>}
+      {label && (
+        <span className={`picker-float-bar-label${hasError ? ' error' : hasWarning ? ' warning' : ''}`}>{label}</span>
+      )}
     </div>
   )
 }

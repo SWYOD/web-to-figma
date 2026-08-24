@@ -135,7 +135,7 @@ export async function buildPreviewSnapshotTree(
     })) as RuntimePreviewResult
     const payload = evaluated.result.value
     if (!payload?.tree) throw new Error('Selected element has no visible box')
-    return { tree: payload.tree, truncated: payload.truncated, assets: {} }
+    return { tree: payload.tree, truncated: payload.truncated, assets: {}, failedAssets: 0 }
   } finally {
     await dbg.sendCommand('Runtime.releaseObject', { objectId }).catch(() => undefined)
   }
@@ -275,6 +275,12 @@ export interface SnapshotResult {
   /** true — поддерево было больше MAX_NODES, часть узлов не вошла в дерево. */
   truncated: boolean
   assets: Record<string, DesignAsset>
+  /** Сколько `<img>` не удалось скачать (см. fetchAssetBytes — CDN сайта
+   *  иногда "тарпитит" запрос до таймаута случайно от попытки к попытке, не
+   *  гарантированно лечится ретраями) — по запросу пользователя, чтобы
+   *  жёлтое предупреждение в тулбаре показывало реальное число, а не тихо
+   *  теряло картинки без следа. */
+  failedAssets: number
 }
 
 /**
@@ -523,6 +529,7 @@ export async function buildSnapshotTree(
 
   const collector = new AssetCollector()
   const assetByBackendId = new Map<number, { assetId: string; kind: 'raster' | 'svg' }>()
+  let failedAssets = 0
 
   await mapWithConcurrency(
     [
@@ -546,7 +553,10 @@ export async function buildSnapshotTree(
       try {
         const absoluteUrl = new URL(src, baseURL).href
         const fetched = await fetchAssetBytes(absoluteUrl)
-        if (!fetched) return
+        if (!fetched) {
+          failedAssets += 1
+          return
+        }
         const data = dataByBackendId.get(backendId)
 
         // <img src="x.svg"> — SVG, загруженный как обычная картинка, не inline —
@@ -563,6 +573,7 @@ export async function buildSnapshotTree(
           return
         }
         if (!SUPPORTED_RASTER_MIME.has(fetched.mimeType)) {
+          failedAssets += 1
           log.debug('skipping unsupported image mime type for figma.createImage', { backendId, mimeType: fetched.mimeType })
           return
         }
@@ -577,6 +588,7 @@ export async function buildSnapshotTree(
         })
         assetByBackendId.set(backendId, { assetId: asset.id, kind: 'raster' })
       } catch (err) {
+        failedAssets += 1
         log.debug('failed to fetch img asset', { backendId, src, message: (err as Error).message })
       }
     })
@@ -602,7 +614,7 @@ export async function buildSnapshotTree(
     buildMs: Math.round(finishedAt - assetsAt),
     totalMs: Math.round(finishedAt - startedAt)
   })
-  return { tree, truncated, assets: collector.manifest() }
+  return { tree, truncated, assets: collector.manifest(), failedAssets }
 }
 
 function boxOrigin(model: BoxModelResult['model']): { x: number; y: number } {

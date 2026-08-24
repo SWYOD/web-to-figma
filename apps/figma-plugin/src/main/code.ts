@@ -27,7 +27,10 @@ import { runDesignAgentCommand } from './designAgentCommands'
  */
 
 const BRIDGE_TOKEN_KEY = 'bridgeToken'
-const PLUGIN_WIDTH = 320
+// По запросу пользователя — 320px не хватало места для трёх бейджей
+// подключения в шапке (Web to Figma/AI/Toolkit), последний упирался в край
+// окна почти без отступа.
+const PLUGIN_WIDTH = 380
 const PLUGIN_EXPANDED_HEIGHT = 440
 const PLUGIN_COLLAPSED_HEIGHT = 64
 

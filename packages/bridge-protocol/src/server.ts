@@ -60,8 +60,17 @@ export class BridgeServer {
    * всем аутентифицированным пирам (на практике обычно один — один открытый
    * Figma-файл), резолвится первым пришедшим `response`/`error` с тем же
    * `requestId`. См. docs/bridge-protocol.md §Request/response корреляция.
+   *
+   * `timeoutMs` — опциональное переопределение дефолтного REQUEST_TIMEOUT_MS
+   * (10с) для этого КОНКРЕТНОГО запроса — по умолчанию рассчитан на один
+   * выбранный элемент, но "Импортировать страницу целиком" может создавать в
+   * Figma тысячи нод синхронно в песочнице плагина (figma.createFrame/
+   * loadFontAsync на каждый узел) — живой баг, поймал пользователь: "Bridge
+   * request import-node timed out" на реальной странице, притом что плагин
+   * продолжал молча досоздавать ноды уже ПОСЛЕ таймаута — desktop просто
+   * переставал ждать ответ раньше, чем Figma успевала закончить.
    */
-  request(message: BridgeMessage): Promise<BridgeMessage> {
+  request(message: BridgeMessage, timeoutMs = REQUEST_TIMEOUT_MS): Promise<BridgeMessage> {
     return new Promise((resolve, reject) => {
       const authenticated = [...this.peers].filter((p) => p.authenticated)
       if (authenticated.length === 0) {
@@ -71,7 +80,7 @@ export class BridgeServer {
       const timeout = setTimeout(() => {
         this.pending.delete(message.id)
         reject(new Error(`Bridge request "${message.kind}" timed out`))
-      }, REQUEST_TIMEOUT_MS)
+      }, timeoutMs)
       this.pending.set(message.id, { resolve, reject, timeout })
       for (const peer of authenticated) this.replyTo(peer, message)
     })

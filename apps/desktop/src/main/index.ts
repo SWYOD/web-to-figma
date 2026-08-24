@@ -195,6 +195,15 @@ const TOOLBAR_VISUAL_BOTTOM_GAP = 16
 const SHADOW_MARGIN = 24
 const TOOLBAR_BOTTOM_GAP = TOOLBAR_VISUAL_BOTTOM_GAP - SHADOW_MARGIN
 
+/** Лимит узлов для "Импортировать страницу целиком" — заметно выше обычного
+ *  MAX_NODES=400 в domSnapshot.ts (тот рассчитан на один выбранный элемент,
+ *  а не на весь <body>), см. комментарий у `inspector:import-full-page`. */
+const FULL_PAGE_MAX_NODES = 6000
+/** Таймаут bridge-запроса именно для полного импорта страницы — сильно
+ *  больше дефолтных 10с (REQUEST_TIMEOUT_MS), см. комментарий у
+ *  `bridgeServer.request(message, FULL_PAGE_IMPORT_TIMEOUT_MS)` ниже. */
+const FULL_PAGE_IMPORT_TIMEOUT_MS = 120_000
+
 /**
  * Плавающий тулбар (pick/import/apply-to-selection) теперь ПОСТОЯННО живёт в
  * overlay-слое (по запросу пользователя — раньше сидел в HTML-полосе,
@@ -575,7 +584,7 @@ function registerIpc(): void {
           return { ok: false, error }
         }
         progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
-        return { ok: true }
+        return { ok: true, failedAssets: elementPicker?.getLastFailedAssetsCount() }
       } catch (err) {
         const error = (err as Error).message
         progress.finish(false, error)
@@ -604,8 +613,15 @@ function registerIpc(): void {
         progress.finish(false, 'Не удалось найти страницу — откройте сайт в браузере')
         return { ok: false, error: 'Сначала откройте страницу в браузере' }
       }
+      // Обычный лимит узлов (см. domSnapshot.ts MAX_NODES=400) рассчитан на
+      // ОДИН выбранный элемент — реальная страница целиком (шапка+навигация+
+      // герой+секции) легко превышает его, из-за чего часть DOM'а молча не
+      // попадала в снапшот (живой баг, поймал пользователь — герой-картинка
+      // пропала при импорте страницы целиком, диагностика 'subtree-truncated'
+      // это подтвердила). Только для полного импорта страницы — обычный
+      // Import as Frame/Component продолжает использовать дефолт.
       progress.update('preparing', 0.08, 'Чтение DOM, стилей и ассетов…')
-      await elementPicker?.prepareForImport()
+      await elementPicker?.prepareForImport(FULL_PAGE_MAX_NODES)
       const preparedAt = performance.now()
       const document = elementPicker?.buildDocument(
         browserController?.getState().url ?? '',
@@ -629,14 +645,21 @@ function registerIpc(): void {
       })
       try {
         progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
-        const response = await bridgeServer.request(message)
+        // Дефолтный таймаут запроса (10с, REQUEST_TIMEOUT_MS) рассчитан на
+        // один выбранный элемент — плагин создаёт ноды в Figma синхронно,
+        // одну за другой (figma.createFrame/loadFontAsync на каждый узел), и
+        // для страницы целиком (до FULL_PAGE_MAX_NODES узлов) это легко
+        // дольше 10с. Живой баг, поймал пользователь: "Bridge request
+        // import-node timed out" и часть страницы не успела импортироваться
+        // — desktop переставал ждать раньше, чем Figma заканчивала.
+        const response = await bridgeServer.request(message, FULL_PAGE_IMPORT_TIMEOUT_MS)
         if (response.kind === 'error') {
           const error = (response as ErrorMessage).payload.message
           progress.finish(false, error)
           return { ok: false, error }
         }
         progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
-        return { ok: true }
+        return { ok: true, failedAssets: elementPicker?.getLastFailedAssetsCount() }
       } catch (err) {
         const error = (err as Error).message
         progress.finish(false, error)
@@ -693,7 +716,7 @@ function registerIpc(): void {
           return { ok: false, error }
         }
         progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
-        return { ok: true }
+        return { ok: true, failedAssets: elementPicker?.getLastFailedAssetsCount() }
       } catch (err) {
         const error = (err as Error).message
         progress.finish(false, error)

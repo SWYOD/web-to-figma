@@ -33,6 +33,18 @@ const CONVERT_TO_PNG_MIME = new Set(['image/webp', 'image/avif', 'image/bmp', 'i
  *  путь (см. `return null`), картинка выпадает из снапшота, остальные не
  *  ждут её. */
 const FETCH_TIMEOUT_MS = 8000
+/** Живой баг, поймал пользователь: "Импортировать страницу целиком" теряло
+ *  картинки (не одну и ту же каждый раз — проверено прямым fetch() с тем же
+ *  UA: один и тот же URL то отвечает 200 мгновенно, то держит TCP-соединение
+ *  до таймаута, СЛУЧАЙНО от попытки к попытке — тот же WAF-тарпит, что и
+ *  комментарий у USER_AGENT выше уже описывает как "снижает вероятность, не
+ *  гарантия"). Один элемент импортирует 1-2 картинки — шанс словить тарпит
+ *  на КОНКРЕТНОЙ из них небольшой; вся страница разом — десятки картинок
+ *  через ASSET_CONCURRENCY, и вероятность хотя бы одного случайного
+ *  таймаута за импорт растёт кратно. Одна лишняя попытка при неудаче — не
+ *  панацея (тарпит может повториться и на ней), но заметно снижает
+ *  накопленную вероятность потери конкретной картинки за один импорт. */
+const FETCH_RETRY_ATTEMPTS = 2
 const ASSET_CACHE_TTL_MS = 5 * 60_000
 const FAILED_ASSET_CACHE_TTL_MS = 30_000
 const ASSET_CACHE_MAX_ENTRIES = 256
@@ -104,33 +116,38 @@ export async function fetchAssetBytes(url: string): Promise<FetchedAsset | null>
 }
 
 async function fetchAssetBytesUncached(url: string): Promise<FetchedAsset | null> {
-  try {
-    const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
-    if (!res.ok) {
+  for (let attempt = 1; attempt <= FETCH_RETRY_ATTEMPTS; attempt += 1) {
+    try {
+      const res = await fetch(url, { headers: { 'User-Agent': USER_AGENT }, signal: AbortSignal.timeout(FETCH_TIMEOUT_MS) })
+      if (!res.ok) {
+        if (attempt < FETCH_RETRY_ATTEMPTS) continue
+        rememberFailedAsset(url)
+        return null
+      }
+      const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream'
+      const bytes = Buffer.from(await res.arrayBuffer())
+
+      if (CONVERT_TO_PNG_MIME.has(mimeType)) {
+        try {
+          const png = await sharp(bytes).png().toBuffer()
+          const value = { bytes: png, mimeType: 'image/png' }
+          rememberAsset(url, value)
+          return value
+        } catch {
+          // Битый/нераспознанный файл — падаем обратно на исходные байты,
+          // downstream-фильтр (SUPPORTED_RASTER_MIME) их и так отбросит как
+          // недиагностируемую ошибку, а не молча притворится, что всё ок.
+        }
+      }
+
+      const value = { bytes, mimeType }
+      rememberAsset(url, value)
+      return value
+    } catch {
+      if (attempt < FETCH_RETRY_ATTEMPTS) continue
       rememberFailedAsset(url)
       return null
     }
-    const mimeType = res.headers.get('content-type')?.split(';')[0]?.trim() || 'application/octet-stream'
-    const bytes = Buffer.from(await res.arrayBuffer())
-
-    if (CONVERT_TO_PNG_MIME.has(mimeType)) {
-      try {
-        const png = await sharp(bytes).png().toBuffer()
-        const value = { bytes: png, mimeType: 'image/png' }
-        rememberAsset(url, value)
-        return value
-      } catch {
-        // Битый/нераспознанный файл — падаем обратно на исходные байты,
-        // downstream-фильтр (SUPPORTED_RASTER_MIME) их и так отбросит как
-        // недиагностируемую ошибку, а не молча притворится, что всё ок.
-      }
-    }
-
-    const value = { bytes, mimeType }
-    rememberAsset(url, value)
-    return value
-  } catch {
-    rememberFailedAsset(url)
-    return null
   }
+  return null
 }

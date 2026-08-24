@@ -347,10 +347,10 @@ function Plugin(): JSX.Element {
   const desktopBadgeState: CompactConnectionState =
     authError ? 'error' : pairing === 'searching' ? 'connecting' : state
   const desktopBadgeTitle = authError
-    ? 'Desktop bridge: ошибка совместимости или авторизации'
+    ? 'Web To Figma: ошибка совместимости или авторизации'
     : pairing === 'searching'
-      ? 'Desktop bridge: поиск приложения'
-      : `Desktop bridge: ${state}`
+      ? 'Web To Figma: поиск приложения'
+      : `Web To Figma: ${state}`
   const agentBadgeState: CompactConnectionState = daEnabled ? daState : 'disabled'
   const agentBadgeTitle = daEnabled ? `DesignAgent bridge: ${daState}` : 'DesignAgent bridge выключен'
   const toolkitBadgeState: CompactConnectionState = toolkitState === 'searching' ? 'connecting' : toolkitState
@@ -390,10 +390,10 @@ function Plugin(): JSX.Element {
           <div className="plugin-title">Web To Figma</div>
           <StatusRow state={state}>
             {state === 'connected'
-              ? 'Desktop bridge connected'
+              ? 'Web To Figma connected'
               : state === 'connecting'
                 ? 'Подключение…'
-                : 'Desktop bridge отключён'}
+                : 'Web To Figma отключён'}
           </StatusRow>
         </div>
         <div className="plugin-section">
@@ -471,7 +471,7 @@ function Plugin(): JSX.Element {
         </button>
         <div className="plugin-header-title">Bridge Tools</div>
         <div className="connection-badges">
-          <ConnectionBadge label="Desktop" state={desktopBadgeState} title={desktopBadgeTitle} />
+          <ConnectionBadge label="Web to Figma" state={desktopBadgeState} title={desktopBadgeTitle} />
           <ConnectionBadge label="AI" state={agentBadgeState} title={agentBadgeTitle} />
           <ConnectionBadge label="Toolkit" state={toolkitBadgeState} title={toolkitBadgeTitle} />
         </div>

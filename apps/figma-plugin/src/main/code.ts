@@ -51,6 +51,7 @@ type UiToMainMessage =
   | { type: 'apply-styles'; requestId: string; document: DesignDocument; targets: ApplyStylesTargets }
   | ({ type: 'place-asset'; requestId: string } & PlaceAssetPayload)
   | { type: 'da-command'; id: string; command: string; params: Record<string, unknown> }
+  | { type: 'ct-command'; id: string; command: string; params: Record<string, unknown> }
 
 figma.ui.onmessage = async (msg: UiToMainMessage) => {
   if (msg.type === 'resize-ui') {
@@ -140,6 +141,18 @@ figma.ui.onmessage = async (msg: UiToMainMessage) => {
       figma.ui.postMessage({ type: 'da-result', id: msg.id, ok: true, result })
     } catch (err) {
       figma.ui.postMessage({ type: 'da-result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
+    }
+    return
+  }
+  if (msg.type === 'ct-command') {
+    // Design Toolkit bridge (по запросу пользователя, см. ui/canvasToolkitClient.ts)
+    // — ТОТ ЖЕ диспетчер команд, что и у канала DesignAgent выше: полный
+    // набор возможностей, а не отдельный урезанный протокол.
+    try {
+      const result = await runDesignAgentCommand(msg.command, msg.params)
+      figma.ui.postMessage({ type: 'ct-result', id: msg.id, ok: true, result })
+    } catch (err) {
+      figma.ui.postMessage({ type: 'ct-result', id: msg.id, ok: false, error: err instanceof Error ? err.message : String(err) })
     }
   }
 }

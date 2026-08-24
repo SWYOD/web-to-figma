@@ -1,5 +1,5 @@
 import { useEffect, useState } from 'react'
-import { Component as ComponentIcon, FolderInput, Frame as FrameIcon, ListPlus, MousePointerClick, Wand2 } from 'lucide-react'
+import { Component as ComponentIcon, FolderInput, Frame as FrameIcon, Layers, ListPlus, MousePointerClick, Wand2 } from 'lucide-react'
 import { IconButton } from '@web-to-figma/ui'
 import type { PickState } from '../../../shared/types'
 
@@ -39,6 +39,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
   const [importState, setImportState] = useState<ImportUiState>({ kind: 'idle' })
   const [componentImportState, setComponentImportState] = useState<ImportUiState>({ kind: 'idle' })
   const [queueImportState, setQueueImportState] = useState<ImportUiState>({ kind: 'idle' })
+  const [fullPageImportState, setFullPageImportState] = useState<ImportUiState>({ kind: 'idle' })
 
   useEffect(() => {
     const offPick = window.api.onInspectorPickState(setPick)
@@ -46,6 +47,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       setHasSelection(true)
       setImportState({ kind: 'idle' })
       setComponentImportState({ kind: 'idle' })
+      setFullPageImportState({ kind: 'idle' })
     })
     // Esc с уже выбранным элементом (см. main/inspector.ts clearSelection) —
     // кнопки Import as Frame/Component снова недоступны до нового выбора.
@@ -81,6 +83,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
 
   const handleImport = async (): Promise<void> => {
     setImportState({ kind: 'loading' })
+    setFullPageImportState({ kind: 'idle' })
     const settings = await window.api.getSettings()
     const result = await window.api.inspectorImportAsFrame(
       settings.useMatchedTextStyles,
@@ -92,6 +95,7 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
 
   const handleImportComponent = async (): Promise<void> => {
     setComponentImportState({ kind: 'loading' })
+    setFullPageImportState({ kind: 'idle' })
     const settings = await window.api.getSettings()
     const result = await window.api.inspectorImportAsComponent(
       settings.useMatchedTextStyles,
@@ -100,6 +104,23 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       settings.alsoCreateInstance
     )
     setComponentImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
+  }
+
+  /** "Импортировать страницу целиком" (по запросу пользователя) — не требует
+   *  предварительного клика пикером, работает независимо от `hasSelection`
+   *  (main-процесс сам находит `<body>` активной вкладки, см.
+   *  main/inspector.ts selectFullPage). */
+  const handleImportFullPage = async (): Promise<void> => {
+    setFullPageImportState({ kind: 'loading' })
+    setImportState({ kind: 'idle' })
+    setComponentImportState({ kind: 'idle' })
+    const settings = await window.api.getSettings()
+    const result = await window.api.inspectorImportFullPage(
+      settings.useMatchedTextStyles,
+      settings.useMatchedColorStyles,
+      settings.colorMatchSource
+    )
+    setFullPageImportState(result.ok ? { kind: 'ok' } : { kind: 'error', message: result.error ?? 'Не удалось импортировать' })
   }
 
   const handleImportQueue = async (): Promise<void> => {
@@ -125,17 +146,24 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       ? 'Очередь импортирована в Figma'
       : queueImportState.kind === 'error'
         ? queueImportState.message
-        : componentImportState.kind === 'ok'
-          ? 'Component создан в Figma'
-          : componentImportState.kind === 'error'
-            ? componentImportState.message
-            : importState.kind === 'ok'
-              ? 'Frame создан в Figma'
-              : importState.kind === 'error'
-                ? importState.message
-                : null
+        : fullPageImportState.kind === 'ok'
+          ? 'Страница импортирована в Figma'
+          : fullPageImportState.kind === 'error'
+            ? fullPageImportState.message
+            : componentImportState.kind === 'ok'
+              ? 'Component создан в Figma'
+              : componentImportState.kind === 'error'
+                ? componentImportState.message
+                : importState.kind === 'ok'
+                  ? 'Frame создан в Figma'
+                  : importState.kind === 'error'
+                    ? importState.message
+                    : null
   const hasError =
-    importState.kind === 'error' || componentImportState.kind === 'error' || queueImportState.kind === 'error'
+    importState.kind === 'error' ||
+    componentImportState.kind === 'error' ||
+    queueImportState.kind === 'error' ||
+    fullPageImportState.kind === 'error'
 
   return (
     <div className="picker-float-bar">
@@ -155,6 +183,13 @@ export function PickerFloatBar({ applyOpen, onToggleApply, applyDisabled, queueM
       </IconButton>
       <IconButton active={applyOpen} disabled={applyDisabled} onClick={onToggleApply} title="Apply to Selection">
         <Wand2 size={16} />
+      </IconButton>
+      <IconButton
+        disabled={fullPageImportState.kind === 'loading'}
+        onClick={handleImportFullPage}
+        title="Импортировать страницу целиком"
+      >
+        <Layers size={16} />
       </IconButton>
       <div className="tb-sep" />
       <IconButton

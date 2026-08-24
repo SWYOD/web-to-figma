@@ -90,6 +90,12 @@ const api: Api = {
     colorMatchSource: ColorMatchSource
   ): Promise<ImportResult> =>
     ipcRenderer.invoke('inspector:import-as-frame', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
+  inspectorImportFullPage: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ): Promise<ImportResult> =>
+    ipcRenderer.invoke('inspector:import-full-page', useMatchedTextStyles, useMatchedColorStyles, colorMatchSource),
   inspectorImportAsComponent: (
     useMatchedTextStyles: boolean,
     useMatchedColorStyles: boolean,

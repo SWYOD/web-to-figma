@@ -12,6 +12,7 @@ import {
 import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
 import type { DesignDocument } from '@web-to-figma/design-ast'
 import { DesignAgentClient, type DesignAgentState } from './designAgentClient'
+import { CanvasToolkitClient, type CanvasToolkitState } from './canvasToolkitClient'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
 const PLUGIN_VERSION = '0.1.0'
@@ -27,6 +28,8 @@ type MainToUiMessage =
   | { type: 'place-asset-result'; requestId: string; ok: false; error: string }
   | { type: 'da-result'; id: string; ok: true; result: unknown }
   | { type: 'da-result'; id: string; ok: false; error: string }
+  | { type: 'ct-result'; id: string; ok: true; result: unknown }
+  | { type: 'ct-result'; id: string; ok: false; error: string }
 
 function postToMain(message: unknown): void {
   parent.postMessage({ pluginMessage: message }, '*')
@@ -124,6 +127,15 @@ function Plugin(): JSX.Element {
   const daPendingRef = useRef(new Map<string, (outcome: { ok: boolean; result?: unknown; error?: string }) => void>())
   const daNextIdRef = useRef(0)
 
+  // Design Toolkit bridge (по запросу пользователя) — ТРЕТИЙ, независимый
+  // канал: см. canvasToolkitClient.ts докстринг. Никакого Start/Stop —
+  // подключается автоматически, как основной desktop bridge выше, а не
+  // вручную, как канал DesignAgent над.
+  const [toolkitState, setToolkitState] = useState<CanvasToolkitState>('searching')
+  const toolkitClientRef = useRef<CanvasToolkitClient | null>(null)
+  const toolkitPendingRef = useRef(new Map<string, (outcome: { ok: boolean; result?: unknown; error?: string }) => void>())
+  const toolkitNextIdRef = useRef(0)
+
   useEffect(() => {
     try {
       localStorage.setItem('bridge-tools-collapsed', collapsed ? '1' : '0')
@@ -172,6 +184,12 @@ function Plugin(): JSX.Element {
         const resolve = daPendingRef.current.get(msg.id)
         if (resolve) {
           daPendingRef.current.delete(msg.id)
+          resolve(msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error })
+        }
+      } else if (msg.type === 'ct-result') {
+        const resolve = toolkitPendingRef.current.get(msg.id)
+        if (resolve) {
+          toolkitPendingRef.current.delete(msg.id)
           resolve(msg.ok ? { ok: true, result: msg.result } : { ok: false, error: msg.error })
         }
       }
@@ -297,6 +315,35 @@ function Plugin(): JSX.Element {
     }
   }, [daEnabled])
 
+  // Design Toolkit bridge — подключается сразу при монтировании плагина, без
+  // пользовательского тумблера (по запросу пользователя), тем же паттерном
+  // авто-переподключения, что и основной desktop bridge выше.
+  useEffect(() => {
+    const client = new CanvasToolkitClient({
+      onStateChange: setToolkitState,
+      runCommand: (command, params) => {
+        const id = String(toolkitNextIdRef.current++)
+        return new Promise((resolve) => {
+          const timeout = setTimeout(() => {
+            toolkitPendingRef.current.delete(id)
+            resolve({ ok: false, error: `Command "${command}" timed out.` })
+          }, 20000)
+          toolkitPendingRef.current.set(id, (outcome) => {
+            clearTimeout(timeout)
+            resolve(outcome)
+          })
+          postToMain({ type: 'ct-command', id, command, params })
+        })
+      }
+    })
+    toolkitClientRef.current = client
+    client.connect()
+    return () => {
+      client.disconnect()
+      toolkitClientRef.current = null
+    }
+  }, [])
+
   const desktopBadgeState: CompactConnectionState =
     authError ? 'error' : pairing === 'searching' ? 'connecting' : state
   const desktopBadgeTitle = authError
@@ -306,6 +353,11 @@ function Plugin(): JSX.Element {
       : `Desktop bridge: ${state}`
   const agentBadgeState: CompactConnectionState = daEnabled ? daState : 'disabled'
   const agentBadgeTitle = daEnabled ? `DesignAgent bridge: ${daState}` : 'DesignAgent bridge выключен'
+  const toolkitBadgeState: CompactConnectionState = toolkitState === 'searching' ? 'connecting' : toolkitState
+  const toolkitBadgeTitle =
+    toolkitState === 'searching'
+      ? 'Design Toolkit bridge: поиск приложения'
+      : `Design Toolkit bridge: ${toolkitState}`
   const syncedThemeStyle = useMemo<CSSProperties | undefined>(() => {
     if (!syncedTheme) return undefined
     const properties: Record<string, string> = { colorScheme: syncedTheme.mode }
@@ -374,6 +426,20 @@ function Plugin(): JSX.Element {
           контент через Web To Figma выше. Работает одновременно с обычным bridge.
         </div>
       </div>
+      <div className="plugin-section">
+        <div className="plugin-title">Design Toolkit</div>
+        <StatusRow state={toolkitState === 'searching' ? 'connecting' : toolkitState}>
+          {toolkitState === 'connected'
+            ? 'Design Toolkit connected'
+            : toolkitState === 'connecting'
+              ? 'Подключение…'
+              : 'Ищем приложение Design Toolkit…'}
+        </StatusRow>
+        <div className="plugin-hint">
+          Прямая связь с канвасом для инструментов Design Toolkit — подключается сама, откройте приложение Design
+          Toolkit на своей машине.
+        </div>
+      </div>
       {lastImport && (
         <div className="plugin-section">
           <div className="plugin-hint">Последний импорт:</div>
@@ -407,6 +473,7 @@ function Plugin(): JSX.Element {
         <div className="connection-badges">
           <ConnectionBadge label="Desktop" state={desktopBadgeState} title={desktopBadgeTitle} />
           <ConnectionBadge label="AI" state={agentBadgeState} title={agentBadgeTitle} />
+          <ConnectionBadge label="Toolkit" state={toolkitBadgeState} title={toolkitBadgeTitle} />
         </div>
       </header>
       {!collapsed && <main className="plugin-content">{content}</main>}

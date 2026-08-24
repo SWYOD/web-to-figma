@@ -394,6 +394,14 @@ export interface Api {
     useMatchedColorStyles: boolean,
     colorMatchSource: ColorMatchSource
   ) => Promise<ImportResult>
+  /** "Импортировать страницу целиком" — без предварительного клика пикером,
+   *  сам находит `<body>` активной вкладки (см. main/inspector.ts
+   *  selectFullPage). Отдельный инструмент на тулбаре, по запросу пользователя. */
+  inspectorImportFullPage: (
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource
+  ) => Promise<ImportResult>
   /** Тот же одиночный pick, что Import as Frame, но корневая нода становится
    *  Figma Component (см. designNode.ts renderDesignNode `as` параметр) —
    *  отдельная кнопка на тулбаре, по запросу пользователя. */

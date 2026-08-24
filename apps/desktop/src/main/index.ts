@@ -584,6 +584,67 @@ function registerIpc(): void {
     }
   )
 
+  // "Импортировать страницу целиком" (по запросу пользователя) — отдельный
+  // инструмент на тулбаре, не требует предварительного клика пикером:
+  // selectFullPage() сам разрешает <body> в backendNodeId, дальше тот же
+  // prepareForImport()/buildDocument() путь, что и у Import as Frame.
+  ipcMain.handle(
+    'inspector:import-full-page',
+    async (
+      _e,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource
+    ): Promise<ImportResult> => {
+      const progress = createImportProgress('Импорт страницы целиком')
+      const startedAt = performance.now()
+      progress.update('preparing', 0.05, 'Поиск <body>…')
+      const selected = await elementPicker?.selectFullPage()
+      if (!selected) {
+        progress.finish(false, 'Не удалось найти страницу — откройте сайт в браузере')
+        return { ok: false, error: 'Сначала откройте страницу в браузере' }
+      }
+      progress.update('preparing', 0.08, 'Чтение DOM, стилей и ассетов…')
+      await elementPicker?.prepareForImport()
+      const preparedAt = performance.now()
+      const document = elementPicker?.buildDocument(
+        browserController?.getState().url ?? '',
+        browserController?.getViewportSize() ?? { width: 0, height: 0 }
+      )
+      if (!document) {
+        progress.finish(false, 'Не удалось прочитать страницу')
+        return { ok: false, error: 'Не удалось прочитать страницу' }
+      }
+      if (!bridgeServer || bridgeServer.connectionCount === 0) {
+        progress.finish(false, 'Figma не подключена')
+        return { ok: false, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+      }
+
+      const message = createMessage<ImportNodeMessage>('import-node', {
+        document,
+        as: 'frame',
+        useMatchedTextStyles,
+        useMatchedColorStyles,
+        colorMatchSource
+      })
+      try {
+        progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
+        const response = await bridgeServer.request(message)
+        if (response.kind === 'error') {
+          const error = (response as ErrorMessage).payload.message
+          progress.finish(false, error)
+          return { ok: false, error }
+        }
+        progress.finish(true, `Готово за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`)
+        return { ok: true }
+      } catch (err) {
+        const error = (err as Error).message
+        progress.finish(false, error)
+        return { ok: false, error }
+      }
+    }
+  )
+
   // Import as Component (по запросу пользователя) — тот же одиночный pick,
   // что и Import as Frame выше, но `as:'component'` вместо `'frame'` — реальная
   // промоция в Figma Component/Instance целиком на стороне плагина (см.

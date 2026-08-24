@@ -1061,6 +1061,40 @@ export class ElementPicker {
    * подключаем заново сами, минимальный набор доменов (без Overlay — тут не
    * нужен hover/inspect режим, только чтение DOM/CSS).
    */
+  /** "Импортировать страницу целиком" (по запросу пользователя — отдельный
+   *  инструмент на тулбаре, без предварительного клика пикером). Разрешает
+   *  `<body>` текущей вкладки в backendNodeId и подставляет его как
+   *  `lastBackendNodeId` — дальше используется ТОТ ЖЕ путь, что и у обычного
+   *  одиночного пика (`prepareForImport()`+`buildDocument()`, см. IPC
+   *  `inspector:import-full-page` в index.ts), просто без реального клика по
+   *  конкретному элементу. */
+  async selectFullPage(): Promise<boolean> {
+    const wc = this.getWebContents()
+    if (!wc) return false
+    const dbg = wc.debugger
+    const alreadyAttached = dbg.isAttached()
+    try {
+      if (!alreadyAttached) {
+        dbg.attach(CDP_PROTOCOL_VERSION)
+        await dbg.sendCommand('DOM.enable')
+      }
+      const { root } = (await dbg.sendCommand('DOM.getDocument', { depth: 0 })) as { root: { nodeId: number } }
+      const { nodeId } = (await dbg.sendCommand('DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector: 'body'
+      })) as { nodeId: number }
+      if (!nodeId) return false
+      const { node } = (await dbg.sendCommand('DOM.describeNode', { nodeId })) as { node: { backendNodeId: number } }
+      this.lastBackendNodeId = node.backendNodeId
+      return true
+    } catch (err) {
+      log.warn('selectFullPage failed', { message: (err as Error).message })
+      return false
+    } finally {
+      if (!alreadyAttached && dbg.isAttached()) dbg.detach()
+    }
+  }
+
   async prepareForImport(): Promise<boolean> {
     if (this.lastBackendNodeId === null) return false
     const wc = this.getWebContents()

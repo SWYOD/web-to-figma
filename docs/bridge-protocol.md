@@ -45,8 +45,10 @@ type BridgeMessage =
   | ImportAssetMessage              // server → client, один asset (ref-transport, см. asset-model.md)
   | ImportAssetsMessage               // server → client, батч assets ("Import all")
   | ApplyStylesMessage                  // server → client, применить стили к текущему выбору Figma
-  | ResponseMessage                       // ack успешного выполнения запроса
-  | ErrorMessage                            // структурированная ошибка вместо ResponseMessage
+  | PlaceAssetMessage                     // server → client, один ассет из панели ассетов ("Send")
+  | ThemeSyncMessage                        // server → client, broadcast, см. "Синхронизация темы" ниже
+  | ResponseMessage                           // ack успешного выполнения запроса
+  | ErrorMessage                                // структурированная ошибка вместо ResponseMessage
 ```
 
 Phase 1 реализовала и реально гоняла по сети только `Hello*`, `Ping`/`Pong`,
@@ -181,6 +183,38 @@ dev-серверов без пар-кода — webpack-dev-server, Vite HMR и 
 см. `architecture.md` §6 про технические риски, где это можно пересмотреть,
 если станет реальной проблемой).
 
+## Синхронизация темы (desktop → plugin, одностороннее вещание)
+
+`ThemeSyncMessage` (`kind:'theme-sync'`, добавлено вместе с компактным UI
+плагина, v0.1.10) — desktop транслирует уже разрешённую активную тему
+Figma-плагину, чтобы тот не пытался заново вычислять System/Light/Dark
+внутри своего iframe. `payload`:
+
+```ts
+{
+  themeId: string
+  mode: 'light' | 'dark'
+  vars: Record<string, string>  // 19 фиксированных CSS custom property имён —
+                                 // bg, bg-panel, bg-canvas, surface, surface-2,
+                                 // hover, border, border-strong, text, text-dim,
+                                 // text-faint, accent, accent-soft, accent-text,
+                                 // danger, warning, info, success, shadow
+}
+```
+
+Отличается от остальных server→client сообщений в списке выше тем, что не
+инициируется запросом плагина и не ждёт `response`/`error` обратно — это
+`BridgeServer.broadcast(message)` (`packages/bridge-protocol/src/server.ts`),
+не `request()`: рассылается СРАЗУ всем аутентифицированным пирам без
+корреляции `requestId`/таймаута (см. "Request/response корреляция" ниже про
+разницу с `request()`). Desktop шлёт его при каждой смене активной темы, а
+также по `BridgeServerOptions.onAuthenticated` — хук, вызываемый сразу после
+каждого успешного `hello`-рукопожатия ДО того, как приходит следующее
+события смены темы, чтобы новый/переоткрытый пир не остался с дефолтной
+темой до первого реального переключения. Плагин (`apps/figma-plugin/src/ui/
+App.tsx`) применяет `vars` как инлайн CSS custom properties на корне UI и
+сбрасывает их в `null`, как только соединение перестаёт быть `'connected'`.
+
 ## Ping/Pong и reconnect
 
 - Сервер шлёт `PingMessage` каждые 15с активному соединению; если `PongMessage`
@@ -207,7 +241,9 @@ Phase 1) и симметричный `BridgeServer.request()` (desktop → пл�
 сервера была только возможность отвечать на запросы плагина, не инициировать
 свои с ожиданием ответа). Оба метода на своей стороне корреляции ничего не
 знают друг о друге — просто зеркальная реализация одного и того же паттерна
-конверта.
+конверта. Третий, невопрошающий паттерн — `BridgeServer.broadcast()`
+(рассылка без ожидания ответа, без `requestId`-корреляции) — см.
+"Синхронизация темы" выше, единственный на сегодня потребитель.
 
 ## Сериализация ошибок
 

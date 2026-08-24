@@ -101,6 +101,21 @@ interface AssetReference {
   assetId: string
 }
 
+interface TextRun {
+  text: string
+  typography: TypographyInfo
+  color: Color
+}
+
+/** @deprecated Оставлено только для чтения документов старого desktop —
+ *  новое component recognition (см. "Статус реализации") никогда не
+ *  вкладывает эту команду в DesignNode, рендерер это поле игнорирует. */
+interface ComponentRef {
+  groupId: string
+  role: 'main' | 'instance'
+  overrides?: { text?: Record<string, string>; assets?: Record<string, string> }
+}
+
 interface DesignNode {
   id: string
   type: NodeType
@@ -109,6 +124,17 @@ interface DesignNode {
   layout?: LayoutInfo
   typography?: TypographyInfo
   text?: string
+  /** Фактическое поведение строки в браузере, а не только authored
+   *  white-space. `nowrap` ставится и когда захваченный текст реально занял
+   *  одну строку — глифовые метрики Figma и браузера расходятся достаточно,
+   *  чтобы короткий текст вроде "45" перенёсся на вторую строку в Figma при
+   *  фиксированной ширине; на стороне рендерера превращается в настоящий
+   *  `textAutoResize:'WIDTH_AND_HEIGHT'`, см. "Статус реализации". */
+  textWrap?: 'wrap' | 'nowrap'
+  /** Смешанный текст — присутствует ВМЕСТО `text`, когда узел содержит
+   *  "голый" текст вперемешку с инлайновыми тегами форматирования
+   *  (`<b>`/`<a>`/`<i>`/...). Взаимоисключающе с `text`. */
+  textRuns?: TextRun[]
   fills?: Paint[]
   strokes?: StrokeInfo
   effects?: Effect[]
@@ -121,6 +147,8 @@ interface DesignNode {
   asset?: AssetReference
   /** Оригинальный DOM-контекст — не рендерится, только для диагностики/повторного импорта. */
   source?: { tag: string; id?: string; classes?: string[]; cssSelector?: string }
+  /** @deprecated См. ComponentRef выше. */
+  componentRef?: ComponentRef
   children?: DesignNode[]
 }
 
@@ -153,6 +181,9 @@ interface DesignDocument {
   Phase "Повторяющиеся структуры" (п.27 ТЗ), не Phase 1-8.
   ⇒ **`type` — открытый union, версия модели не меняется при его расширении**,
   но потребители (рендерер) обязаны иметь `default`-ветку на неизвестный тип.
+  На практике (см. "Статус реализации" ниже) компонентный workflow пошёл
+  другим путём, чем предполагал `componentRef` — `type` расширения
+  `'component'`/`'instance'` так и не понадобилось.
 - Design tokens (переменные) — п.28 ТЗ, отдельная модель поверх `DesignDocument`
   (агрегация по всем узлам), не часть самого AST одного элемента.
 - `::before`/`::after` — материализуются как обычные дочерние `DesignNode`
@@ -220,3 +251,19 @@ computed-style). На стороне Figma Plugin `layoutSizingHorizontal`/`Vert
 выставляются только для не-absolute детей реального Auto Layout родителя.
 
 CSS Grid — только направление в conversion-rules.md, не код.
+
+**`componentRef` — `@deprecated`.** Изначально (между тегом v0.1.8 и релизом
+v0.1.9) `convertElement.ts` умел вкладывать `componentRef` прямо в
+`DesignNode` — обычный импорт автоматически распознавал структурно
+идентичные соседние узлы и размечал их `role:'main'`/`'instance'` +
+`overrides`, рендерер превращал это в реальный Figma Component/Instance по
+ходу обычного дерева. Этот путь заменён на opt-in "Компоненты"-вкладку (см.
+`docs/architecture.md`, секцию "Компоненты: автоматическая группировка убрана")
+— отдельный read-only инвентарь кандидатов, создание в Figma только по явному
+клику на карточке, никогда не через обычный Import as Frame. `componentRef`
+оставлено в схеме и типах **только для чтения уже существующих документов**,
+созданных до этого перехода — новый код (`convertElement.ts`,
+`designNode.ts`) это поле не производит и не читает. Не путать со
+структурно похожим, но отдельным `RecognizedComponentCandidate`
+(`packages/conversion-engine/src/componentGroups.ts`) — тот вообще не входит
+в `DesignNode`/`DesignDocument`, это отдельный тип только для панели.

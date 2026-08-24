@@ -1629,3 +1629,239 @@ Main"): `status`/`list_page_nodes`/`list_children` — корректно чит
 desktop-приложении (`BridgePopover.tsx`, "Плагин Web Importer подключается
 сам...") тоже обновлена на новое имя — иначе пользователь искал бы в Figma
 несуществующий плагин.
+
+## Догоняющая запись за v0.1.9/v0.1.10 (реализовано в параллельной сессии Codex CLI, задокументировано здесь 2026-08-24)
+
+Между тегом v0.1.8 (последняя точка, где `docs/` обновлялись из этой Claude
+Code-сессии) и текущим состоянием (`master` на `v0.1.10`, плюс неслитая ветка
+`codex/section-tools`) репозиторием занималась параллельная сессия в OpenAI
+Codex CLI. `docs/` за это время не обновлялись вообще (единственная правка —
+одна строка в списке команд DesignAgent ниже, на неслитой ветке) — эта секция
+закрывает разрыв постфактум, по факту прочитанного кода, а не по коммит-логу.
+Точные даты реализации неизвестны (в этой сессии их не было в контексте) — где
+это важно, разделы ниже опираются на номер релиза (v0.1.9/v0.1.10), не на дату.
+
+### Компоненты: автоматическая группировка убрана, добавлена вкладка "Компоненты" (opt-in)
+
+В какой-то момент между v0.1.8 и v0.1.9 в `convertElement.ts` кратко
+существовала автоматическая группировка повторяющихся структур прямо в
+обычном пути импорта (`detectComponentGroups()`, `packages/conversion-engine/
+src/componentGroups.ts`) — судя по всему, никогда не была задокументирована
+здесь (в `docs/` за это время правок нет) и в v0.1.9 уже заменена на opt-in
+поток. **Сейчас `convertElement.ts` `detectComponentGroups`/`componentRef`
+вообще не упоминает** — обычный Import as Frame/Apply to Selection всегда
+даёт плоское дерево фреймов, без скрытого превращения повторов в
+Component/Instance. `detectComponentGroups()` и вся его JSDoc ("последний
+пункт бэклога после Phase 11", "первый — role:'main'"...) физически остались
+в `componentGroups.ts`, но это мёртвый код — единственный вызывающий код
+теперь `componentGroups.test.ts`. `DesignNode.componentRef` (`packages/
+design-ast/src/schema.ts`) помечен `@deprecated`, оставлен только для чтения
+старых документов, рендерер (`designNode.ts`) это поле не читает вообще.
+
+Вместо этого — отдельная **вкладка "Компоненты" в `BottomPanel`**
+(`apps/desktop/src/renderer/src/components/ComponentsPanel.tsx`), read-only
+инвентарь по явному запросу пользователя (кнопка скана), ничего не создаёт в
+Figma сама:
+
+- `apps/desktop/src/main/componentScanner.ts` — `scanPageComponents(wc)`
+  снимает лёгкий DOM-снапшот всей страницы через отдельную короткую CDP-сессию
+  (не переиспользует debugger активного picker'а — есть mutex через
+  `waitForDebuggerRelease`, чтобы автоскан не выдернул чужую CDP-сессию
+  из-под пикера/наоборот) и прогоняет его через `detectComponentCandidates()`.
+  Превью карточек — офскрин `BrowserWindow({offscreen:true})` с ТОЙ ЖЕ
+  `session`, что у видимой вкладки (cookies/auth сохраняются), но отдельным
+  compositor'ом — не мигает и не трогает видимую страницу пользователя;
+  элементы на скрытой копии переsопоставляются с оригиналом эвристикой по
+  тегу/классам/размеру (`:nth-child`-селекторы не переживают два независимых
+  рендера динамической страницы), не по буквальному селектору.
+- `packages/conversion-engine/src/componentGroups.ts` — новый
+  `detectComponentCandidates(root)`: структурная сигнатура (`tag` + семантический
+  класс + релевантные computed-style ключи, включая `animation-name` — чтобы
+  отсеять бесконечные marquee/карусели) плюс `hasCompatibleGeometry()`
+  (совпадение геометрии рекурсивно по всем детям, кроме текстовых листьев —
+  **намеренно НЕ сравнивает размер текстовых боксов**: комментарий в коде
+  прямо говорит, что более ранняя версия так отбраковывала настоящие семьи
+  компонентов из-за разной длины подписи при одинаковой структуре карточки).
+  Результат — только инвентарь (`selector`, `name`, `instances`, `confidence`
+  0.72..0.99), никогда не попадает в `DesignDocument` и не может сам создать
+  что-либо в Figma.
+- Создание в Figma — только по кнопке Send на конкретной карточке:
+  `componentScanner.captureComponentDocument()` заново резолвит элемент в
+  живом DOM и строит полноценный `DesignDocument` тем же `buildSnapshotTree`,
+  что и обычный picker; `apps/figma-plugin/src/main/renderers/designNode.ts`
+  `renderDesignNode(..., as: 'frame' | 'component', alsoCreateInstance)` —
+  `figma.createComponentFromNode(built)` с fallback на обычный Frame и
+  тостом, если тип узла не поддерживает превращение в Component (try/catch
+  вокруг `createComponentFromNode`).
+
+`detectComponentGroups()` (legacy, для чтения старых `componentRef`) и новый
+`detectComponentCandidates()` (recognition-only) — РАЗНЫЕ структурные
+сигнатуры и разные критерии геометрии (`hasUnsafeTextGeometryOverride` у
+legacy сравнивает текстовые боксы и блокирует группировку при расхождении >
+0.5px; `hasCompatibleGeometry` у recognition текст не сравнивает вовсе, см.
+выше) — не путать один с другим при чтении кода.
+
+### Более быстрый импорт: preview-снапшот при клике, полный снапшот только на импорте
+
+По жалобе на "подвисание" пикера при клике на элементы с большими
+поддеревьями/картинками — тяжёлый захват вынесен из "мгновенного" пути:
+
+- **`apps/desktop/src/main/domSnapshot.ts` `buildPreviewSnapshotTree()`** —
+  новый облегчённый снимок для правой панели: один `Runtime.callFunctionOn`
+  вместо N CDP round-trip'ов на узел, лимит 80 узлов (`PICK_PREVIEW_MAX_NODES`
+  в `inspector.ts`), без сетевой загрузки ассетов вообще. Обычный клик
+  пикера (`handleInspectNodeRequested` → `captureAndConvert(..., {preview:
+  true})`) идёт именно этим путём — подсветка/выход из inspect-режима не
+  ждут ни картинок, ни authored-CSS.
+- Тяжёлый точный снимок (`buildSnapshotTree`, authored CSS через
+  `CSS.getMatchedStylesForNode`, сетевые ассеты) пересобирается только перед
+  реальным committing-действием — `ElementPicker.prepareForImport()` (перед
+  Import as Frame/Apply to Selection) и `prepareQueueDocuments()` (батч-импорт
+  очереди, по одному элементу за раз, читает из `WebContents` своей вкладки,
+  включая скрытые — не переключает видимую вкладку). Один устаревший
+  `backendNodeId`/навигация ушедшей страницы в очереди не роняет остальные
+  документы (`failed` счётчик, продолжает цикл).
+- `buildSnapshotTree` (полный путь) получил `mapWithConcurrency()` —
+  параллельные CDP-запросы `getBoxModel`/`getComputedStyleForNode`/
+  `getMatchedStylesForNode` с потолком `CDP_NODE_CONCURRENCY=32` вместо
+  последовательного обхода по одному узлу; отдельный проход с тем же
+  concurrency-хелпером теперь резолвит box model и для DOM TEXT-узлов
+  (`textBoxByBackendId`) — точная геометрия прямого текста рядом с дочерним
+  элементом (раньше терялась) и внутренний glyph-box кнопок/бейджей
+  (нужен для `hasVisualTextBox`-разделения ниже). Логирует тайминг по фазам
+  (`describeMs`/`stylesMs`/`assetsMs`/`buildMs`) через `console.log
+  ('snapshot timing', ...)`.
+- `packages/asset-engine/src/fetchAsset.ts` — успешный fetch кэшируется 5
+  минут (`ASSET_CACHE_TTL_MS`, LRU-подобный потолок `ASSET_CACHE_MAX_ENTRIES`
+  записей — вытесняет самую старую при переполнении), неудачный URL — 30с
+  (`FAILED_ASSET_CACHE_TTL_MS`, чтобы не долбить одну и ту же битую картинку
+  на каждый повторный снапшот того же поддерева), плюс in-flight de-dup
+  (`inFlightAssets`) — параллельные запросы одного и того же URL из разных
+  веток дерева не плодят дублирующиеся сетевые запросы.
+- Очередь мульти-импорта (`ElementPicker` в `inspector.ts`) обросла
+  устойчивостью: mutex-флаги `starting`/`capturing`, `waitForDebuggerRelease()`
+  (не piggyback'иться на чужую CDP-сессию — автоскан компонентов и picker
+  теперь могут конфликтовать за debugger), `withTimeout()`-обёртки на каждый
+  этап (`PICK_START_TIMEOUT_MS=5000`, `PICK_FEEDBACK_TIMEOUT_MS=1200`,
+  `PICK_CAPTURE_TIMEOUT_MS=15000`). Каждый элемент очереди несёт
+  `backendNodeId`/`tabId`/`sourceSelector`/асинхронно догружаемый `thumbnail`
+  (офскрин-рендер, тот же паттерн изоляции compositor'а, что у
+  `componentScanner.ts` выше, сериализован через `queueThumbnailJobs`, чтобы
+  быстрые клики не плодили пачку скрытых Chromium-окон разом). Клик по
+  карточке очереди подсвечивает исходный элемент на странице "для проверки"
+  (`highlightBackendNode`) — переключает вкладку при необходимости, скроллит
+  в видимую область, возвращает `false`, если узел уже не существует.
+
+### Visual text container: текст со своим фоном/рамкой/паддингом — это Frame + Text, не голый TextNode
+
+Figma `TextNode` не умеет фон/рамку/border-radius/padding. Раньше элемент
+вроде `<a class="tag-pill">Текст</a>` (flex/grid, background, padding,
+border-radius) либо становился текстовым листом с потерей визуальной коробки
+(отдельный уже существующий diagnostic `text-background-dropped` покрывал
+только сам фон), либо фреймом с потерянным текстом. Новое:
+`packages/conversion-engine/src/visualTextContainer.ts` `hasVisualTextBox
+(style)` — true, если у текстового узла `display:flex/grid`(-inline) ИЛИ
+непрозрачный фон, ИЛИ `box-shadow`, ИЛИ ненулевой padding/border/radius.
+`convertElement.ts`: такой узел рендерится как `type:'frame'` с ОДНИМ
+синтетическим текстовым ребёнком (`makeTextChildSnapshot()` — переносит
+typography/цвет, обнуляет box-decoration, чтобы Frame и Text не задваивали
+фон/рамку; если `justify-content:center` у коробки — переносит это и в
+`text-align:center` синтетического ребёнка, важно для кнопок без отдельного
+`<span>` внутри). Component recognition (`hasUnsafeTextGeometryOverride`/
+`diffOverrides` в `componentGroups.ts`) обязан использовать ту же
+`hasVisualTextBox`-проверку, что и конвертер — иначе override-путь искал бы
+текст по старому индексу пути, которого после Frame+Text-расщепления уже нет
+(см. комментарий у `diffOverrides`: путь override'а для такого узла — `.0`,
+не сам путь фрейма).
+
+Отдельно — `DesignNode.textWrap?: 'wrap' | 'nowrap'` (`inferTextWrap()` в
+`convertElement.ts`): браузер и Figma по-разному считают глифовые метрики,
+поэтому фиксировать захваченную ширину однострочного текста пиксель-в-пиксель
+небезопасно (пример из комментария в коде — Montserrat "45" помещается в DOM
+bbox, но в Figma второй символ уже переносится на новую строку). Однострочный
+захваченный текст (высота ≤ ~1.25×line-height, без `\n`, без
+`white-space:pre/nowrap`, определяемого явно) принудительно становится
+`nowrap`; `apps/figma-plugin/src/main/renderers/textNode.ts` `applyTextSizing()`
+переводит это в настоящий Figma `textAutoResize:'WIDTH_AND_HEIGHT'` (HUG по
+обеим осям) вместо фиксированного `resize()` — важно конкретно для текста
+внутри Component/Instance: character override инстанса может быть шире
+master (`◷` → `45`) и обязан раздвинуть TextNode без переноса, что фиксированный
+resize не позволяет. Шрифты дедуплицируются через модульный
+`loadFontCached()` (по `family::style`, включая общий fallback-кэш на Inter
+Regular) — параллельные текстовые узлы одного шрифта не зовут
+`figma.loadFontAsync` каждый по отдельности.
+
+### Auto Layout: wrap + раздельные rowGap/columnGap, фикс выравнивания single-track Grid
+
+`packages/conversion-engine/src/layout.ts`: `flex-wrap` теперь материализуется
+как `LayoutInfo.wrap:true` (было — направление без кода, см.
+`conversion-rules.md`), `rowGap`/`columnGap` сохраняются в AST раздельно (а
+не схлопываются в одно на потерю одного из значений с warning, как было
+задокументировано раньше в `conversion-rules.md` — этот раздел там обновлён
+этой же правкой). На стороне плагина (`renderers/layout.ts`) —
+`frame.layoutWrap = layout.wrap ? 'WRAP' : 'NO_WRAP'`, при wrap
+`frame.counterAxisSpacing` берёт "второй" gap (для horizontal — `rowGap`, для
+vertical — `columnGap`) — ровно то значение, что не пошло в `itemSpacing`.
+Для single-track CSS Grid (`detectSingleTrackGridMode`) источник
+align/justify теперь `align-items`/`justify-items` (per-item выравнивание
+внутри grid-area), а не `align-content`/`justify-content` (те двигают всю
+сетку треков целиком и на одном треке обычно остаются `normal`) — фиксит
+живой баг, где иконка в single-track grid-ячейке прижималась к верхнему краю
+вместо центра.
+
+### Синхронизация темы desktop → Figma Plugin (одностороннее вещание)
+
+Плагин раньше не знал ни о какой пользовательской теме desktop-приложения.
+Новое: `packages/bridge-protocol/src/messages.ts` `ThemeSyncMessageSchema`
+(`kind:'theme-sync'`, `payload:{themeId, mode:'light'|'dark', vars}` — `vars`
+это 19 CSS custom property имён/значений, `bg`/`bg-panel`/`bg-canvas`/
+`surface`/`surface-2`/`hover`/`border`/`border-strong`/`text`/`text-dim`/
+`text-faint`/`accent`/`accent-soft`/`accent-text`/`danger`/`warning`/`info`/
+`success`/`shadow`). `BridgeServer` (`packages/bridge-protocol/src/server.ts`)
+получил `broadcast(message)` — односторонняя рассылка всем аутентифицированным
+пирам (в отличие от `request()`, не ждёт `response`/`error` обратно) и
+`onAuthenticated` хук на серверных опциях, вызываемый сразу после каждого
+успешного `hello`-рукопожатия. Desktop (`apps/desktop/src/renderer/src/App.tsx`)
+шлёт `theme-sync` через `window.api.syncPluginTheme()` при каждой смене
+активной темы; main-процесс хранит `latestPluginTheme` и рассылает его и на
+смену темы, и на `onAuthenticated` (новый пир — напр. плагин переоткрылся —
+сразу получает актуальную тему, не дожидаясь следующего переключения).
+Плагин (`apps/figma-plugin/src/ui/App.tsx`) применяет полученные `vars` как
+инлайн CSS custom properties + `colorScheme` прямо на корневом `.plugin-shell`
+(`syncedThemeStyle`, через `useMemo`), сбрасывает в `null` при разрыве
+соединения (`onStateChange` → `nextState !== 'connected'`).
+
+### Компактный UI плагина (Bridge Tools)
+
+`apps/figma-plugin/src/ui/App.tsx`/`styles.css`: плагин теперь умеет
+сворачиваться в узкую полоску — `collapsed`-состояние персистится в
+собственном `localStorage` плагина (`bridge-tools-collapsed`, с try/catch —
+некоторые окружения Figma запрещают storage в iframe), на каждое изменение
+шлёт `{type:'resize-ui', collapsed}` в main sandbox (`code.ts`), который
+зовёт `figma.ui.resize()` — 440px высота развёрнуто / 64px свёрнуто, ширина
+фиксированная 320px в обоих состояниях. В шапке — два независимых
+`ConnectionBadge` (не один общий индикатор): "Desktop" (бридж к
+desktop-приложению, состояния `disconnected|connecting|connected|error`,
+`error` — auth/version mismatch) и "AI" (DesignAgent-канал, `disabled`, если
+пользователь не нажал Start).
+
+### Ветка `codex/section-tools` (не слита в `master`): `create_section`
+
+Новая DesignAgent-команда `create_section` в `designAgentCommands.ts` —
+`figma.createSection()`, `name`/`resizeWithoutConstraints(width, height)`/
+`fill`, позиционирование как у остальных `create_*`-команд
+(`nextCanvasPosition()` при отсутствии явных `x`/`y` и родителе-странице,
+иначе — переданные координаты). **Один добавленный побочный фикс в этом же
+коммите, не относящийся к секциям напрямую:** в команде `reparent` убран
+guard `parent.type === 'PAGE'` перед применением `params.x`/`params.y` —
+раньше явные координаты у `reparent` применялись, только когда узел
+перемещался НА СТРАНИЦУ, теперь применяются для любого нового родителя
+(в т.ч. фрейма/секции). `create_frame`/`create_rectangle`/`create_ellipse`/
+`create_text`/`place_image` этот guard не теряли — они по-прежнему зовут
+`placeOnPage()`, которая как и раньше выставляет координаты только когда
+`parent.type === 'PAGE'` (иначе явные `x`/`y` для этих команд при
+non-page-родителе по-прежнему молча игнорируются). В `docs/architecture.md`
+на этой ветке был обновлён только список портированных команд DesignAgent
+(`create_frame/rectangle/ellipse/text` → `create_frame/section/rectangle/
+ellipse/text`) — единственная правка `docs/` за весь диапазон v0.1.8..сейчас
+до этой самой секции.

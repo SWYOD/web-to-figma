@@ -24,15 +24,15 @@ Layout структура" — побеждает вторая. Источник
 |---|---|
 | `display:flex; flex-direction:row` | `layoutMode:'HORIZONTAL'` |
 | `display:flex; flex-direction:column` | `layoutMode:'VERTICAL'` |
-| `gap` | `itemSpacing` |
-| `row-gap`/`column-gap` (если различаются) | Figma Auto Layout не поддерживает разные gap по осям до недавних версий с `layoutWrap` — при расхождении: warning + берём `row-gap` как основной (визуально доминирует в большинстве карточных layout), `column-gap` теряется с явным диагностическим сообщением |
+| `gap` | `itemSpacing` (главная ось — `column-gap` для row/horizontal, `row-gap` для column/vertical) |
+| `row-gap`/`column-gap` (реализовано, не приближение) | Оба сохраняются в AST раздельно (`LayoutInfo.rowGap`/`columnGap`), не схлопываются в одно значение. Главная ось идёт в `itemSpacing`; когда `flex-wrap` активен (см. `wrap` ниже), "второй" gap (тот, что НЕ пошёл в `itemSpacing`) идёт в `frame.counterAxisSpacing` — зазор между строками/колонками при переносе. Без wrap второй gap сейчас никуда не применяется (в Figma Auto Layout без wrap нет отдельного понятия "gap поперечной оси") |
 | `padding` | `padding{Top,Right,Bottom,Left}` |
 | `justify-content: flex-start/center/flex-end` | `primaryAxisAlignItems` прямое соответствие |
 | `justify-content: space-between` | Нет прямого аналога в Auto Layout → fallback: `primaryAxisAlignItems:'SPACE_BETWEEN'` (Figma это поддерживает начиная с относительно новых версий API) — если недоступно в целевой версии API, fallback на `'MIN'` + warning |
 | `justify-content: space-around/evenly` | Нет аналога вообще → `'MIN'` + explicit warning `code: 'justify-content-approximated'` |
 | `align-items` | `counterAxisAlignItems` прямое соответствие (`stretch→STRETCH`, `center→CENTER`, ...) |
 | `flex-grow > 0` на ребёнке | `layoutGrow: 1` |
-| `flex-wrap: wrap` | `layoutWrap: 'WRAP'` (если целевая Figma API версия поддерживает); иначе warning + без wrap |
+| `flex-wrap: wrap` (реализовано) | `LayoutInfo.wrap:true` → `frame.layoutWrap = 'WRAP'` на стороне плагина, `frame.counterAxisSpacing` = второй gap (см. `row-gap`/`column-gap` выше) |
 | Явные `width`/`height` (px), нет сигналов fill | `widthSizing:'fixed'`/`heightSizing:'fixed'` |
 | `flex-grow > 0` на flex-ребёнке | `fill` по главной оси родителя (`widthSizing` для row, `heightSizing` для column) — реализовано, `resolveSizing()` в `convertElement.ts` |
 | `align-items:stretch` родителя (в т.ч. дефолт `normal`/не задано) без переопределяющего `align-self` на ребёнке | `fill` по поперечной оси (`heightSizing` для row, `widthSizing` для column) — реализовано, тот же `resolveSizing()`; `align-self` на самом ребёнке (`stretch`/иное) имеет приоритет над `align-items` родителя |
@@ -56,6 +56,13 @@ Grid переносится в Figma Grid **только если** структ
 рендер как `layoutMode:'GRID'`-эмуляция через вложенные Auto Layout
 horizontal-в-vertical (ряды из ячеек), с warning `code:
 'grid-approximated-as-nested-autolayout'`.
+
+Для single-track grid, который приближается к Auto Layout, источник
+align/justify — `align-items`/`justify-items` (per-item выравнивание внутри
+собственной grid-area), **не** `align-content`/`justify-content` (те двигают
+всю сетку треков целиком и на одном треке обычно остаются `normal` —
+двигать было бы просто нечего, из-за чего элемент прижимался к краю вместо
+ожидаемого центра).
 
 ## Absolute positioning
 
@@ -113,6 +120,31 @@ padding-box родителя. Это прямо покрывает fixture 3 (ba
 упрощение, не точный per-node расчёт computed `white-space` (страницы с
 `white-space:pre` дадут "сплющенный" текст, известное ограничение).
 
+**Исключение — visual text container.** Figma `TextNode` не умеет фон/рамку/
+border-radius/padding. Если у текстового узла (иначе прошедшего условие выше)
+задан `display:flex/grid`(-inline) ИЛИ непрозрачный фон, ИЛИ `box-shadow`,
+ИЛИ ненулевой padding/border/radius (`hasVisualTextBox()` в
+`packages/conversion-engine/src/visualTextContainer.ts`) — узел становится
+`type:'frame'` с ровно ОДНИМ синтетическим текстовым ребёнком вместо
+`type:'text'` напрямую: сам фрейм несёт фон/рамку/скругление/padding как
+обычно, ребёнок несёт только typography/цвет (box-decoration на нём обнулена
+явно, иначе фон/рамка задвоились бы). Типичный случай — `<a class="tag-pill">`
+или круглая иконка-буква: flex-центрирование + padding + border-radius вокруг
+одного слова. Если у контейнера `justify-content:center`, это переносится и в
+`text-align:center` синтетического ребёнка — иначе кнопки без отдельного
+`<span>` внутри теряли бы центрирование текста.
+
+`DesignNode.textWrap?: 'wrap' | 'nowrap'` — однострочный захваченный текст
+(высота ≤ ~1.25×line-height, без явных `\n`/`white-space:pre`/`nowrap`)
+принудительно помечается `nowrap`, даже если исходный CSS этого не требует:
+браузерные и Figma-глифовые метрики расходятся достаточно, чтобы короткий
+текст, помещавшийся в захваченную ширину в браузере, перенёсся на вторую
+строку при фиксированной ширине в Figma. На стороне рендерера `nowrap`
+превращается в настоящий `textAutoResize:'WIDTH_AND_HEIGHT'`, а не просто в
+`layoutSizingHorizontal/Vertical:'HUG'` после `appendChild` — важно для
+текста внутри Component/Instance, где override текста инстанса может быть
+шире master и обязан раздвинуть узел, а не перенестись.
+
 `node.fills` для текстового узла — CSS `color` (цвет глифов), НЕ
 `background-color` (у Figma TextNode нет фона в отличие от frame). Если у
 такого узла при этом задан непрозрачный `background-color` — он теряется,
@@ -134,6 +166,40 @@ TextNode не умеет встроенные картинки внутри те
 Не реконструируются. Снимаются как raster snapshot (`toDataURL`/CDP
 `Page.captureScreenshot` с clip по bounding box) → `DesignAsset{kind:'raster'}`
 + обязательный `ConversionWarning{severity:'info', code:'canvas-rasterized'}`.
+
+## Распознавание компонентов — только opt-in, не часть обычного импорта
+
+Обычный Import as Frame/Apply to Selection **никогда** не превращает
+повторяющиеся структуры в Figma Component/Instance автоматически — эта
+эвристика существует только в отдельном read-only инвентаре ("Компоненты"
+вкладка, см. `docs/architecture.md`), не в `convertElement.ts`. Правила
+распознавания (`detectComponentCandidates()` в `packages/conversion-engine/
+src/componentGroups.ts`), для справки — сравниваются кандидаты (прямые
+соседи одного родителя):
+
+- **Структурная сигнатура**: тег + семантический (не-utility) класс + набор
+  layout/decoration computed-style свойств (`display`, `flex-*`, `gap`,
+  `padding-*`, `border-*`, `box-shadow`, `animation-name`) + рекурсивная
+  сигнатура детей. Текстовые листья схлопываются в одну сигнатуру `'text'` —
+  содержимое текста не участвует в сравнении структуры.
+- **Совместимость геометрии** (`hasCompatibleGeometry`) — размеры (±6% или
+  ±2px, что больше) должны совпадать рекурсивно по всем детям, **кроме
+  текстовых листьев** — глифовый бокс текста намеренно НЕ сравнивается:
+  карточки с одинаковой структурой, но подписями разной длины ("Orders" vs
+  "Financial and procurement activity"), это всё ещё одна семья компонентов.
+- Отсеиваются: элементы < 16×12px, элементы с `animation-name !== none`
+  (бесконечные marquee/карусели — реализационные детали, не переиспользуемые
+  UI-компоненты), элементы шире 1.8× родителя.
+- Итоговая `confidence` (0.72..0.99) растёт с числом инстансов и наличием
+  семантического класса — не используется для отсева, только для сортировки
+  карточек в панели.
+
+Это НЕ то же самое, что legacy `detectComponentGroups()` (мёртвый код,
+только для чтения старых документов с `componentRef` — `hasUnsafeText
+GeometryOverride()` там, наоборот, СРАВНИВАЕТ текстовые боксы и блокирует
+группировку при расхождении >0.5px, чтобы не сломать character override
+внутри Component/Instance). Два похожих по духу, но разных по критерию
+геометрии прохода — не путать при чтении кода.
 
 ## Confidence score (Import Quality)
 

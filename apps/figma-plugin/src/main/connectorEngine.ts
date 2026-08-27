@@ -83,6 +83,7 @@ type SmartConnectorData = SmartConnectorDataV2
 const NAMESPACE = 'swyod_smart_connectors'
 const DATA_KEY = 'smart-connector'
 const LABEL_DATA_KEY = 'smart-connector-label'
+const CONTAINER_INDEX_KEY = 'smart-connector-containers'
 const DEBOUNCE_MS = 250
 const GEOMETRY_PROPERTIES = new Set<string>([
   'x', 'y', 'width', 'height', 'rotation', 'relativeTransform',
@@ -94,6 +95,72 @@ const GEOMETRY_PROPERTIES = new Set<string>([
 let knownOwnedIds = new Set<string>()
 let watchedEndpointIds = new Set<string>()
 let labelByConnectorId = new Map<string, string>()
+/** Frames a connector/label has been reparented into (see `commonContainerFrame`
+ *  below — connectors are page-level by default so they never become
+ *  auto-layout/grid children, but a page-level sibling never appears in
+ *  Figma's Prototype presentation, which only renders a frame's own
+ *  subtree). Persisted on the page's own plugin data so `refreshOwnedIndex`/
+ *  `connectorNodes` can shallow-scan exactly these frames' direct children
+ *  in addition to the page — bounded by actual usage, NOT a recursive
+ *  document scan (that previously made Figma unusably slow, see
+ *  PROJECT_MEMORY.md — must never come back). */
+let containerFrameIds = new Set<string>()
+
+function loadContainerIndex(): void {
+  try {
+    const raw = figma.currentPage.getPluginData(CONTAINER_INDEX_KEY)
+    const parsed = raw ? (JSON.parse(raw) as unknown) : []
+    containerFrameIds = new Set(Array.isArray(parsed) ? parsed.filter((id): id is string => typeof id === 'string') : [])
+  } catch {
+    containerFrameIds = new Set()
+  }
+}
+
+function persistContainerIndex(): void {
+  figma.currentPage.setPluginData(CONTAINER_INDEX_KEY, JSON.stringify([...containerFrameIds]))
+}
+
+function registerContainer(frameId: string): void {
+  if (containerFrameIds.has(frameId)) return
+  containerFrameIds.add(frameId)
+  persistContainerIndex()
+}
+
+/** Absolute→local translation offset for an UNROTATED/unskewed/unscaled
+ *  frame only — returns null otherwise, and callers must then leave the
+ *  connector page-level instead. Correctly placing axis-aligned routing
+ *  geometry inside a rotated parent would require counter-rotating every
+ *  vertex, not just translating the anchor point; not attempted here, it's
+ *  a materially harder problem than the common (unrotated frame) case this
+ *  fix targets. */
+export function frameOffset(frame: FrameNode): { x: number; y: number } | null {
+  const [[a, c, tx], [b, d, ty]] = frame.absoluteTransform
+  const EPS = 0.001
+  if (Math.abs(a - 1) > EPS || Math.abs(d - 1) > EPS || Math.abs(b) > EPS || Math.abs(c) > EPS) return null
+  return { x: tx, y: ty }
+}
+
+/** Nearest common FRAME ancestor of two endpoint nodes, if one exists and
+ *  is unrotated — used to reparent a new connector (and its label) into it
+ *  so it shows up in Figma's Prototype presentation. Endpoints living in
+ *  different top-level frames (or directly on the page) have no common
+ *  frame; the connector then stays page-level exactly as before this fix. */
+export function commonContainerFrame(a: SceneNode, b: SceneNode): FrameNode | null {
+  const ancestors = (node: SceneNode): BaseNode[] => {
+    const chain: BaseNode[] = []
+    let current: BaseNode | null = node.parent
+    while (current && current.type !== 'PAGE') {
+      chain.push(current)
+      current = current.parent
+    }
+    return chain
+  }
+  const bAncestors = new Set(ancestors(b))
+  for (const node of ancestors(a)) {
+    if (node.type === 'FRAME' && bAncestors.has(node) && frameOffset(node)) return node
+  }
+  return null
+}
 /** Last geometry actually written per connector — lets connector-to-connector
  *  chains re-route through the watcher (see installSmartConnectorWatcher)
  *  without a feedback loop: a connector's own re-render touches x/y/width/
@@ -272,35 +339,58 @@ async function applyFillColor(
   node.fills = [await resolvePaint(hex, opacity, binding)]
 }
 
-function connectorNodes(): VectorNode[] {
-  return figma.currentPage.children.filter(isSmartConnector)
+/** Page children plus the direct children of every known container frame
+ *  (see `containerFrameIds` above) — bounded by actual connector usage, not
+ *  a recursive scan of the whole document. */
+async function connectorNodes(): Promise<VectorNode[]> {
+  const results: VectorNode[] = [...figma.currentPage.children.filter(isSmartConnector)]
+  for (const id of containerFrameIds) {
+    const frame = await figma.getNodeByIdAsync(id)
+    if (frame && frame.type === 'FRAME') results.push(...frame.children.filter(isSmartConnector))
+  }
+  return results
 }
 
 function connectorPairKey(data: SmartConnectorData): string {
   return [data.aId, data.bId].sort().join('|')
 }
 
-function refreshOwnedIndex(): void {
+function refreshOwnedIndex(): Promise<void> {
   knownOwnedIds = new Set<string>()
   watchedEndpointIds = new Set<string>()
   labelByConnectorId = new Map<string, string>()
-  for (const node of figma.currentPage.children) {
-    if (isSmartConnector(node)) {
-      knownOwnedIds.add(node.id)
-      const data = parseData(node)
-      if (data) {
-        watchedEndpointIds.add(data.aId)
-        watchedEndpointIds.add(data.bId)
-        if (data.labelId) labelByConnectorId.set(node.id, data.labelId)
+  const scan = (children: readonly SceneNode[]): void => {
+    for (const node of children) {
+      if (isSmartConnector(node)) {
+        knownOwnedIds.add(node.id)
+        const data = parseData(node)
+        if (data) {
+          watchedEndpointIds.add(data.aId)
+          watchedEndpointIds.add(data.bId)
+          if (data.labelId) labelByConnectorId.set(node.id, data.labelId)
+        }
+      } else if (isSmartConnectorLabel(node)) {
+        knownOwnedIds.add(node.id)
+        try {
+          const labelData = JSON.parse(node.getSharedPluginData(NAMESPACE, LABEL_DATA_KEY)) as { connectorId?: string }
+          if (labelData.connectorId) labelByConnectorId.set(labelData.connectorId, node.id)
+        } catch { /* Ignore malformed owned labels. */ }
       }
-    } else if (isSmartConnectorLabel(node)) {
-      knownOwnedIds.add(node.id)
-      try {
-        const labelData = JSON.parse(node.getSharedPluginData(NAMESPACE, LABEL_DATA_KEY)) as { connectorId?: string }
-        if (labelData.connectorId) labelByConnectorId.set(labelData.connectorId, node.id)
-      } catch { /* Ignore malformed owned labels. */ }
     }
   }
+  scan(figma.currentPage.children)
+  return (async () => {
+    const stale: string[] = []
+    for (const id of containerFrameIds) {
+      const frame = await figma.getNodeByIdAsync(id)
+      if (frame && frame.type === 'FRAME') scan(frame.children)
+      else stale.push(id)
+    }
+    if (stale.length) {
+      for (const id of stale) containerFrameIds.delete(id)
+      persistContainerIndex()
+    }
+  })()
 }
 
 function laneAssignments(nodes: VectorNode[]): Map<string, number> {
@@ -359,13 +449,21 @@ const fontStyle: Record<SmartConnectorConfig['labelFontWeight'], string> = {
 
 async function getOrCreateLabel(connector: VectorNode, data: SmartConnectorData): Promise<FrameNode> {
   const existing = data.labelId ? await figma.getNodeByIdAsync(data.labelId) : null
-  if (isSmartConnectorLabel(existing)) return existing
+  if (isSmartConnectorLabel(existing)) {
+    // Keep the label co-parented with its connector (see createOne's
+    // reparenting into a common container frame) — an existing label
+    // created before that container existed, or whose connector's
+    // container changed, would otherwise sit in the wrong parent.
+    if (connector.parent && existing.parent?.id !== connector.parent.id) connector.parent.appendChild(existing)
+    return existing
+  }
   const frame = figma.createFrame()
   frame.name = `Smart Connector Label · ${connector.name}`
   frame.layoutMode = 'HORIZONTAL'
   frame.primaryAxisSizingMode = 'AUTO'
   frame.counterAxisSizingMode = 'AUTO'
   frame.setSharedPluginData(NAMESPACE, LABEL_DATA_KEY, JSON.stringify({ version: 1, connectorId: connector.id }))
+  if (connector.parent) connector.parent.appendChild(frame)
   data.labelId = frame.id
   knownOwnedIds.add(frame.id)
   labelByConnectorId.set(connector.id, frame.id)
@@ -391,6 +489,13 @@ async function renderLabel(connector: VectorNode, data: SmartConnectorData, rout
     return
   }
   const frame = await getOrCreateLabel(connector, data)
+  // Figma shows a node's own `name` as a hover tooltip on canvas — the
+  // technical default ("Smart Connector Label · Smart Connector · A → B")
+  // read as an unwanted internal detail exposed to anyone hovering the
+  // label. Rename to the label's own visible text instead, kept in sync
+  // on every render (not just at creation) so editing the label text also
+  // updates what the canvas tooltip shows.
+  frame.name = config.labelText.trim().slice(0, 80)
   let text = frame.children.find((node): node is TextNode => node.type === 'TEXT')
   if (!text) {
     text = figma.createText()
@@ -418,8 +523,14 @@ async function renderLabel(connector: VectorNode, data: SmartConnectorData, rout
   else frame.strokes = []
   frame.strokeWeight = config.labelBorderWidth
   const anchor = pointAtRoute(route, config.labelPosition)
-  frame.x = config.labelAlign === 'START' ? anchor.x : config.labelAlign === 'END' ? anchor.x - frame.width : anchor.x - frame.width / 2
-  frame.y = anchor.y - frame.height / 2
+  const absX = config.labelAlign === 'START' ? anchor.x : config.labelAlign === 'END' ? anchor.x - frame.width : anchor.x - frame.width / 2
+  const absY = anchor.y - frame.height / 2
+  // `route`/`anchor` are in absolute page coordinates; frame.x/y are
+  // relative to whatever parent it's actually in (page, or a common
+  // container frame — see createOne/commonContainerFrame).
+  const offset = frame.parent && frame.parent.type === 'FRAME' ? (frameOffset(frame.parent) ?? { x: 0, y: 0 }) : { x: 0, y: 0 }
+  frame.x = absX - offset.x
+  frame.y = absY - offset.y
 }
 
 async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 0): Promise<'ok' | 'broken'> {
@@ -430,8 +541,12 @@ async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 
   const fingerprint = JSON.stringify([network.minX, network.minY, network.vertices, network.segments])
   if (lastGeometryFingerprint.get(connector.id) !== fingerprint) {
     await connector.setVectorNetworkAsync({ vertices: network.vertices, segments: network.segments, regions: [] })
-    connector.x = network.minX
-    connector.y = network.minY
+    // network.minX/minY are absolute page coordinates (routeConnector works
+    // from absoluteBoundingBox); connector.x/y are relative to its actual
+    // parent, which may now be a common container frame, not the page.
+    const parentOffset = connector.parent && connector.parent.type === 'FRAME' ? (frameOffset(connector.parent) ?? { x: 0, y: 0 }) : { x: 0, y: 0 }
+    connector.x = network.minX - parentOffset.x
+    connector.y = network.minY - parentOffset.y
     lastGeometryFingerprint.set(connector.id, fingerprint)
   }
   connector.fills = []
@@ -501,7 +616,7 @@ export async function getSmartConnectorState(): Promise<Record<string, unknown>>
     canBulkCreate: targets.length >= 3,
     selectedConnector,
     selectedConnectors,
-    connectors: (await Promise.all(connectorNodes().map(details))).filter(Boolean)
+    connectors: (await Promise.all((await connectorNodes()).map(details))).filter(Boolean)
   }
 }
 
@@ -527,6 +642,21 @@ async function createOne(a: SceneNode, b: SceneNode, configInput: Partial<SmartC
     // Relaunch buttons need a manifest "id" (see apps/figma-plugin/manifest.json).
     // Not essential to connector creation — don't let a manifest regression
     // break drawing connectors again.
+  }
+  // Reparent into the endpoints' common container frame when there is one,
+  // so the connector actually shows up in Figma's Prototype presentation
+  // (which only renders a frame's own subtree — a page-level sibling never
+  // appears there, even if it's drawn directly on top). Endpoints with no
+  // common frame ancestor (different top-level frames, or directly on the
+  // page) leave the connector page-level exactly as before this fix.
+  try {
+    const container = commonContainerFrame(a, b)
+    if (container) {
+      container.appendChild(connector)
+      registerContainer(container.id)
+    }
+  } catch {
+    // Reparenting is a nice-to-have, not essential to connector creation.
   }
   knownOwnedIds.add(connector.id)
   watchedEndpointIds.add(a.id)
@@ -652,7 +782,7 @@ export async function swapSmartConnector(params: Record<string, unknown>): Promi
 }
 
 export async function updateAllSmartConnectors(force = true): Promise<{ updated: number; broken: number }> {
-  const nodes = connectorNodes()
+  const nodes = await connectorNodes()
   const lanes = laneAssignments(nodes)
   let updated = 0
   let broken = 0
@@ -719,8 +849,7 @@ export function installSmartConnectorWatcher(onUpdated?: () => void): void {
     if (!relevant) return
     if (timer) clearTimeout(timer)
     timer = setTimeout(() => {
-      refreshOwnedIndex()
-      void updateAllSmartConnectors(false).then(() => onUpdated?.())
+      void refreshOwnedIndex().then(() => updateAllSmartConnectors(false)).then(() => onUpdated?.())
     }, DEBOUNCE_MS)
   }
 
@@ -728,7 +857,8 @@ export function installSmartConnectorWatcher(onUpdated?: () => void): void {
     if (watchedPage) watchedPage.off('nodechange', onNodeChange)
     watchedPage = figma.currentPage
     watchedPage.on('nodechange', onNodeChange)
-    refreshOwnedIndex()
+    loadContainerIndex()
+    void refreshOwnedIndex()
   }
 
   watchCurrentPage()

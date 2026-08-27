@@ -414,7 +414,13 @@ async function createOne(a: SceneNode, b: SceneNode, configInput: Partial<SmartC
   const data: SmartConnectorData = { version: 2, aId: a.id, bId: b.id, config: configFrom(configInput) }
   connector.name = `Smart Connector · ${a.name} → ${b.name}`
   writeData(connector, data)
-  connector.setRelaunchData({ edit: 'Edit smart connector' })
+  try {
+    connector.setRelaunchData({ edit: 'Edit smart connector' })
+  } catch {
+    // Relaunch buttons need a manifest "id" (see apps/figma-plugin/manifest.json).
+    // Not essential to connector creation — don't let a manifest regression
+    // break drawing connectors again.
+  }
   knownOwnedIds.add(connector.id)
   watchedEndpointIds.add(a.id)
   watchedEndpointIds.add(b.id)

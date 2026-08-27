@@ -46,6 +46,7 @@ import {
   selectSmartConnector,
   swapSmartConnector,
   updateAllSmartConnectors,
+  updateManySmartConnectors,
   updateSmartConnector
 } from './smartConnectors'
 
@@ -596,6 +597,8 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       return bulkCreateSmartConnectors(params)
     case 'smart_connector_update':
       return updateSmartConnector(params)
+    case 'smart_connector_update_many':
+      return updateManySmartConnectors(params)
     case 'smart_connector_swap':
       return swapSmartConnector(params)
     case 'smart_connector_update_all':

@@ -13,6 +13,15 @@ export type SmartConnectorArrow = 'NONE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL' |
 export type SmartConnectorLabelAlign = 'START' | 'CENTER' | 'END'
 export type SmartConnectorLabelBackground = 'NONE' | 'PAGE' | 'CUSTOM'
 
+/** Живой биндинг цветового поля на переменную/стиль Figma вместо статичного
+ *  hex — по запросу пользователя после того, как первая версия пикера
+ *  (Batch 2, Package E) только резолвила выбор в hex. `id` — id переменной
+ *  или paint-стиля файла. См. CHANGE_REQUESTS.md. */
+export interface SmartConnectorColorBinding {
+  kind: 'VARIABLE' | 'STYLE'
+  id: string
+}
+
 export interface SmartConnectorConfig {
   sideA: SmartConnectorSide
   sideB: SmartConnectorSide
@@ -32,6 +41,7 @@ export interface SmartConnectorConfig {
   arrowB: SmartConnectorArrow
   color: string
   opacity: number
+  colorBinding: SmartConnectorColorBinding | null
   linked: boolean
   labelText: string
   labelPosition: number
@@ -42,8 +52,10 @@ export interface SmartConnectorConfig {
   labelFontSize: number
   labelTextColor: string
   labelTextOpacity: number
+  labelTextColorBinding: SmartConnectorColorBinding | null
   labelBorderColor: string
   labelBorderOpacity: number
+  labelBorderColorBinding: SmartConnectorColorBinding | null
   labelBackground: SmartConnectorLabelBackground
   labelBackgroundColor: string
   labelBackgroundOpacity: number
@@ -96,11 +108,11 @@ export const smartConnectorDefaults: SmartConnectorConfig = {
   marginA: 16, marginB: 16, routingPadding: 48, laneGap: 24,
   lineShape: 'ORTHOGONAL', cornerRadius: 8, strokeWeight: 2,
   strokeStyle: 'SOLID', dash: 8, gap: 6,
-  arrowA: 'NONE', arrowB: 'ARROW_LINES', color: '#1F2937', opacity: 1,
+  arrowA: 'NONE', arrowB: 'ARROW_LINES', color: '#1F2937', opacity: 1, colorBinding: null,
   linked: true, labelText: '', labelPosition: 0.5, labelAlign: 'CENTER',
   labelPaddingX: 8, labelPaddingY: 6, labelFontWeight: 'MEDIUM', labelFontSize: 14,
-  labelTextColor: '#111111', labelTextOpacity: 1,
-  labelBorderColor: '#111111', labelBorderOpacity: 1,
+  labelTextColor: '#111111', labelTextOpacity: 1, labelTextColorBinding: null,
+  labelBorderColor: '#111111', labelBorderOpacity: 1, labelBorderColorBinding: null,
   labelBackground: 'PAGE', labelBackgroundColor: '#FFFFFF', labelBackgroundOpacity: 1,
   labelBorderWidth: 0, labelCornerRadius: 8
 }
@@ -126,6 +138,14 @@ function color(value: unknown, fallback: string): string {
   return typeof value === 'string' && colorPattern.test(value) ? value.toUpperCase() : fallback
 }
 
+function normalizeBinding(value: unknown): SmartConnectorColorBinding | null {
+  if (!value || typeof value !== 'object') return null
+  const kind = (value as Record<string, unknown>).kind
+  const id = (value as Record<string, unknown>).id
+  if ((kind === 'VARIABLE' || kind === 'STYLE') && typeof id === 'string' && id) return { kind, id }
+  return null
+}
+
 export function configFrom(input: Partial<SmartConnectorConfig> = {}): SmartConnectorConfig {
   const value: SmartConnectorConfig = { ...smartConnectorDefaults, ...input }
   value.sideA = validSide(value.sideA) ? value.sideA : smartConnectorDefaults.sideA
@@ -146,6 +166,7 @@ export function configFrom(input: Partial<SmartConnectorConfig> = {}): SmartConn
   value.arrowB = validArrow(value.arrowB) ? value.arrowB : smartConnectorDefaults.arrowB
   value.color = color(value.color, smartConnectorDefaults.color)
   value.opacity = clamp(Number(value.opacity), 0, 1)
+  value.colorBinding = normalizeBinding(value.colorBinding)
   value.linked = value.linked !== false
   value.labelText = String(value.labelText ?? '').slice(0, 500)
   value.labelPosition = clamp(Number(value.labelPosition), 0, 1)
@@ -156,8 +177,10 @@ export function configFrom(input: Partial<SmartConnectorConfig> = {}): SmartConn
   value.labelFontSize = clamp(Number(value.labelFontSize), 6, 200)
   value.labelTextColor = color(value.labelTextColor, smartConnectorDefaults.labelTextColor)
   value.labelTextOpacity = clamp(Number(value.labelTextOpacity), 0, 1)
+  value.labelTextColorBinding = normalizeBinding(value.labelTextColorBinding)
   value.labelBorderColor = color(value.labelBorderColor, smartConnectorDefaults.labelBorderColor)
   value.labelBorderOpacity = clamp(Number(value.labelBorderOpacity), 0, 1)
+  value.labelBorderColorBinding = normalizeBinding(value.labelBorderColorBinding)
   value.labelBackground = ['NONE', 'PAGE', 'CUSTOM'].includes(value.labelBackground) ? value.labelBackground : 'PAGE'
   value.labelBackgroundColor = color(value.labelBackgroundColor, smartConnectorDefaults.labelBackgroundColor)
   value.labelBackgroundOpacity = clamp(Number(value.labelBackgroundOpacity), 0, 1)
@@ -191,6 +214,62 @@ function writeData(node: VectorNode, data: SmartConnectorData): void {
 
 function rgb(hex: string): RGB {
   return { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 }
+}
+
+/** Плоский SolidPaint по hex, либо тот же paint с привязкой к переменной
+ *  файла (`figma.variables.setBoundVariableForPaint` — тот же примитив, что
+ *  уже использует `bind_fill_variable`/`bind_stroke_variable` в
+ *  designAgentCommands.ts). `hex`/`opacity` в конфиге остаются как fallback-
+ *  превью и на случай, если переменную потом удалят из файла. */
+async function resolvePaint(hex: string, opacity: number, binding: SmartConnectorColorBinding | null | undefined): Promise<SolidPaint> {
+  if (binding?.kind === 'VARIABLE') {
+    const variable = await figma.variables.getVariableByIdAsync(binding.id)
+    if (variable) {
+      const bound = figma.variables.setBoundVariableForPaint({ type: 'SOLID', color: rgb(hex) }, 'color', variable) as SolidPaint
+      return { ...bound, opacity }
+    }
+  }
+  return { type: 'SOLID', color: rgb(hex), opacity }
+}
+
+/** Применяет цвет STROKE-а узла: paint-стиль файла — через `strokeStyleId`
+ *  (сам управляет своим Paint[], ручной .strokes после него нельзя ставить —
+ *  отвяжет стиль), переменная/обычный hex — обычным присваиванием .strokes
+ *  (которое само снимает любой ранее привязанный стиль). Откат на плоский
+ *  paint, если стиль/переменную впоследствии удалили из файла. */
+async function applyStrokeColor(
+  node: MinimalStrokesMixin,
+  hex: string,
+  opacity: number,
+  binding: SmartConnectorColorBinding | null | undefined
+): Promise<void> {
+  if (binding?.kind === 'STYLE') {
+    try {
+      await node.setStrokeStyleIdAsync(binding.id)
+      return
+    } catch {
+      // Style was deleted from the file — fall through to a plain paint.
+    }
+  }
+  node.strokes = [await resolvePaint(hex, opacity, binding)]
+}
+
+/** То же самое для FILL-а (текст лейбла). */
+async function applyFillColor(
+  node: MinimalFillsMixin,
+  hex: string,
+  opacity: number,
+  binding: SmartConnectorColorBinding | null | undefined
+): Promise<void> {
+  if (binding?.kind === 'STYLE') {
+    try {
+      await node.setFillStyleIdAsync(binding.id)
+      return
+    } catch {
+      // Style was deleted from the file — fall through to a plain paint.
+    }
+  }
+  node.fills = [await resolvePaint(hex, opacity, binding)]
 }
 
 function connectorNodes(): VectorNode[] {
@@ -326,7 +405,7 @@ async function renderLabel(connector: VectorNode, data: SmartConnectorData, rout
   text.fontSize = config.labelFontSize
   text.characters = config.labelText
   text.textAutoResize = 'WIDTH_AND_HEIGHT'
-  text.fills = [{ type: 'SOLID', color: rgb(config.labelTextColor), opacity: config.labelTextOpacity }]
+  await applyFillColor(text, config.labelTextColor, config.labelTextOpacity, config.labelTextColorBinding)
   frame.paddingLeft = frame.paddingRight = config.labelPaddingX
   frame.paddingTop = frame.paddingBottom = config.labelPaddingY
   frame.cornerRadius = config.labelCornerRadius
@@ -335,9 +414,8 @@ async function renderLabel(connector: VectorNode, data: SmartConnectorData, rout
     const background = pageBackground()
     frame.fills = background ? [{ ...background, opacity: config.labelBackgroundOpacity }] : [{ type: 'SOLID', color: rgb('#FFFFFF'), opacity: config.labelBackgroundOpacity }]
   } else frame.fills = [{ type: 'SOLID', color: rgb(config.labelBackgroundColor), opacity: config.labelBackgroundOpacity }]
-  frame.strokes = config.labelBorderWidth > 0
-    ? [{ type: 'SOLID', color: rgb(config.labelBorderColor), opacity: config.labelBorderOpacity }]
-    : []
+  if (config.labelBorderWidth > 0) await applyStrokeColor(frame, config.labelBorderColor, config.labelBorderOpacity, config.labelBorderColorBinding)
+  else frame.strokes = []
   frame.strokeWeight = config.labelBorderWidth
   const anchor = pointAtRoute(route, config.labelPosition)
   frame.x = config.labelAlign === 'START' ? anchor.x : config.labelAlign === 'END' ? anchor.x - frame.width : anchor.x - frame.width / 2
@@ -357,7 +435,7 @@ async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 
     lastGeometryFingerprint.set(connector.id, fingerprint)
   }
   connector.fills = []
-  connector.strokes = [{ type: 'SOLID', color: rgb(data.config.color), opacity: data.config.opacity }]
+  await applyStrokeColor(connector, data.config.color, data.config.opacity, data.config.colorBinding)
   connector.strokeWeight = data.config.strokeWeight
   connector.strokeJoin = 'ROUND'
   connector.dashPattern = data.config.strokeStyle === 'DASHED' ? [data.config.dash, data.config.gap] : []
@@ -403,6 +481,18 @@ export async function getSmartConnectorState(): Promise<Record<string, unknown>>
   const selection = figma.currentPage.selection
   const selectedNode = selection.length === 1 ? await connectorForSelection(selection[0]) : null
   const selectedConnector = selectedNode ? await details(selectedNode) : null
+
+  // Multi-select: several connectors (or their labels) selected together on
+  // the Figma canvas. Resolved the same way as the single-select case above,
+  // then de-duplicated (a connector and its own label can both be in
+  // `selection` and would otherwise resolve to the same node twice).
+  let selectedConnectors: Array<Record<string, unknown>> = []
+  if (selection.length > 1) {
+    const resolved = await Promise.all(selection.map(connectorForSelection))
+    const unique = [...new Map(resolved.filter((n): n is VectorNode => n !== null).map((n) => [n.id, n])).values()]
+    if (unique.length > 1) selectedConnectors = (await Promise.all(unique.map(details))).filter((d): d is Record<string, unknown> => d !== null)
+  }
+
   const targets = selectedTargets()
   return {
     connected: true,
@@ -410,6 +500,7 @@ export async function getSmartConnectorState(): Promise<Record<string, unknown>>
     canCreate: targets.length === 2,
     canBulkCreate: targets.length >= 3,
     selectedConnector,
+    selectedConnectors,
     connectors: (await Promise.all(connectorNodes().map(details))).filter(Boolean)
   }
 }
@@ -508,6 +599,33 @@ export async function updateSmartConnector(params: Record<string, unknown>): Pro
   writeData(node, data)
   await updateAllSmartConnectors(true)
   return (await details(node)) ?? {}
+}
+
+/** Массовое редактирование: несколько выделенных на канвасе коннекторов
+ *  правятся ОДНИМ patch'ем (не полной заменой config) — так изменение,
+ *  скажем, только цвета не стирает у каждого коннектора его собственные
+ *  side/offset/routing. См. CHANGE_REQUESTS.md — запрошено пользователем
+ *  после того, как обнаружил, что мульти-выделение вообще не поддерживалось
+ *  (getSmartConnectorState отдавал selectedConnector только для selection
+ *  длиной 1, а сам apply всегда бил по одному connectorId). */
+export async function updateManySmartConnectors(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const ids = Array.isArray(params.connectorIds)
+    ? params.connectorIds.filter((id): id is string => typeof id === 'string')
+    : []
+  if (!ids.length) throw new Error('connectorIds must be a non-empty array.')
+  const patch = (params.patch ?? {}) as Partial<SmartConnectorConfig>
+  let updated = 0
+  for (const id of ids) {
+    const node = await figma.getNodeByIdAsync(id)
+    if (!isSmartConnector(node)) continue
+    const data = parseData(node)
+    if (!data) continue
+    data.config = configFrom({ ...data.config, ...patch })
+    writeData(node, data)
+    updated += 1
+  }
+  await updateAllSmartConnectors(true)
+  return { updated }
 }
 
 export async function swapSmartConnector(params: Record<string, unknown>): Promise<Record<string, unknown>> {

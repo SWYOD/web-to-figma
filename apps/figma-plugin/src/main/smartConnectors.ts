@@ -9,6 +9,7 @@ export {
   smartConnectorDefaults,
   swapSmartConnector,
   updateAllSmartConnectors,
+  updateManySmartConnectors,
   updateSmartConnector,
   type SmartConnectorArrow,
   type SmartConnectorConfig,

@@ -606,9 +606,13 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
     case 'smart_connector_update_all':
       return updateAllSmartConnectors()
     case 'smart_connector_bake':
-      return bakeSmartConnectors()
+      return bakeSmartConnectors(
+        Array.isArray(params.connectorIds) ? params.connectorIds.filter((id): id is string => typeof id === 'string') : undefined
+      )
     case 'smart_connector_unbake':
-      return unbakeSmartConnectors()
+      return unbakeSmartConnectors(
+        Array.isArray(params.connectorIds) ? params.connectorIds.filter((id): id is string => typeof id === 'string') : undefined
+      )
     case 'smart_connector_select':
       return selectSmartConnector(params)
     case 'smart_connector_delete':

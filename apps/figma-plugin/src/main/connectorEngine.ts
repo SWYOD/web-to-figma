@@ -825,6 +825,121 @@ export async function updateAllSmartConnectors(force = true): Promise<{ updated:
   return { updated, broken }
 }
 
+/** Nearest FRAME ancestor of `node` (not group/section/page) — the frame the
+ *  endpoint is actually drawn inside, stopping at the FIRST frame found
+ *  going up, never further. Deliberately does NOT walk all the way to the
+ *  page: in a real file, a node's outermost page-level ancestor is often a
+ *  huge organizational SECTION (hundreds of unrelated frames) — wrapping or
+ *  moving that would be a wildly oversized, dangerous mutation for what's
+ *  meant to be "the frame this one diagram's boxes live in." */
+export function nearestFrame(node: SceneNode): FrameNode | null {
+  let current: BaseNode | null = node.parent
+  while (current && current.type !== 'PAGE') {
+    if (current.type === 'FRAME') return current
+    current = current.parent
+  }
+  return null
+}
+
+/** Grows `wrapper` to include `box` (an absolute bounding box), moving its
+ *  origin only if `box` extends further left/up than its current bounds —
+ *  and when the origin does move, shifts every existing child by the same
+ *  delta first so their own absolute position doesn't silently jump (their
+ *  x/y is relative to the wrapper's origin). First child adopts `box`
+ *  exactly rather than "growing" from the frame's arbitrary creation size. */
+function growWrapper(wrapper: FrameNode, box: { x: number; y: number; width: number; height: number }): void {
+  if (wrapper.children.length === 0) {
+    wrapper.x = box.x
+    wrapper.y = box.y
+    wrapper.resize(Math.max(1, box.width), Math.max(1, box.height))
+    return
+  }
+  const newMinX = Math.min(wrapper.x, box.x)
+  const newMinY = Math.min(wrapper.y, box.y)
+  const newMaxX = Math.max(wrapper.x + wrapper.width, box.x + box.width)
+  const newMaxY = Math.max(wrapper.y + wrapper.height, box.y + box.height)
+  const dx = wrapper.x - newMinX
+  const dy = wrapper.y - newMinY
+  if (dx > 0 || dy > 0) {
+    for (const child of wrapper.children) {
+      child.x += dx
+      child.y += dy
+    }
+  }
+  wrapper.x = newMinX
+  wrapper.y = newMinY
+  wrapper.resize(Math.max(1, newMaxX - newMinX), Math.max(1, newMaxY - newMinY))
+}
+
+/** Reparents `node` into `wrapper`, growing the wrapper first (see above)
+ *  and then correcting `node`'s x/y so its absolute position doesn't move —
+ *  `appendChild` alone leaves the old page-relative numbers in place,
+ *  wrongly reinterpreted in the wrapper's coordinate space otherwise. */
+function moveIntoWrapper(node: SceneNode, wrapper: FrameNode): void {
+  const box = node.absoluteBoundingBox
+  if (!box) return
+  growWrapper(wrapper, box)
+  wrapper.appendChild(node)
+  node.x = box.x - wrapper.x
+  node.y = box.y - wrapper.y
+}
+
+/** Fallback for when the two endpoints have no existing common frame
+ *  ancestor at all (different top-level frames — the case
+ *  `commonContainerFrame` can't help with). Creates (or reuses, within this
+ *  one Bake pass) a new page-level frame and moves each endpoint's own
+ *  `nearestFrame` into it — same manual workaround a user would do by hand
+ *  (wrap the relevant frames in a new frame so there's finally something to
+ *  bake the connector into). `tracker` maps a frame id already moved this
+ *  pass to the wrapper it's now in, so later connectors reusing one of
+ *  those same frames grow the SAME wrapper instead of creating another one
+ *  or double-moving anything. If both endpoints' frames are already in two
+ *  DIFFERENT wrappers from earlier in this pass, merging them isn't
+ *  attempted (rare, and merging two already-placed wrapper frames safely is
+ *  a materially bigger operation) — that connector is left unbaked. */
+function ensureWrapped(a: SceneNode, b: SceneNode, tracker: Map<string, FrameNode>): FrameNode | null {
+  const frameA = nearestFrame(a)
+  const frameB = nearestFrame(b)
+  if (!frameA || !frameB || frameA.id === frameB.id) return null
+  const existingA = tracker.get(frameA.id)
+  const existingB = tracker.get(frameB.id)
+  if (existingA && existingB) return existingA.id === existingB.id ? existingA : null
+  const wrapper =
+    existingA ??
+    existingB ??
+    (() => {
+      const frame = figma.createFrame()
+      frame.name = 'Smart Connectors Group'
+      frame.fills = []
+      frame.clipsContent = false
+      return frame
+    })()
+  if (!existingA) {
+    moveIntoWrapper(frameA, wrapper)
+    tracker.set(frameA.id, wrapper)
+  }
+  if (!existingB) {
+    moveIntoWrapper(frameB, wrapper)
+    tracker.set(frameB.id, wrapper)
+  }
+  return wrapper
+}
+
+/** Connectors to act on for Bake/Unbake: an explicit subset (the current
+ *  Figma selection, single or multi) when given, else every connector —
+ *  same "selection scopes it, empty selection means everything" pattern
+ *  `updateManySmartConnectors` already uses. Without this, baking or
+ *  unbaking always touched the WHOLE page, so once anything was baked there
+ *  was no way to bake more without also re-processing (or, worse, being
+ *  stuck only able to unbake) everything already-placed elsewhere. */
+async function connectorsInScope(connectorIds?: string[]): Promise<VectorNode[]> {
+  if (connectorIds && connectorIds.length) {
+    const resolved = await Promise.all(connectorIds.map((id) => figma.getNodeByIdAsync(id)))
+    return resolved.filter(isSmartConnector)
+  }
+  return connectorNodes()
+}
+
 /** Explicit, user-triggered "Bake" action ("режим запекания") — moves every
  *  connector (and its label) that has a common frame ancestor for its two
  *  endpoints from the page into that frame, so it shows up in Figma's
@@ -837,21 +952,32 @@ export async function updateAllSmartConnectors(force = true): Promise<{ updated:
  *  'ABSOLUTE'` on the connector/label when the container's `layoutMode`
  *  isn't `'NONE'`, which is exactly Figma's own "remove from auto layout
  *  flow, use manual position" per-child override — the container's layout
- *  is left completely alone, nothing else in it moves. Connectors whose
- *  endpoints have no common frame ancestor (different top-level frames, or
- *  directly on the page) are left exactly where they are — there's no
- *  frame to bake them into. Idempotent: already-baked connectors are
- *  skipped (checked by parent id) so running it again is always safe. */
-export async function bakeSmartConnectors(): Promise<{ baked: number; skipped: number }> {
-  const nodes = await connectorNodes()
+ *  is left completely alone, nothing else in it moves.
+ *
+ *  Endpoints with NO existing common frame ancestor (different top-level
+ *  frames) are no longer just skipped — `ensureWrapped` creates (or grows)
+ *  a new wrapper frame around each endpoint's own nearest frame first, so
+ *  there's something to bake into, exactly mirroring what a user would do
+ *  by hand (seen live: a real file where three sibling frames got manually
+ *  wrapped in a new frame, with every connector between them dragged in
+ *  too, to make Bake possible at all).
+ *
+ *  Idempotent: already-baked connectors are skipped (checked by parent id)
+ *  so running it again is always safe.
+ *
+ *  `connectorIds`, when given, scopes this to just those connectors (the
+ *  current selection) instead of the whole page — see `connectorsInScope`. */
+export async function bakeSmartConnectors(connectorIds?: string[]): Promise<{ baked: number; skipped: number; wrapped: number }> {
+  const nodes = await connectorsInScope(connectorIds)
   let baked = 0
   let skipped = 0
+  const wrapperTracker = new Map<string, FrameNode>()
   for (const node of nodes) {
     const data = parseData(node)
     if (!data) { skipped += 1; continue }
     const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
     if (!isSceneNode(a) || !isSceneNode(b)) { skipped += 1; continue }
-    const container = commonContainerFrame(a, b)
+    const container = commonContainerFrame(a, b) ?? ensureWrapped(a, b, wrapperTracker)
     if (!container) { skipped += 1; continue }
     try {
       if (node.parent?.id !== container.id) container.appendChild(node)
@@ -870,7 +996,8 @@ export async function bakeSmartConnectors(): Promise<{ baked: number; skipped: n
     }
   }
   await updateAllSmartConnectors(true)
-  return { baked, skipped }
+  const wrapped = new Set([...wrapperTracker.values()].map((frame) => frame.id)).size
+  return { baked, skipped, wrapped }
 }
 
 /** Reverses bakeSmartConnectors() — moves every currently-baked connector
@@ -879,9 +1006,12 @@ export async function bakeSmartConnectors(): Promise<{ baked: number; skipped: n
  *  `updateAllSmartConnectors(true)` call right after re-renders every
  *  connector from scratch, and `render()`'s offset math resolves to
  *  {x:0,y:0} for a page-level parent, so the final position is correct —
- *  nothing actually shows the in-between state. */
-export async function unbakeSmartConnectors(): Promise<{ unbaked: number }> {
-  const nodes = await connectorNodes()
+ *  nothing actually shows the in-between state.
+ *
+ *  `connectorIds`, when given, scopes this to just those connectors (the
+ *  current selection) instead of the whole page. */
+export async function unbakeSmartConnectors(connectorIds?: string[]): Promise<{ unbaked: number }> {
+  const nodes = await connectorsInScope(connectorIds)
   let unbaked = 0
   for (const node of nodes) {
     if (!node.parent || node.parent.type !== 'FRAME') continue

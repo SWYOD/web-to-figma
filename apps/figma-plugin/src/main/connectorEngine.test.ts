@@ -1,6 +1,6 @@
 /// <reference types="@figma/plugin-typings" />
 import { describe, expect, it } from 'vitest'
-import { commonContainerFrame, frameOffset } from './connectorEngine'
+import { commonContainerFrame, frameOffset, nearestFrame } from './connectorEngine'
 
 /**
  * Pure-logic tests for the Prototype-visibility reparenting fix (connectors
@@ -70,6 +70,35 @@ describe('commonContainerFrame', () => {
     const a = mockNode('a', 'RECTANGLE', rotated)
     const b = mockNode('b', 'RECTANGLE', rotated)
     expect(commonContainerFrame(a, b)).toBeNull()
+  })
+})
+
+describe('nearestFrame', () => {
+  it('returns the direct parent frame', () => {
+    const frame = mockFrame('frame1', mockPage())
+    const a = mockNode('a', 'RECTANGLE', frame)
+    expect(nearestFrame(a)).toBe(frame)
+  })
+
+  it('walks up through a group to the enclosing frame', () => {
+    const frame = mockFrame('frame1', mockPage())
+    const group = mockNode('group', 'GROUP', frame)
+    const a = mockNode('a', 'RECTANGLE', group)
+    expect(nearestFrame(a)).toBe(frame)
+  })
+
+  it('stops at the FIRST frame going up — does not walk past it to an outer section', () => {
+    const section = mockNode('section', 'SECTION', mockPage())
+    const outerFrame = mockFrame('outer', section)
+    const innerFrame = mockFrame('inner', outerFrame)
+    const a = mockNode('a', 'RECTANGLE', innerFrame)
+    expect(nearestFrame(a)).toBe(innerFrame)
+  })
+
+  it('returns null when there is no enclosing frame at all', () => {
+    const section = mockNode('section', 'SECTION', mockPage())
+    const a = mockNode('a', 'RECTANGLE', section)
+    expect(nearestFrame(a)).toBeNull()
   })
 })
 

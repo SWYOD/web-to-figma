@@ -678,14 +678,30 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       }
     }
     case 'list_variables_and_styles': {
+      const toHex = (rgba: RGBA): string => {
+        const toByte = (channel: number) =>
+          Math.round(Math.max(0, Math.min(1, channel)) * 255)
+            .toString(16)
+            .padStart(2, '0')
+        return `#${toByte(rgba.r)}${toByte(rgba.g)}${toByte(rgba.b)}`
+      }
+
       const collections = await figma.variables.getLocalVariableCollectionsAsync()
-      const colorVariables: Array<{ id: string; name: string; collection: string; hex?: string }> = []
+      const colorVariables: Array<{
+        id: string
+        name: string
+        collection: string
+        hex?: string
+        opacity?: number
+        valuesByMode: Array<{ modeId: string; modeName: string; hex: string; opacity: number }>
+      }> = []
       const floatVariables: Array<{
         id: string
         name: string
         collection: string
         value?: number
         scopes: readonly VariableScope[]
+        valuesByMode: Array<{ modeId: string; modeName: string; value: number }>
       }> = []
       for (const collection of collections) {
         const firstModeId = collection.modes[0]?.modeId
@@ -693,32 +709,59 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
           const variable = await figma.variables.getVariableByIdAsync(id)
           if (!variable) continue
           if (variable.resolvedType === 'FLOAT') {
-            const value = firstModeId ? variable.valuesByMode[firstModeId] : undefined
+            const valuesByMode = collection.modes
+              .map((mode) => {
+                const raw = variable.valuesByMode[mode.modeId]
+                return typeof raw === 'number' ? { modeId: mode.modeId, modeName: mode.name, value: raw } : null
+              })
+              .filter((entry): entry is { modeId: string; modeName: string; value: number } => entry !== null)
+            const first = firstModeId ? variable.valuesByMode[firstModeId] : undefined
             floatVariables.push({
               id: variable.id,
               name: variable.name,
               collection: collection.name,
-              value: typeof value === 'number' ? value : undefined,
-              scopes: variable.scopes
+              value: typeof first === 'number' ? first : undefined,
+              scopes: variable.scopes,
+              valuesByMode
             })
             continue
           }
           if (variable.resolvedType !== 'COLOR') continue
-          let hex: string | undefined
-          if (firstModeId) {
-            const value = variable.valuesByMode[firstModeId]
-            if (value && typeof value === 'object' && 'r' in value) {
-              const toByte = (channel: number) =>
-                Math.round(Math.max(0, Math.min(1, channel)) * 255)
-                  .toString(16)
-                  .padStart(2, '0')
-              const rgba = value as RGBA
-              hex = `#${toByte(rgba.r)}${toByte(rgba.g)}${toByte(rgba.b)}`
-            }
-          }
-          colorVariables.push({ id: variable.id, name: variable.name, collection: collection.name, hex })
+          const valuesByMode = collection.modes
+            .map((mode) => {
+              const raw = variable.valuesByMode[mode.modeId]
+              if (!raw || typeof raw !== 'object' || !('r' in raw)) return null
+              const rgba = raw as RGBA
+              return { modeId: mode.modeId, modeName: mode.name, hex: toHex(rgba), opacity: rgba.a }
+            })
+            .filter(
+              (entry): entry is { modeId: string; modeName: string; hex: string; opacity: number } => entry !== null
+            )
+          const first = valuesByMode.find((entry) => entry.modeId === firstModeId) ?? valuesByMode[0]
+          colorVariables.push({
+            id: variable.id,
+            name: variable.name,
+            collection: collection.name,
+            hex: first?.hex,
+            opacity: first?.opacity,
+            valuesByMode
+          })
         }
       }
+
+      const localPaintStyles = await figma.getLocalPaintStylesAsync()
+      const paintStyles = localPaintStyles.map((style) => {
+        const paint = style.paints[0]
+        if (paint?.type === 'SOLID') {
+          return { id: style.id, name: style.name, type: 'SOLID' as const, hex: toHex({ ...paint.color, a: 1 }), opacity: paint.opacity ?? 1 }
+        }
+        if (paint && (paint.type === 'GRADIENT_LINEAR' || paint.type === 'GRADIENT_RADIAL' || paint.type === 'GRADIENT_ANGULAR' || paint.type === 'GRADIENT_DIAMOND')) {
+          return { id: style.id, name: style.name, type: 'GRADIENT' as const }
+        }
+        if (paint?.type === 'IMAGE') return { id: style.id, name: style.name, type: 'IMAGE' as const }
+        return { id: style.id, name: style.name, type: 'OTHER' as const }
+      })
+
       const localTextStyles = await figma.getLocalTextStylesAsync()
       const textStyles = localTextStyles.map((style) => ({
         id: style.id,
@@ -728,7 +771,7 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
         fontSize: style.fontSize,
         lineHeight: style.lineHeight
       }))
-      return { colorVariables, floatVariables, textStyles }
+      return { colorVariables, floatVariables, paintStyles, textStyles }
     }
     case 'upsert_float_variables': {
       const collectionName = String(params.collectionName ?? '').trim()

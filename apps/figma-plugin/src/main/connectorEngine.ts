@@ -166,9 +166,13 @@ function ancestorChain(node: BaseNode): BaseNode[] {
 }
 
 export function commonContainerFrame(a: SceneNode, b: SceneNode): FrameNode | null {
-  const bAncestors = new Set(ancestorChain(b))
-  for (const node of ancestorChain(a)) {
-    if (node.type === 'FRAME' && bAncestors.has(node) && frameOffset(node)) return node
+  // Includes each endpoint itself, not just its strict ancestors: if b is
+  // (or is nested inside) a FRAME endpoint a itself, a already correctly
+  // contains both and is the tightest possible container — the previous
+  // ancestors-only version missed exactly this case.
+  const bChain = new Set<BaseNode>([b, ...ancestorChain(b)])
+  for (const node of [a, ...ancestorChain(a)]) {
+    if (node.type === 'FRAME' && bChain.has(node) && frameOffset(node)) return node
   }
   return null
 }
@@ -825,14 +829,19 @@ export async function updateAllSmartConnectors(force = true): Promise<{ updated:
   return { updated, broken }
 }
 
-/** Nearest FRAME ancestor of `node` (not group/section/page) — the frame the
- *  endpoint is actually drawn inside, stopping at the FIRST frame found
- *  going up, never further. Deliberately does NOT walk all the way to the
- *  page: in a real file, a node's outermost page-level ancestor is often a
- *  huge organizational SECTION (hundreds of unrelated frames) — wrapping or
- *  moving that would be a wildly oversized, dangerous mutation for what's
- *  meant to be "the frame this one diagram's boxes live in." */
+/** Nearest FRAME at or above `node` (not group/section/page) — the frame the
+ *  endpoint is actually drawn inside, or the endpoint itself when it's
+ *  already a frame (a connector directly between two top-level frames is a
+ *  real, common case — missing this left it unable to bake at all: neither
+ *  endpoint has a frame *ancestor* when each endpoint IS the frame).
+ *  Stopping at the first frame found, never further: deliberately does NOT
+ *  walk all the way to the page — in a real file, a node's outermost
+ *  page-level ancestor is often a huge organizational SECTION (hundreds of
+ *  unrelated frames) — wrapping or moving that would be a wildly oversized,
+ *  dangerous mutation for what's meant to be "the frame this one diagram's
+ *  boxes live in." */
 export function nearestFrame(node: SceneNode): FrameNode | null {
+  if (node.type === 'FRAME') return node
   let current: BaseNode | null = node.parent
   while (current && current.type !== 'PAGE') {
     if (current.type === 'FRAME') return current

@@ -71,6 +71,13 @@ describe('commonContainerFrame', () => {
     const b = mockNode('b', 'RECTANGLE', rotated)
     expect(commonContainerFrame(a, b)).toBeNull()
   })
+
+  it('finds the frame itself as the container when one endpoint IS the frame and the other is nested inside it', () => {
+    const frame = mockFrame('frame1', mockPage())
+    const b = mockNode('b', 'RECTANGLE', frame)
+    expect(commonContainerFrame(frame, b)).toBe(frame)
+    expect(commonContainerFrame(b, frame)).toBe(frame)
+  })
 })
 
 describe('nearestFrame', () => {
@@ -99,6 +106,11 @@ describe('nearestFrame', () => {
     const section = mockNode('section', 'SECTION', mockPage())
     const a = mockNode('a', 'RECTANGLE', section)
     expect(nearestFrame(a)).toBeNull()
+  })
+
+  it('returns the node itself when the endpoint IS a frame (connector directly between two top-level frames)', () => {
+    const frame = mockFrame('frame1', mockPage())
+    expect(nearestFrame(frame)).toBe(frame)
   })
 })
 

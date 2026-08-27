@@ -1,4 +1,5 @@
 export {
+  bakeSmartConnectors,
   bulkCreateSmartConnectors,
   configFrom,
   createSmartConnector,
@@ -8,6 +9,7 @@ export {
   selectSmartConnector,
   smartConnectorDefaults,
   swapSmartConnector,
+  unbakeSmartConnectors,
   updateAllSmartConnectors,
   updateManySmartConnectors,
   updateSmartConnector,

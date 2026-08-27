@@ -39,12 +39,14 @@ import {
   type TokenFormat
 } from './designAgentSpec'
 import {
+  bakeSmartConnectors,
   bulkCreateSmartConnectors,
   createSmartConnector,
   deleteSmartConnector,
   getSmartConnectorState,
   selectSmartConnector,
   swapSmartConnector,
+  unbakeSmartConnectors,
   updateAllSmartConnectors,
   updateManySmartConnectors,
   updateSmartConnector
@@ -603,6 +605,10 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       return swapSmartConnector(params)
     case 'smart_connector_update_all':
       return updateAllSmartConnectors()
+    case 'smart_connector_bake':
+      return bakeSmartConnectors()
+    case 'smart_connector_unbake':
+      return unbakeSmartConnectors()
     case 'smart_connector_select':
       return selectSmartConnector(params)
     case 'smart_connector_delete':

@@ -536,6 +536,7 @@ async function renderLabel(connector: VectorNode, data: SmartConnectorData, rout
 async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 0): Promise<'ok' | 'broken'> {
   const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
   if (!isSceneNode(a) || !isSceneNode(b) || !a.absoluteBoundingBox || !b.absoluteBoundingBox) return 'broken'
+
   const route = routeConnector(a.absoluteBoundingBox, b.absoluteBoundingBox, data.config, lanePx)
   const network = networkFor(route, data.config)
   const fingerprint = JSON.stringify([network.minX, network.minY, network.vertices, network.segments])
@@ -580,6 +581,7 @@ async function details(node: VectorNode): Promise<Record<string, unknown> | null
     aName: a?.name ?? 'Missing layer',
     bName: b?.name ?? 'Missing layer',
     broken: !isSceneNode(a) || !isSceneNode(b),
+    baked: node.parent?.type === 'FRAME',
     config: data.config
   }
 }
@@ -643,21 +645,14 @@ async function createOne(a: SceneNode, b: SceneNode, configInput: Partial<SmartC
     // Not essential to connector creation — don't let a manifest regression
     // break drawing connectors again.
   }
-  // Reparent into the endpoints' common container frame when there is one,
-  // so the connector actually shows up in Figma's Prototype presentation
-  // (which only renders a frame's own subtree — a page-level sibling never
-  // appears there, even if it's drawn directly on top). Endpoints with no
-  // common frame ancestor (different top-level frames, or directly on the
-  // page) leave the connector page-level exactly as before this fix.
-  try {
-    const container = commonContainerFrame(a, b)
-    if (container) {
-      container.appendChild(connector)
-      registerContainer(container.id)
-    }
-  } catch {
-    // Reparenting is a nice-to-have, not essential to connector creation.
-  }
+  // Deliberately NOT reparented into a container frame here — a first
+  // attempt at doing this automatically (both at creation and on every
+  // render) visibly broke things live: appendChild-ing into an auto-layout
+  // or grid frame hands the connector's position to that layout engine
+  // instead of our own routing, since we never checked layoutMode before
+  // moving it in. Reparenting is now an explicit, user-triggered action —
+  // see bakeSmartConnectors() below ("Bake" in the UI) — which handles
+  // auto-layout/grid frames correctly (layoutPositioning = 'ABSOLUTE').
   knownOwnedIds.add(connector.id)
   watchedEndpointIds.add(a.id)
   watchedEndpointIds.add(b.id)
@@ -794,6 +789,82 @@ export async function updateAllSmartConnectors(force = true): Promise<{ updated:
     else broken += 1
   }
   return { updated, broken }
+}
+
+/** Explicit, user-triggered "Bake" action ("режим запекания") — moves every
+ *  connector (and its label) that has a common frame ancestor for its two
+ *  endpoints from the page into that frame, so it shows up in Figma's
+ *  Prototype presentation and in frame image/PDF/SVG export (both only
+ *  ever render a frame's own subtree — see CHANGE_REQUESTS.md). Deliberately
+ *  NOT automatic (see the comment in createOne()) — an auto-layout or grid
+ *  container frame would otherwise hijack the connector's position via its
+ *  own layout engine the instant it becomes a child. Handles that case
+ *  correctly instead: after reparenting, sets `layoutPositioning =
+ *  'ABSOLUTE'` on the connector/label when the container's `layoutMode`
+ *  isn't `'NONE'`, which is exactly Figma's own "remove from auto layout
+ *  flow, use manual position" per-child override — the container's layout
+ *  is left completely alone, nothing else in it moves. Connectors whose
+ *  endpoints have no common frame ancestor (different top-level frames, or
+ *  directly on the page) are left exactly where they are — there's no
+ *  frame to bake them into. Idempotent: already-baked connectors are
+ *  skipped (checked by parent id) so running it again is always safe. */
+export async function bakeSmartConnectors(): Promise<{ baked: number; skipped: number }> {
+  const nodes = await connectorNodes()
+  let baked = 0
+  let skipped = 0
+  for (const node of nodes) {
+    const data = parseData(node)
+    if (!data) { skipped += 1; continue }
+    const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
+    if (!isSceneNode(a) || !isSceneNode(b)) { skipped += 1; continue }
+    const container = commonContainerFrame(a, b)
+    if (!container) { skipped += 1; continue }
+    try {
+      if (node.parent?.id !== container.id) container.appendChild(node)
+      if (container.layoutMode !== 'NONE') node.layoutPositioning = 'ABSOLUTE'
+      if (data.labelId) {
+        const label = await figma.getNodeByIdAsync(data.labelId)
+        if (isSmartConnectorLabel(label)) {
+          if (label.parent?.id !== container.id) container.appendChild(label)
+          if (container.layoutMode !== 'NONE') label.layoutPositioning = 'ABSOLUTE'
+        }
+      }
+      registerContainer(container.id)
+      baked += 1
+    } catch {
+      skipped += 1
+    }
+  }
+  await updateAllSmartConnectors(true)
+  return { baked, skipped }
+}
+
+/** Reverses bakeSmartConnectors() — moves every currently-baked connector
+ *  (and its label) back onto the page. Whatever stale x/y a node is left
+ *  with immediately after `appendChild` doesn't matter: the
+ *  `updateAllSmartConnectors(true)` call right after re-renders every
+ *  connector from scratch, and `render()`'s offset math resolves to
+ *  {x:0,y:0} for a page-level parent, so the final position is correct —
+ *  nothing actually shows the in-between state. */
+export async function unbakeSmartConnectors(): Promise<{ unbaked: number }> {
+  const nodes = await connectorNodes()
+  let unbaked = 0
+  for (const node of nodes) {
+    if (!node.parent || node.parent.type !== 'FRAME') continue
+    try {
+      figma.currentPage.appendChild(node)
+      const data = parseData(node)
+      if (data?.labelId) {
+        const label = await figma.getNodeByIdAsync(data.labelId)
+        if (isSmartConnectorLabel(label)) figma.currentPage.appendChild(label)
+      }
+      unbaked += 1
+    } catch {
+      // Best-effort.
+    }
+  }
+  await updateAllSmartConnectors(true)
+  return { unbaked }
 }
 
 export async function selectSmartConnector(params: Record<string, unknown>): Promise<void> {

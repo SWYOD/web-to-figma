@@ -134,9 +134,13 @@ function orthogonalPoints(a: Point, b: Point, sideA: ResolvedSide, sideB: Resolv
     const middleY = (aLead.y + bLead.y) / 2
     points.push({ x: aLead.x, y: middleY }, { x: bLead.x, y: middleY })
   } else if (horizontalA) {
-    points.push({ x: bLead.x, y: aLead.y })
-  } else {
+    // A cleared the box only along X (aLead.x is outside aBox); B cleared it only along Y.
+    // Turn while still on each side's own cleared axis — (aLead.x, bLead.y) — instead of
+    // combining the two UNcleared axes, which cuts back through whichever box's edge the
+    // port sits on (see the mirrored branch below for the case this was flipped with).
     points.push({ x: aLead.x, y: bLead.y })
+  } else {
+    points.push({ x: bLead.x, y: aLead.y })
   }
 
   points.push(bLead, b)

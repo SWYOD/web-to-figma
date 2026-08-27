@@ -121,12 +121,28 @@ function orthogonalPoints(a: Point, b: Point, sideA: ResolvedSide, sideB: Resolv
     const outsideX = sideA === 'RIGHT'
       ? Math.max(aBox.x + aBox.width, bBox.x + bBox.width) + Math.max(marginA, marginB, padding)
       : Math.min(aBox.x, bBox.x) - Math.max(marginA, marginB, padding)
-    points.push({ x: outsideX, y: aLead.y }, { x: outsideX, y: bLead.y })
+    if (Math.abs(aLead.y - bLead.y) < 1) {
+      // Both ports exit the same side at (near) the same height — the "go out to outsideX,
+      // then straight across" detour has zero vertical extent, so it's collinear with a and b
+      // and collapses into a direct line that cuts back through whichever box sits between
+      // them. Route through a clearance row above both boxes instead, then down into bLead's
+      // own gap-side x (already outside both boxes, see resolvedSide/lead) before entering B.
+      const clearY = Math.min(aBox.y, bBox.y) - Math.max(marginA, marginB, padding)
+      points.push({ x: outsideX, y: aLead.y }, { x: outsideX, y: clearY }, { x: bLead.x, y: clearY }, { x: bLead.x, y: aLead.y })
+    } else {
+      points.push({ x: outsideX, y: aLead.y }, { x: outsideX, y: bLead.y })
+    }
   } else if (!horizontalA && !horizontalB && sideA === sideB) {
     const outsideY = sideA === 'BOTTOM'
       ? Math.max(aBox.y + aBox.height, bBox.y + bBox.height) + Math.max(marginA, marginB, padding)
       : Math.min(aBox.y, bBox.y) - Math.max(marginA, marginB, padding)
-    points.push({ x: aLead.x, y: outsideY }, { x: bLead.x, y: outsideY })
+    if (Math.abs(aLead.x - bLead.x) < 1) {
+      // Mirror of the horizontal case above — same side, (near) same X, degenerate detour.
+      const clearX = Math.min(aBox.x, bBox.x) - Math.max(marginA, marginB, padding)
+      points.push({ x: aLead.x, y: outsideY }, { x: clearX, y: outsideY }, { x: clearX, y: bLead.y }, { x: aLead.x, y: bLead.y })
+    } else {
+      points.push({ x: aLead.x, y: outsideY }, { x: bLead.x, y: outsideY })
+    }
   } else if (horizontalA && horizontalB) {
     const middleX = (aLead.x + bLead.x) / 2
     points.push({ x: middleX, y: aLead.y }, { x: middleX, y: bLead.y })

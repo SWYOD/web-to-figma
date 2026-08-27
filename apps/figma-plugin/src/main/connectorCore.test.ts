@@ -71,4 +71,26 @@ describe('connector routing', () => {
       expect(segmentEntersBox(route.points[i]!, route.points[i + 1]!, b)).toBe(false)
     }
   })
+
+  it('routes around both frames when both sides are forced LEFT at the same height (degenerate detour)', () => {
+    const a = { x: 0, y: 0, width: 150, height: 150 }
+    const b = { x: 400, y: 0, width: 150, height: 150 }
+    const route = routeConnector(a, b, { ...base, sideA: 'LEFT', sideB: 'LEFT' })
+    expect(route.points.length).toBeGreaterThan(2)
+    for (let i = 0; i < route.points.length - 1; i += 1) {
+      expect(segmentEntersBox(route.points[i]!, route.points[i + 1]!, a)).toBe(false)
+      expect(segmentEntersBox(route.points[i]!, route.points[i + 1]!, b)).toBe(false)
+    }
+  })
+
+  it('routes around both frames when both sides are forced TOP at the same X (degenerate detour)', () => {
+    const a = { x: 0, y: 0, width: 150, height: 150 }
+    const b = { x: 0, y: 400, width: 150, height: 150 }
+    const route = routeConnector(a, b, { ...base, sideA: 'TOP', sideB: 'TOP' })
+    expect(route.points.length).toBeGreaterThan(2)
+    for (let i = 0; i < route.points.length - 1; i += 1) {
+      expect(segmentEntersBox(route.points[i]!, route.points[i + 1]!, a)).toBe(false)
+      expect(segmentEntersBox(route.points[i]!, route.points[i + 1]!, b)).toBe(false)
+    }
+  })
 })

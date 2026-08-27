@@ -5,6 +5,7 @@ import { applyStylesToSelection, type ApplyStylesTargets } from './renderers/app
 import type { ColorMatchSource } from './renderers/styleMatching'
 import { createAssetNode, type PlaceAssetPayload } from './renderers/asset'
 import { runDesignAgentCommand } from './designAgentCommands'
+import { installSmartConnectorWatcher } from './smartConnectors'
 
 /**
  * Main sandbox плагина — максимально тонкий (см. docs/architecture.md §3,
@@ -35,6 +36,7 @@ const PLUGIN_EXPANDED_HEIGHT = 440
 const PLUGIN_COLLAPSED_HEIGHT = 64
 
 figma.showUI(__html__, { width: PLUGIN_WIDTH, height: PLUGIN_EXPANDED_HEIGHT, themeColors: true })
+installSmartConnectorWatcher()
 
 type UiToMainMessage =
   | { type: 'get-stored-token' }

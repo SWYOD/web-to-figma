@@ -38,6 +38,16 @@ import {
   type DesignDocFrame,
   type TokenFormat
 } from './designAgentSpec'
+import {
+  bulkCreateSmartConnectors,
+  createSmartConnector,
+  deleteSmartConnector,
+  getSmartConnectorState,
+  selectSmartConnector,
+  swapSmartConnector,
+  updateAllSmartConnectors,
+  updateSmartConnector
+} from './smartConnectors'
 
 const CANVAS_GUTTER = 80
 
@@ -578,6 +588,22 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
         primary: primary ? { id: primary.id, name: primary.name, type: primary.type } : null
       }
     }
+    case 'smart_connector_state':
+      return getSmartConnectorState()
+    case 'smart_connector_create':
+      return createSmartConnector(params)
+    case 'smart_connector_bulk_create':
+      return bulkCreateSmartConnectors(params)
+    case 'smart_connector_update':
+      return updateSmartConnector(params)
+    case 'smart_connector_swap':
+      return swapSmartConnector(params)
+    case 'smart_connector_update_all':
+      return updateAllSmartConnectors()
+    case 'smart_connector_select':
+      return selectSmartConnector(params)
+    case 'smart_connector_delete':
+      return deleteSmartConnector(params)
     case 'get_spec': {
       const primary = resolvePrimaryNode(figma.currentPage.selection)
       if (!primary) throw new Error('Nothing selected in Figma. Select a frame, component, or section first.')

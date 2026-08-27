@@ -1,0 +1,592 @@
+import {
+  clamp,
+  pointAtRoute,
+  routeConnector,
+  stableLaneOffsets,
+  type ConnectorLineShape,
+  type ConnectorSide,
+  type RouteGeometry
+} from './connectorCore'
+
+export type SmartConnectorSide = ConnectorSide
+export type SmartConnectorArrow = 'NONE' | 'ARROW_LINES' | 'ARROW_EQUILATERAL' | 'TRIANGLE_FILLED' | 'DIAMOND_FILLED' | 'CIRCLE_FILLED'
+export type SmartConnectorLabelAlign = 'START' | 'CENTER' | 'END'
+export type SmartConnectorLabelBackground = 'NONE' | 'PAGE' | 'CUSTOM'
+
+export interface SmartConnectorConfig {
+  sideA: SmartConnectorSide
+  sideB: SmartConnectorSide
+  offsetA: number
+  offsetB: number
+  marginA: number
+  marginB: number
+  routingPadding: number
+  laneGap: number
+  lineShape: ConnectorLineShape
+  cornerRadius: number
+  strokeWeight: number
+  strokeStyle: 'SOLID' | 'DASHED'
+  dash: number
+  gap: number
+  arrowA: SmartConnectorArrow
+  arrowB: SmartConnectorArrow
+  color: string
+  opacity: number
+  linked: boolean
+  labelText: string
+  labelPosition: number
+  labelAlign: SmartConnectorLabelAlign
+  labelPaddingX: number
+  labelPaddingY: number
+  labelFontWeight: 'REGULAR' | 'MEDIUM' | 'SEMIBOLD' | 'BOLD'
+  labelFontSize: number
+  labelTextColor: string
+  labelTextOpacity: number
+  labelBorderColor: string
+  labelBorderOpacity: number
+  labelBackground: SmartConnectorLabelBackground
+  labelBackgroundColor: string
+  labelBackgroundOpacity: number
+  labelBorderWidth: number
+  labelCornerRadius: number
+}
+
+interface SmartConnectorDataV2 {
+  version: 2
+  aId: string
+  bId: string
+  labelId?: string
+  config: SmartConnectorConfig
+}
+
+interface SmartConnectorDataV1 {
+  version: 1
+  aId: string
+  bId: string
+  config: Partial<SmartConnectorConfig> & { margin?: number }
+}
+
+type SmartConnectorData = SmartConnectorDataV2
+
+const NAMESPACE = 'swyod_smart_connectors'
+const DATA_KEY = 'smart-connector'
+const LABEL_DATA_KEY = 'smart-connector-label'
+const DEBOUNCE_MS = 250
+const GEOMETRY_PROPERTIES = new Set<string>([
+  'x', 'y', 'width', 'height', 'rotation', 'relativeTransform',
+  'layoutMode', 'layoutPositioning', 'layoutGrow',
+  'primaryAxisSizingMode', 'counterAxisSizingMode',
+  'paddingLeft', 'paddingRight', 'paddingTop', 'paddingBottom', 'itemSpacing'
+])
+
+let knownOwnedIds = new Set<string>()
+let watchedEndpointIds = new Set<string>()
+let labelByConnectorId = new Map<string, string>()
+
+export const smartConnectorDefaults: SmartConnectorConfig = {
+  sideA: 'AUTO', sideB: 'AUTO', offsetA: 0.5, offsetB: 0.5,
+  marginA: 16, marginB: 16, routingPadding: 48, laneGap: 24,
+  lineShape: 'ORTHOGONAL', cornerRadius: 8, strokeWeight: 2,
+  strokeStyle: 'SOLID', dash: 8, gap: 6,
+  arrowA: 'NONE', arrowB: 'ARROW_LINES', color: '#1F2937', opacity: 1,
+  linked: true, labelText: '', labelPosition: 0.5, labelAlign: 'CENTER',
+  labelPaddingX: 8, labelPaddingY: 6, labelFontWeight: 'MEDIUM', labelFontSize: 14,
+  labelTextColor: '#111111', labelTextOpacity: 1,
+  labelBorderColor: '#111111', labelBorderOpacity: 1,
+  labelBackground: 'PAGE', labelBackgroundColor: '#FFFFFF', labelBackgroundOpacity: 1,
+  labelBorderWidth: 0, labelCornerRadius: 8
+}
+
+const colorPattern = /^#[0-9a-f]{6}$/i
+const validSide = (value: unknown): value is SmartConnectorSide => ['AUTO', 'LEFT', 'RIGHT', 'TOP', 'BOTTOM'].includes(String(value))
+const validShape = (value: unknown): value is ConnectorLineShape => ['ORTHOGONAL', 'CURVED', 'STRAIGHT'].includes(String(value))
+const validArrow = (value: unknown): value is SmartConnectorArrow => ['NONE', 'ARROW_LINES', 'ARROW_EQUILATERAL', 'TRIANGLE_FILLED', 'DIAMOND_FILLED', 'CIRCLE_FILLED'].includes(String(value))
+
+function isSceneNode(node: BaseNode | null | undefined): node is SceneNode {
+  return !!node && node.type !== 'DOCUMENT' && node.type !== 'PAGE'
+}
+
+function isSmartConnector(node: BaseNode | null | undefined): node is VectorNode {
+  return !!node && node.type === 'VECTOR' && node.getSharedPluginData(NAMESPACE, DATA_KEY) !== ''
+}
+
+function isSmartConnectorLabel(node: BaseNode | null | undefined): node is FrameNode {
+  return !!node && node.type === 'FRAME' && node.getSharedPluginData(NAMESPACE, LABEL_DATA_KEY) !== ''
+}
+
+function color(value: unknown, fallback: string): string {
+  return typeof value === 'string' && colorPattern.test(value) ? value.toUpperCase() : fallback
+}
+
+export function configFrom(input: Partial<SmartConnectorConfig> = {}): SmartConnectorConfig {
+  const value: SmartConnectorConfig = { ...smartConnectorDefaults, ...input }
+  value.sideA = validSide(value.sideA) ? value.sideA : smartConnectorDefaults.sideA
+  value.sideB = validSide(value.sideB) ? value.sideB : smartConnectorDefaults.sideB
+  value.offsetA = clamp(Number(value.offsetA), 0, 1)
+  value.offsetB = clamp(Number(value.offsetB), 0, 1)
+  value.marginA = clamp(Number(value.marginA), 0, 500)
+  value.marginB = clamp(Number(value.marginB), 0, 500)
+  value.routingPadding = clamp(Number(value.routingPadding), 0, 500)
+  value.laneGap = clamp(Number(value.laneGap), 0, 200)
+  value.lineShape = validShape(value.lineShape) ? value.lineShape : smartConnectorDefaults.lineShape
+  value.cornerRadius = clamp(Number(value.cornerRadius), 0, 100)
+  value.strokeWeight = clamp(Number(value.strokeWeight), 0.25, 32)
+  value.strokeStyle = value.strokeStyle === 'DASHED' ? 'DASHED' : 'SOLID'
+  value.dash = clamp(Number(value.dash), 1, 100)
+  value.gap = clamp(Number(value.gap), 1, 100)
+  value.arrowA = validArrow(value.arrowA) ? value.arrowA : smartConnectorDefaults.arrowA
+  value.arrowB = validArrow(value.arrowB) ? value.arrowB : smartConnectorDefaults.arrowB
+  value.color = color(value.color, smartConnectorDefaults.color)
+  value.opacity = clamp(Number(value.opacity), 0, 1)
+  value.linked = value.linked !== false
+  value.labelText = String(value.labelText ?? '').slice(0, 500)
+  value.labelPosition = clamp(Number(value.labelPosition), 0, 1)
+  value.labelAlign = ['START', 'CENTER', 'END'].includes(value.labelAlign) ? value.labelAlign : 'CENTER'
+  value.labelPaddingX = clamp(Number(value.labelPaddingX), 0, 100)
+  value.labelPaddingY = clamp(Number(value.labelPaddingY), 0, 100)
+  value.labelFontWeight = ['REGULAR', 'MEDIUM', 'SEMIBOLD', 'BOLD'].includes(value.labelFontWeight) ? value.labelFontWeight : 'MEDIUM'
+  value.labelFontSize = clamp(Number(value.labelFontSize), 6, 200)
+  value.labelTextColor = color(value.labelTextColor, smartConnectorDefaults.labelTextColor)
+  value.labelTextOpacity = clamp(Number(value.labelTextOpacity), 0, 1)
+  value.labelBorderColor = color(value.labelBorderColor, smartConnectorDefaults.labelBorderColor)
+  value.labelBorderOpacity = clamp(Number(value.labelBorderOpacity), 0, 1)
+  value.labelBackground = ['NONE', 'PAGE', 'CUSTOM'].includes(value.labelBackground) ? value.labelBackground : 'PAGE'
+  value.labelBackgroundColor = color(value.labelBackgroundColor, smartConnectorDefaults.labelBackgroundColor)
+  value.labelBackgroundOpacity = clamp(Number(value.labelBackgroundOpacity), 0, 1)
+  value.labelBorderWidth = clamp(Number(value.labelBorderWidth), 0, 32)
+  value.labelCornerRadius = clamp(Number(value.labelCornerRadius), 0, 100)
+  return value
+}
+
+function parseData(node: VectorNode): SmartConnectorData | null {
+  try {
+    const raw = JSON.parse(node.getSharedPluginData(NAMESPACE, DATA_KEY)) as SmartConnectorDataV1 | SmartConnectorDataV2
+    if (raw.version === 2) return { ...raw, config: configFrom(raw.config) }
+    if (raw.version === 1) {
+      const legacyMargin = Number(raw.config.margin ?? 16)
+      return {
+        version: 2,
+        aId: raw.aId,
+        bId: raw.bId,
+        config: configFrom({ ...raw.config, marginA: legacyMargin, marginB: legacyMargin })
+      }
+    }
+    return null
+  } catch {
+    return null
+  }
+}
+
+function writeData(node: VectorNode, data: SmartConnectorData): void {
+  node.setSharedPluginData(NAMESPACE, DATA_KEY, JSON.stringify(data))
+}
+
+function rgb(hex: string): RGB {
+  return { r: parseInt(hex.slice(1, 3), 16) / 255, g: parseInt(hex.slice(3, 5), 16) / 255, b: parseInt(hex.slice(5, 7), 16) / 255 }
+}
+
+function connectorNodes(): VectorNode[] {
+  return figma.currentPage.children.filter(isSmartConnector)
+}
+
+function connectorPairKey(data: SmartConnectorData): string {
+  return [data.aId, data.bId].sort().join('|')
+}
+
+function refreshOwnedIndex(): void {
+  knownOwnedIds = new Set<string>()
+  watchedEndpointIds = new Set<string>()
+  labelByConnectorId = new Map<string, string>()
+  for (const node of figma.currentPage.children) {
+    if (isSmartConnector(node)) {
+      knownOwnedIds.add(node.id)
+      const data = parseData(node)
+      if (data) {
+        watchedEndpointIds.add(data.aId)
+        watchedEndpointIds.add(data.bId)
+        if (data.labelId) labelByConnectorId.set(node.id, data.labelId)
+      }
+    } else if (isSmartConnectorLabel(node)) {
+      knownOwnedIds.add(node.id)
+      try {
+        const labelData = JSON.parse(node.getSharedPluginData(NAMESPACE, LABEL_DATA_KEY)) as { connectorId?: string }
+        if (labelData.connectorId) labelByConnectorId.set(labelData.connectorId, node.id)
+      } catch { /* Ignore malformed owned labels. */ }
+    }
+  }
+}
+
+function laneAssignments(nodes: VectorNode[]): Map<string, number> {
+  const groups = new Map<string, Array<{ node: VectorNode; data: SmartConnectorData }>>()
+  for (const node of nodes) {
+    const data = parseData(node)
+    if (!data || data.config.sideA !== 'AUTO' || data.config.sideB !== 'AUTO') continue
+    const key = connectorPairKey(data)
+    const group = groups.get(key) ?? []
+    group.push({ node, data })
+    groups.set(key, group)
+  }
+  const result = new Map<string, number>()
+  for (const group of groups.values()) {
+    group.sort((left, right) => left.node.id.localeCompare(right.node.id, undefined, { numeric: true }))
+    const gap = group.reduce((sum, item) => sum + item.data.config.laneGap, 0) / group.length
+    const offsets = stableLaneOffsets(group.length, gap)
+    group.forEach((item, index) => result.set(item.node.id, offsets[index]!))
+  }
+  return result
+}
+
+function networkFor(route: RouteGeometry, config: SmartConnectorConfig): { vertices: VectorVertex[]; segments: VectorSegment[]; minX: number; minY: number } {
+  const bounds = [...route.points]
+  if (route.curve) {
+    bounds.push(
+      { x: route.points[0]!.x + route.curve.tangentStart.x, y: route.points[0]!.y + route.curve.tangentStart.y },
+      { x: route.points[1]!.x + route.curve.tangentEnd.x, y: route.points[1]!.y + route.curve.tangentEnd.y }
+    )
+  }
+  const minX = Math.min(...bounds.map((point) => point.x))
+  const minY = Math.min(...bounds.map((point) => point.y))
+  const local = route.points.map((point) => ({ x: point.x - minX, y: point.y - minY }))
+  const vertices: VectorVertex[] = local.map((point, index) => ({
+    ...point,
+    strokeCap: index === 0 ? config.arrowA : index === local.length - 1 ? config.arrowB : 'NONE',
+    strokeJoin: 'ROUND',
+    cornerRadius: !route.curve && index > 0 && index < local.length - 1 ? config.cornerRadius : 0
+  }))
+  const segments: VectorSegment[] = local.slice(1).map((_, index) => ({
+    start: index,
+    end: index + 1,
+    ...(route.curve && index === 0 ? { tangentStart: route.curve.tangentStart, tangentEnd: route.curve.tangentEnd } : {})
+  }))
+  return { vertices, segments, minX, minY }
+}
+
+function pageBackground(): SolidPaint | null {
+  const paint = figma.currentPage.backgrounds.find((item): item is SolidPaint => item.type === 'SOLID')
+  return paint ?? null
+}
+
+const fontStyle: Record<SmartConnectorConfig['labelFontWeight'], string> = {
+  REGULAR: 'Regular', MEDIUM: 'Medium', SEMIBOLD: 'Semi Bold', BOLD: 'Bold'
+}
+
+async function getOrCreateLabel(connector: VectorNode, data: SmartConnectorData): Promise<FrameNode> {
+  const existing = data.labelId ? await figma.getNodeByIdAsync(data.labelId) : null
+  if (isSmartConnectorLabel(existing)) return existing
+  const frame = figma.createFrame()
+  frame.name = `Smart Connector Label · ${connector.name}`
+  frame.layoutMode = 'HORIZONTAL'
+  frame.primaryAxisSizingMode = 'AUTO'
+  frame.counterAxisSizingMode = 'AUTO'
+  frame.setSharedPluginData(NAMESPACE, LABEL_DATA_KEY, JSON.stringify({ version: 1, connectorId: connector.id }))
+  data.labelId = frame.id
+  knownOwnedIds.add(frame.id)
+  labelByConnectorId.set(connector.id, frame.id)
+  writeData(connector, data)
+  return frame
+}
+
+async function removeLabel(data: SmartConnectorData): Promise<void> {
+  if (!data.labelId) return
+  const node = await figma.getNodeByIdAsync(data.labelId)
+  if (isSmartConnectorLabel(node)) {
+    knownOwnedIds.delete(node.id)
+    node.remove()
+  }
+  delete data.labelId
+}
+
+async function renderLabel(connector: VectorNode, data: SmartConnectorData, route: RouteGeometry): Promise<void> {
+  const config = data.config
+  if (!config.labelText.trim()) {
+    await removeLabel(data)
+    writeData(connector, data)
+    return
+  }
+  const frame = await getOrCreateLabel(connector, data)
+  let text = frame.children.find((node): node is TextNode => node.type === 'TEXT')
+  if (!text) {
+    text = figma.createText()
+    frame.appendChild(text)
+  }
+  let font: FontName = { family: 'Inter', style: fontStyle[config.labelFontWeight] }
+  try { await figma.loadFontAsync(font) } catch {
+    font = { family: 'Inter', style: 'Regular' }
+    await figma.loadFontAsync(font)
+  }
+  text.fontName = font
+  text.fontSize = config.labelFontSize
+  text.characters = config.labelText
+  text.textAutoResize = 'WIDTH_AND_HEIGHT'
+  text.fills = [{ type: 'SOLID', color: rgb(config.labelTextColor), opacity: config.labelTextOpacity }]
+  frame.paddingLeft = frame.paddingRight = config.labelPaddingX
+  frame.paddingTop = frame.paddingBottom = config.labelPaddingY
+  frame.cornerRadius = config.labelCornerRadius
+  if (config.labelBackground === 'NONE') frame.fills = []
+  else if (config.labelBackground === 'PAGE') {
+    const background = pageBackground()
+    frame.fills = background ? [{ ...background, opacity: config.labelBackgroundOpacity }] : [{ type: 'SOLID', color: rgb('#FFFFFF'), opacity: config.labelBackgroundOpacity }]
+  } else frame.fills = [{ type: 'SOLID', color: rgb(config.labelBackgroundColor), opacity: config.labelBackgroundOpacity }]
+  frame.strokes = config.labelBorderWidth > 0
+    ? [{ type: 'SOLID', color: rgb(config.labelBorderColor), opacity: config.labelBorderOpacity }]
+    : []
+  frame.strokeWeight = config.labelBorderWidth
+  const anchor = pointAtRoute(route, config.labelPosition)
+  frame.x = config.labelAlign === 'START' ? anchor.x : config.labelAlign === 'END' ? anchor.x - frame.width : anchor.x - frame.width / 2
+  frame.y = anchor.y - frame.height / 2
+}
+
+async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 0): Promise<'ok' | 'broken'> {
+  const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
+  if (!isSceneNode(a) || !isSceneNode(b) || !a.absoluteBoundingBox || !b.absoluteBoundingBox) return 'broken'
+  const route = routeConnector(a.absoluteBoundingBox, b.absoluteBoundingBox, data.config, lanePx)
+  const network = networkFor(route, data.config)
+  await connector.setVectorNetworkAsync({ vertices: network.vertices, segments: network.segments, regions: [] })
+  connector.x = network.minX
+  connector.y = network.minY
+  connector.fills = []
+  connector.strokes = [{ type: 'SOLID', color: rgb(data.config.color), opacity: data.config.opacity }]
+  connector.strokeWeight = data.config.strokeWeight
+  connector.strokeJoin = 'ROUND'
+  connector.dashPattern = data.config.strokeStyle === 'DASHED' ? [data.config.dash, data.config.gap] : []
+  writeData(connector, data)
+  await renderLabel(connector, data, route)
+  return 'ok'
+}
+
+async function connectorForSelection(node: SceneNode | undefined): Promise<VectorNode | null> {
+  if (!node) return null
+  if (isSmartConnector(node)) return node
+  if (!isSmartConnectorLabel(node)) return null
+  try {
+    const labelData = JSON.parse(node.getSharedPluginData(NAMESPACE, LABEL_DATA_KEY)) as { connectorId?: string }
+    const connector = labelData.connectorId ? await figma.getNodeByIdAsync(labelData.connectorId) : null
+    return isSmartConnector(connector) ? connector : null
+  } catch { return null }
+}
+
+async function details(node: VectorNode): Promise<Record<string, unknown> | null> {
+  const data = parseData(node)
+  if (!data) return null
+  const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
+  return {
+    id: node.id,
+    name: node.name,
+    aName: a?.name ?? 'Missing layer',
+    bName: b?.name ?? 'Missing layer',
+    broken: !isSceneNode(a) || !isSceneNode(b),
+    config: data.config
+  }
+}
+
+function selectedTargets(): SceneNode[] {
+  return figma.currentPage.selection.filter((node) => !isSmartConnector(node) && !isSmartConnectorLabel(node))
+}
+
+export async function getSmartConnectorState(): Promise<Record<string, unknown>> {
+  const selection = figma.currentPage.selection
+  const selectedNode = selection.length === 1 ? await connectorForSelection(selection[0]) : null
+  const selectedConnector = selectedNode ? await details(selectedNode) : null
+  const targets = selectedTargets()
+  return {
+    connected: true,
+    targetNames: targets.map((node) => node.name),
+    canCreate: targets.length === 2,
+    canBulkCreate: targets.length >= 3,
+    selectedConnector,
+    connectors: (await Promise.all(connectorNodes().map(details))).filter(Boolean)
+  }
+}
+
+async function endpointsFromParams(params: Record<string, unknown>): Promise<SceneNode[]> {
+  const requested = [params.aId, params.bId].filter((id): id is string => typeof id === 'string')
+  if (requested.length !== 2) return selectedTargets()
+  const result: SceneNode[] = []
+  for (const id of requested) {
+    const node = await figma.getNodeByIdAsync(id)
+    if (isSceneNode(node)) result.push(node)
+  }
+  return result
+}
+
+async function createOne(a: SceneNode, b: SceneNode, configInput: Partial<SmartConnectorConfig>): Promise<VectorNode> {
+  const connector = figma.createVector()
+  const data: SmartConnectorData = { version: 2, aId: a.id, bId: b.id, config: configFrom(configInput) }
+  connector.name = `Smart Connector · ${a.name} → ${b.name}`
+  writeData(connector, data)
+  connector.setRelaunchData({ edit: 'Edit smart connector' })
+  knownOwnedIds.add(connector.id)
+  watchedEndpointIds.add(a.id)
+  watchedEndpointIds.add(b.id)
+  return connector
+}
+
+export async function createSmartConnector(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const endpoints = await endpointsFromParams(params)
+  if (endpoints.length !== 2) throw new Error('Select exactly two non-connector layers in Figma.')
+  const connector = await createOne(endpoints[0]!, endpoints[1]!, (params.config ?? {}) as Partial<SmartConnectorConfig>)
+  await updateAllSmartConnectors(true)
+  figma.currentPage.selection = [connector]
+  return (await details(connector)) ?? {}
+}
+
+function readingOrder(nodes: SceneNode[]): SceneNode[] {
+  return [...nodes].sort((left, right) => {
+    const a = left.absoluteBoundingBox
+    const b = right.absoluteBoundingBox
+    if (!a || !b) return left.id.localeCompare(right.id, undefined, { numeric: true })
+    const rowTolerance = Math.max(24, Math.min(a.height, b.height) * 0.4)
+    if (Math.abs(a.y - b.y) > rowTolerance) return a.y - b.y
+    return a.x - b.x
+  })
+}
+
+function arrangeInGrid(nodes: SceneNode[], gapX: number, gapY: number, padding: number): void {
+  const movable = readingOrder(nodes).filter((node) => node.parent === figma.currentPage && node.absoluteBoundingBox)
+  if (movable.length < 2) return
+  const columns = Math.ceil(Math.sqrt(movable.length))
+  const boxes = movable.map((node) => node.absoluteBoundingBox!)
+  const startX = Math.min(...boxes.map((box) => box.x)) + padding
+  const startY = Math.min(...boxes.map((box) => box.y)) + padding
+  const columnWidths = Array.from({ length: columns }, (_, column) => Math.max(...boxes.filter((_, index) => index % columns === column).map((box) => box.width), 0))
+  const rows = Math.ceil(movable.length / columns)
+  const rowHeights = Array.from({ length: rows }, (_, row) => Math.max(...boxes.slice(row * columns, (row + 1) * columns).map((box) => box.height), 0))
+  const xPositions = columnWidths.map((_, column) => startX + columnWidths.slice(0, column).reduce((sum, width) => sum + width + gapX, 0))
+  const yPositions = rowHeights.map((_, row) => startY + rowHeights.slice(0, row).reduce((sum, height) => sum + height + gapY, 0))
+  movable.forEach((node, index) => {
+    node.x = xPositions[index % columns]!
+    node.y = yPositions[Math.floor(index / columns)]!
+  })
+}
+
+export async function bulkCreateSmartConnectors(params: Record<string, unknown>): Promise<{ created: number; arranged: number }> {
+  const targets = selectedTargets()
+  if (targets.length < 3) throw new Error('Select at least three non-connector layers in Figma.')
+  const arrangeEnabled = params.arrangeEnabled !== false
+  const drawEnabled = params.drawEnabled !== false
+  const ordered = readingOrder(targets)
+  if (arrangeEnabled) arrangeInGrid(ordered, clamp(Number(params.frameGapX ?? 200), 0, 2000), clamp(Number(params.frameGapY ?? 200), 0, 2000), clamp(Number(params.sectionPadding ?? 40), 0, 1000))
+  const created: VectorNode[] = []
+  if (drawEnabled) {
+    for (let index = 0; index < ordered.length - 1; index += 1) {
+      created.push(await createOne(ordered[index]!, ordered[index + 1]!, (params.config ?? {}) as Partial<SmartConnectorConfig>))
+    }
+    await updateAllSmartConnectors(true)
+    figma.currentPage.selection = created
+  }
+  return { created: created.length, arranged: arrangeEnabled ? ordered.length : 0 }
+}
+
+export async function updateSmartConnector(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const node = await figma.getNodeByIdAsync(String(params.connectorId ?? ''))
+  if (!isSmartConnector(node)) throw new Error('Smart connector not found.')
+  const data = parseData(node)
+  if (!data) throw new Error('Invalid smart connector data.')
+  data.config = configFrom({ ...data.config, ...((params.config ?? {}) as Partial<SmartConnectorConfig>) })
+  writeData(node, data)
+  await updateAllSmartConnectors(true)
+  return (await details(node)) ?? {}
+}
+
+export async function swapSmartConnector(params: Record<string, unknown>): Promise<Record<string, unknown>> {
+  const node = await figma.getNodeByIdAsync(String(params.connectorId ?? ''))
+  if (!isSmartConnector(node)) throw new Error('Smart connector not found.')
+  const data = parseData(node)
+  if (!data) throw new Error('Invalid smart connector data.')
+  ;[data.aId, data.bId] = [data.bId, data.aId]
+  ;[data.config.sideA, data.config.sideB] = [data.config.sideB, data.config.sideA]
+  ;[data.config.offsetA, data.config.offsetB] = [data.config.offsetB, data.config.offsetA]
+  ;[data.config.marginA, data.config.marginB] = [data.config.marginB, data.config.marginA]
+  ;[data.config.arrowA, data.config.arrowB] = [data.config.arrowB, data.config.arrowA]
+  const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
+  node.name = `Smart Connector · ${a?.name ?? 'Missing'} → ${b?.name ?? 'Missing'}`
+  writeData(node, data)
+  await updateAllSmartConnectors(true)
+  return (await details(node)) ?? {}
+}
+
+export async function updateAllSmartConnectors(force = true): Promise<{ updated: number; broken: number }> {
+  const nodes = connectorNodes()
+  const lanes = laneAssignments(nodes)
+  let updated = 0
+  let broken = 0
+  for (const node of nodes) {
+    const data = parseData(node)
+    if (!data) { broken += 1; continue }
+    if (!force && !data.config.linked) continue
+    if (await render(node, data, lanes.get(node.id) ?? 0) === 'ok') updated += 1
+    else broken += 1
+  }
+  return { updated, broken }
+}
+
+export async function selectSmartConnector(params: Record<string, unknown>): Promise<void> {
+  const node = await figma.getNodeByIdAsync(String(params.connectorId ?? ''))
+  if (!isSmartConnector(node)) throw new Error('Smart connector not found.')
+  figma.currentPage.selection = [node]
+  figma.viewport.scrollAndZoomIntoView([node])
+}
+
+export async function deleteSmartConnector(params: Record<string, unknown>): Promise<void> {
+  const node = await figma.getNodeByIdAsync(String(params.connectorId ?? ''))
+  if (!isSmartConnector(node)) throw new Error('Smart connector not found.')
+  const data = parseData(node)
+  if (data) await removeLabel(data)
+  knownOwnedIds.delete(node.id)
+  labelByConnectorId.delete(node.id)
+  node.remove()
+  await updateAllSmartConnectors(true)
+}
+
+let installed = false
+export function installSmartConnectorWatcher(onUpdated?: () => void): void {
+  if (installed) return
+  installed = true
+  let timer: ReturnType<typeof setTimeout> | undefined
+  let watchedPage: PageNode | null = null
+
+  const cleanupDeletedConnector = (connectorId: string): void => {
+    const labelId = labelByConnectorId.get(connectorId)
+    labelByConnectorId.delete(connectorId)
+    if (!labelId) return
+    void figma.getNodeByIdAsync(labelId).then((node) => {
+      if (isSmartConnectorLabel(node)) node.remove()
+    })
+  }
+
+  const onNodeChange = (event: NodeChangeEvent): void => {
+    const relevant = event.nodeChanges.some((change) => {
+      const id = change.node.id
+      if (knownOwnedIds.has(id)) {
+        if (change.type === 'DELETE') {
+          knownOwnedIds.delete(id)
+          if (labelByConnectorId.has(id)) cleanupDeletedConnector(id)
+        }
+        return false
+      }
+      if (!watchedEndpointIds.has(id)) return false
+      if (change.type === 'DELETE') return true
+      return change.type === 'PROPERTY_CHANGE' && change.properties.some((property) => GEOMETRY_PROPERTIES.has(property))
+    })
+    if (!relevant) return
+    if (timer) clearTimeout(timer)
+    timer = setTimeout(() => {
+      refreshOwnedIndex()
+      void updateAllSmartConnectors(false).then(() => onUpdated?.())
+    }, DEBOUNCE_MS)
+  }
+
+  const watchCurrentPage = (): void => {
+    if (watchedPage) watchedPage.off('nodechange', onNodeChange)
+    watchedPage = figma.currentPage
+    watchedPage.on('nodechange', onNodeChange)
+    refreshOwnedIndex()
+  }
+
+  watchCurrentPage()
+  figma.on('currentpagechange', () => {
+    watchCurrentPage()
+    void updateAllSmartConnectors(false).then(() => onUpdated?.())
+  })
+  void updateAllSmartConnectors(false).then(() => onUpdated?.())
+}

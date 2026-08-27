@@ -735,17 +735,34 @@ function arrangeInGrid(nodes: SceneNode[], gapX: number, gapY: number, padding: 
   })
 }
 
+/** 'chain' (default): each consecutive pair in reading order gets its own
+ *  connector (A→B, B→C, …) — every frame past the first is both an arrival
+ *  and a departure point, which is what makes a chain read as one
+ *  continuous line end-to-end.
+ *  'star': only the first frame in reading order (the "hub") connects to
+ *  every other one — each of the rest is an arrival point only, so it gets
+ *  exactly one elbow bend turning into it instead of chain mode's doubled
+ *  join where a line arrives AND immediately turns to leave again. */
 export async function bulkCreateSmartConnectors(params: Record<string, unknown>): Promise<{ created: number; arranged: number }> {
   const targets = selectedTargets()
   if (targets.length < 3) throw new Error('Select at least three non-connector layers in Figma.')
   const arrangeEnabled = params.arrangeEnabled !== false
   const drawEnabled = params.drawEnabled !== false
+  const topology = params.topology === 'star' ? 'star' : 'chain'
   const ordered = readingOrder(targets)
   if (arrangeEnabled) arrangeInGrid(ordered, clamp(Number(params.frameGapX ?? 200), 0, 2000), clamp(Number(params.frameGapY ?? 200), 0, 2000), clamp(Number(params.sectionPadding ?? 40), 0, 1000))
   const created: VectorNode[] = []
   if (drawEnabled) {
-    for (let index = 0; index < ordered.length - 1; index += 1) {
-      created.push(await createOne(ordered[index]!, ordered[index + 1]!, (params.config ?? {}) as Partial<SmartConnectorConfig>))
+    const config = (params.config ?? {}) as Partial<SmartConnectorConfig>
+    if (topology === 'star') {
+      const hub = ordered[0]!
+      for (let index = 1; index < ordered.length; index += 1) {
+        created.push(await createOne(hub, ordered[index]!, config))
+      }
+    } else {
+      for (let index = 0; index < ordered.length - 1; index += 1) {
+        created.push(await createOne(ordered[index]!, ordered[index + 1]!, config))
+      }
     }
     await updateAllSmartConnectors(true)
     figma.currentPage.selection = created

@@ -31,6 +31,11 @@ const api: Api = {
   getSettings: () => ipcRenderer.invoke('settings:get'),
   saveSettings: (settings: AppSettings) => ipcRenderer.invoke('settings:save', settings),
   syncPluginTheme: (theme: ThemeSyncMessage['payload']) => ipcRenderer.invoke('theme:sync-plugin', theme),
+  onExternalThemeSync: (cb: (theme: ThemeSyncMessage['payload']) => void) => {
+    const listener = (_e: Electron.IpcRendererEvent, theme: ThemeSyncMessage['payload']): void => cb(theme)
+    ipcRenderer.on('theme:external-sync', listener)
+    return () => ipcRenderer.removeListener('theme:external-sync', listener)
+  },
   getAppVersion: () => ipcRenderer.invoke('app:get-version'),
   getBridgeInfo: () => ipcRenderer.invoke('bridge:get-info'),
   onBridgeStatus: (cb: (status: BridgeStatusEvent) => void) => {

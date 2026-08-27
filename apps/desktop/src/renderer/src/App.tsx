@@ -1,7 +1,8 @@
-import { useEffect, useRef, useState } from 'react'
+import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import { PanelLeft, PanelRight } from 'lucide-react'
 import { clamp, effectiveVariant, isValidThemeDef, ThemeProvider, useResizer, useTheme } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
+import type { ThemeSyncMessage } from '@web-to-figma/bridge-protocol'
 import type { AppSettings, ImportProgressEvent } from '../../shared/types'
 import { BridgePopover } from './components/BridgePopover'
 import { BrowserPane } from './components/BrowserPane'
@@ -65,6 +66,7 @@ function Shell({
   const [rightOpen, setRightOpen] = useState(true)
   const [importProgress, setImportProgress] = useState<ImportProgressEvent | null>(null)
   const progressHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
+  const [externalTheme, setExternalTheme] = useState<ThemeSyncMessage['payload'] | null>(null)
 
   useEffect(() => {
     if (!settings.themeSyncEnabled) return
@@ -74,6 +76,19 @@ function Shell({
       vars: effectiveVariant(theme, resolvedMode)
     })
   }, [resolvedMode, theme, settings.themeSyncEnabled])
+
+  // Обратное направление "полного синхрона" — тема, пришедшая в Bridge Tools
+  // от Design Toolkit и пересланная сюда (см. main/index.ts theme-push).
+  // Применяется поверх собственной темы через inline-style на .app (тот же
+  // приём, что syncedThemeStyle в apps/figma-plugin App.tsx), не трогая
+  // settings.json — выключение тумблера просто перестаёт слушать/применять.
+  useEffect(() => window.api.onExternalThemeSync(setExternalTheme), [])
+  const externalThemeStyle = useMemo<CSSProperties | undefined>(() => {
+    if (!settings.themeSyncEnabled || !externalTheme) return undefined
+    const properties: Record<string, string> = { colorScheme: externalTheme.mode }
+    for (const [key, value] of Object.entries(externalTheme.vars)) properties[`--${key}`] = value
+    return properties as CSSProperties
+  }, [externalTheme, settings.themeSyncEnabled])
 
   useEffect(() => {
     const unsubscribe = window.api.onImportProgress((event) => {
@@ -90,7 +105,7 @@ function Shell({
   }, [])
 
   return (
-    <div className="app">
+    <div className="app" style={externalThemeStyle}>
       <div className="toolbar">
         <div className="toolbar-left">
           <button

@@ -346,6 +346,11 @@ export interface Api {
   getSettings: () => Promise<AppSettings>
   saveSettings: (settings: AppSettings) => Promise<void>
   syncPluginTheme: (theme: ThemeSyncMessage['payload']) => Promise<void>
+  /** Обратное направление — тема пришла в Bridge Tools от третьей стороны
+   *  (Design Toolkit) и была переслана сюда, см. "полный синхрон" в
+   *  PROJECT_MEMORY.md. Применяется как оверлей поверх собственной темы, не
+   *  меняя settings.json themeId/themeMode. */
+  onExternalThemeSync: (cb: (theme: ThemeSyncMessage['payload']) => void) => () => void
   getAppVersion: () => Promise<string>
   getBridgeInfo: () => Promise<BridgeInfo>
   onBridgeStatus: (cb: (status: BridgeStatusEvent) => void) => () => void

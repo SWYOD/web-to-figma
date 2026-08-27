@@ -419,8 +419,14 @@ async function startBridge(): Promise<void> {
     onMessage: (message) => {
       // Ответы на запросы desktop (ImportNode и т.д.) перехватываются
       // BridgeServer.request() раньше этого колбэка — сюда попадают только
-      // сообщения, ИНИЦИИРОВАННЫЕ плагином (напр. будущий GetSelectionMessage, Phase 10+).
+      // сообщения, ИНИЦИИРОВАННЫЕ плагином (напр. GetSelectionMessage, Phase 10+,
+      // и theme-push — обратное направление синхронизации тем, см. "полный
+      // синхрон" в PROJECT_MEMORY.md: Bridge Tools пересылает сюда тему,
+      // полученную от Design Toolkit по отдельному Canvas Bridge каналу).
       log.debug('bridge message received', { kind: message.kind })
+      if (message.kind === 'theme-push' && mainWindow && !mainWindow.isDestroyed()) {
+        mainWindow.webContents.send('theme:external-sync', message.payload)
+      }
     }
   })
 

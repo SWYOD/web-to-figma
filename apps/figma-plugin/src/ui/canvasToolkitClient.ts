@@ -100,6 +100,15 @@ export class CanvasToolkitClient {
     return this.state
   }
 
+  /** Обратное направление "полного синхрона" — тема, пришедшая в Bridge Tools
+   *  от Web To Figma, пересылается сюда в Design Toolkit (unsolicited push —
+   *  Design Toolkit — сервер этого канала, а не только принимает `result` на
+   *  свои же команды). Design Toolkit применяет только если у себя тоже
+   *  включён тумблер синхронизации. */
+  pushThemeSync(payload: { themeId: string; mode: string; vars: Record<string, string> }): void {
+    this.send({ type: 'theme-push', payload })
+  }
+
   private send(payload: unknown): void {
     if (this.ws?.readyState !== 1 /* OPEN */) return
     this.ws.send(JSON.stringify(payload))

@@ -182,6 +182,23 @@ export const ThemeSyncMessageSchema = z.object({
   })
 })
 
+/**
+ * Обратное направление theme-sync: Figma Plugin (клиент) → desktop (сервер).
+ * Появляется, когда тема пришла в плагин НЕ от этого desktop-приложения, а с
+ * третьей стороны (Design Toolkit, через отдельный Canvas Bridge канал) — по
+ * запросу пользователя "полный синхрон" между всеми тремя продуктами. Тот же
+ * payload, что ThemeSyncMessage — просто другой держатель has-authority.
+ */
+export const ThemePushMessageSchema = z.object({
+  ...base,
+  kind: z.literal('theme-push'),
+  payload: z.object({
+    themeId: z.string(),
+    mode: z.enum(['light', 'dark']),
+    vars: ThemeVarsSchema
+  })
+})
+
 export const ResponseMessageSchema = z.object({
   ...base,
   kind: z.literal('response'),
@@ -213,6 +230,7 @@ export const BridgeMessageSchema = z.discriminatedUnion('kind', [
   ApplyStylesMessageSchema,
   PlaceAssetMessageSchema,
   ThemeSyncMessageSchema,
+  ThemePushMessageSchema,
   ResponseMessageSchema,
   ErrorMessageSchema
 ])
@@ -229,6 +247,7 @@ export type ImportAssetsMessage = z.infer<typeof ImportAssetsMessageSchema>
 export type ApplyStylesMessage = z.infer<typeof ApplyStylesMessageSchema>
 export type PlaceAssetMessage = z.infer<typeof PlaceAssetMessageSchema>
 export type ThemeSyncMessage = z.infer<typeof ThemeSyncMessageSchema>
+export type ThemePushMessage = z.infer<typeof ThemePushMessageSchema>
 export type ResponseMessage = z.infer<typeof ResponseMessageSchema>
 export type ErrorMessage = z.infer<typeof ErrorMessageSchema>
 export type BridgeMessage = z.infer<typeof BridgeMessageSchema>

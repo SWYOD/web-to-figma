@@ -1,12 +1,14 @@
 import { useEffect, useMemo, useRef, useState, type CSSProperties } from 'react'
 import {
   BridgeClient,
+  createMessage,
   createResponse,
   DEFAULT_PORT,
   PORT_FALLBACK_RANGE,
   type BridgeConnectionState,
   type ErrorMessage,
   type ResponseMessage,
+  type ThemePushMessage,
   type ThemeSyncMessage
 } from '@web-to-figma/bridge-protocol'
 import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
@@ -249,6 +251,12 @@ function Plugin(): JSX.Element {
         // figma.*, поэтому релеим.
         if (message.kind === 'theme-sync') {
           setSyncedTheme(message.payload)
+          // "Полный синхрон" (по запросу пользователя) — Bridge Tools как узел
+          // между Web To Figma и Design Toolkit: тема, пришедшая отсюда,
+          // пересылается дальше в Design Toolkit тем же путём, каким сама
+          // Design Toolkit присылает свою (см. onThemeSync ниже и
+          // canvasToolkitClient.ts pushThemeSync).
+          toolkitClientRef.current?.pushThemeSync(message.payload)
         } else if (message.kind === 'import-node') {
           postToMain({
             type: 'import-node',
@@ -322,7 +330,14 @@ function Plugin(): JSX.Element {
   useEffect(() => {
     const client = new CanvasToolkitClient({
       onStateChange: setToolkitState,
-      onThemeSync: setSyncedTheme,
+      onThemeSync: (payload) => {
+        setSyncedTheme(payload)
+        // "Полный синхрон", обратное направление — тема от Design Toolkit
+        // пересылается в Web To Figma тем же новым theme-push сообщением
+        // (см. bridge-protocol messages.ts), которое desktop-приложение
+        // применяет как оверлей, не трогая свои settings.json.
+        clientRef.current?.send(createMessage<ThemePushMessage>('theme-push', payload))
+      },
       runCommand: (command, params) => {
         const id = String(toolkitNextIdRef.current++)
         return new Promise((resolve) => {

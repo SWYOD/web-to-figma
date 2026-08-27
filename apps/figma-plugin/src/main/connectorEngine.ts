@@ -82,6 +82,14 @@ const GEOMETRY_PROPERTIES = new Set<string>([
 let knownOwnedIds = new Set<string>()
 let watchedEndpointIds = new Set<string>()
 let labelByConnectorId = new Map<string, string>()
+/** Last geometry actually written per connector — lets connector-to-connector
+ *  chains re-route through the watcher (see installSmartConnectorWatcher)
+ *  without a feedback loop: a connector's own re-render touches x/y/width/
+ *  height, which are exactly the properties a *downstream* connector watches
+ *  on it. Skipping the Figma write when the recomputed geometry is unchanged
+ *  means no nodechange event fires for that redundant recompute, so a stable
+ *  chain settles instead of cycling forever. */
+const lastGeometryFingerprint = new Map<string, string>()
 
 export const smartConnectorDefaults: SmartConnectorConfig = {
   sideA: 'AUTO', sideB: 'AUTO', offsetA: 0.5, offsetB: 0.5,
@@ -341,9 +349,13 @@ async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 
   if (!isSceneNode(a) || !isSceneNode(b) || !a.absoluteBoundingBox || !b.absoluteBoundingBox) return 'broken'
   const route = routeConnector(a.absoluteBoundingBox, b.absoluteBoundingBox, data.config, lanePx)
   const network = networkFor(route, data.config)
-  await connector.setVectorNetworkAsync({ vertices: network.vertices, segments: network.segments, regions: [] })
-  connector.x = network.minX
-  connector.y = network.minY
+  const fingerprint = JSON.stringify([network.minX, network.minY, network.vertices, network.segments])
+  if (lastGeometryFingerprint.get(connector.id) !== fingerprint) {
+    await connector.setVectorNetworkAsync({ vertices: network.vertices, segments: network.segments, regions: [] })
+    connector.x = network.minX
+    connector.y = network.minY
+    lastGeometryFingerprint.set(connector.id, fingerprint)
+  }
   connector.fills = []
   connector.strokes = [{ type: 'SOLID', color: rgb(data.config.color), opacity: data.config.opacity }]
   connector.strokeWeight = data.config.strokeWeight
@@ -380,7 +392,11 @@ async function details(node: VectorNode): Promise<Record<string, unknown> | null
 }
 
 function selectedTargets(): SceneNode[] {
-  return figma.currentPage.selection.filter((node) => !isSmartConnector(node) && !isSmartConnectorLabel(node))
+  // Connectors ARE valid targets (connector-to-connector attachment, by user
+  // request — see PROJECT_MEMORY.md) — only their own label frames aren't
+  // meaningful endpoints. A connector's `absoluteBoundingBox` is a thin rect
+  // along its own path, so a normal side+offset port still lands on/near it.
+  return figma.currentPage.selection.filter((node) => !isSmartConnectorLabel(node))
 }
 
 export async function getSmartConnectorState(): Promise<Record<string, unknown>> {
@@ -503,7 +519,13 @@ export async function swapSmartConnector(params: Record<string, unknown>): Promi
   ;[data.config.sideA, data.config.sideB] = [data.config.sideB, data.config.sideA]
   ;[data.config.offsetA, data.config.offsetB] = [data.config.offsetB, data.config.offsetA]
   ;[data.config.marginA, data.config.marginB] = [data.config.marginB, data.config.marginA]
-  ;[data.config.arrowA, data.config.arrowB] = [data.config.arrowB, data.config.arrowA]
+  // arrowA/arrowB deliberately NOT swapped: side/offset/margin describe a
+  // physical port on whichever node now occupies that slot, so they must
+  // travel with the aId/bId swap above. Arrow style is a property of the
+  // SLOT itself (by default arrowB carries the arrowhead, i.e. "the target
+  // end has the arrow") — swapping it together with aId/bId would keep the
+  // arrowhead pinned to the same physical node, cancelling the swap out
+  // visually. Leaving it alone is what actually reverses the arrow on canvas.
   const [a, b] = await Promise.all([figma.getNodeByIdAsync(data.aId), figma.getNodeByIdAsync(data.bId)])
   node.name = `Smart Connector · ${a?.name ?? 'Missing'} → ${b?.name ?? 'Missing'}`
   writeData(node, data)
@@ -540,6 +562,7 @@ export async function deleteSmartConnector(params: Record<string, unknown>): Pro
   if (data) await removeLabel(data)
   knownOwnedIds.delete(node.id)
   labelByConnectorId.delete(node.id)
+  lastGeometryFingerprint.delete(node.id)
   node.remove()
   await updateAllSmartConnectors(true)
 }
@@ -563,13 +586,14 @@ export function installSmartConnectorWatcher(onUpdated?: () => void): void {
   const onNodeChange = (event: NodeChangeEvent): void => {
     const relevant = event.nodeChanges.some((change) => {
       const id = change.node.id
-      if (knownOwnedIds.has(id)) {
-        if (change.type === 'DELETE') {
-          knownOwnedIds.delete(id)
-          if (labelByConnectorId.has(id)) cleanupDeletedConnector(id)
-        }
-        return false
+      if (knownOwnedIds.has(id) && change.type === 'DELETE') {
+        knownOwnedIds.delete(id)
+        if (labelByConnectorId.has(id)) cleanupDeletedConnector(id)
       }
+      // Deliberately NOT an early return for owned nodes: a connector can
+      // itself be another connector's endpoint (connector-to-connector), so
+      // its own geometry changes must still count when it's also watched —
+      // see lastGeometryFingerprint above for why this can't loop forever.
       if (!watchedEndpointIds.has(id)) return false
       if (change.type === 'DELETE') return true
       return change.type === 'PROPERTY_CHANGE' && change.properties.some((property) => GEOMETRY_PROPERTIES.has(property))

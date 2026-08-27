@@ -55,6 +55,13 @@ body {
   color: var(--text);
 }
 
+.plugin-header-icon {
+  width: 16px;
+  height: 16px;
+  border-radius: 4px;
+  flex-shrink: 0;
+}
+
 .plugin-header-title {
   min-width: 0;
   font-size: 11px;

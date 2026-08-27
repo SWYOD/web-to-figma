@@ -13,6 +13,7 @@ import { StatusRow, ThemeProvider } from '@web-to-figma/ui'
 import type { DesignDocument } from '@web-to-figma/design-ast'
 import { DesignAgentClient, type DesignAgentState } from './designAgentClient'
 import { CanvasToolkitClient, type CanvasToolkitState } from './canvasToolkitClient'
+import { PLUGIN_ICON_DATA_URI } from './pluginIcon'
 import { ChevronDown, ChevronUp } from 'lucide-react'
 
 const PLUGIN_VERSION = '0.1.0'
@@ -469,6 +470,7 @@ function Plugin(): JSX.Element {
         >
           {collapsed ? <ChevronDown size={15} /> : <ChevronUp size={15} />}
         </button>
+        <img className="plugin-header-icon" src={PLUGIN_ICON_DATA_URI} alt="" />
         <div className="plugin-header-title">Bridge Tools</div>
         <div className="connection-badges">
           <ConnectionBadge label="Web to Figma" state={desktopBadgeState} title={desktopBadgeTitle} />

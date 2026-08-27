@@ -220,6 +220,212 @@ const DISCORD: ThemeDef = {
   }
 }
 
-export const BUILTIN_THEMES: ThemeDef[] = [DEFAULT_THEME, GITHUB_DARK, DRACULA, LINEAR, DISCORD]
+/**
+ * Портировано из Design Toolkit (`resources/themes/*.json`) — см. PROJECT_MEMORY.md
+ * "2026-08-27 icon follow-up" / общая унификация каталога тем между продуктами
+ * (пользователь: "возьми самое лучшее из обоих и обнови обе"). Design Toolkit
+ * хранит эти темы как отдельные JSON-файлы с собственной формой (radius/font
+ * общие для всех тем этого продукта, а не за темой), здесь они ремаплены на
+ * ThemeVars этого пакета так же, как GITHUB_DARK/DRACULA/LINEAR/DISCORD выше.
+ */
+const AMOLED: ThemeDef = {
+  id: 'amoled',
+  name: 'AMOLED',
+  dark: true,
+  builtin: true,
+  vars: {
+    bg: '#000000',
+    'bg-panel': '#000000',
+    'bg-canvas': '#000000',
+    surface: '#0b0b0d',
+    'surface-2': '#141416',
+    hover: 'rgba(255, 255, 255, 0.055)',
+    border: 'rgba(255, 255, 255, 0.09)',
+    'border-strong': 'rgba(255, 255, 255, 0.16)',
+    text: '#eceef2',
+    'text-dim': '#8b8f98',
+    'text-faint': '#5c5f68',
+    accent: '#8b5cf6',
+    'accent-soft': 'rgba(139, 92, 246, 0.18)',
+    'accent-text': '#0a0410',
+    danger: '#f4676b',
+    shadow: '0 6px 20px rgba(0, 0, 0, 0.6)',
+    ...DIAG_DARK
+  },
+  altVariant: {
+    vars: {
+      bg: '#f4f6fa',
+      'bg-panel': '#fbfcfe',
+      'bg-canvas': '#f4f6fa',
+      surface: '#ffffff',
+      'surface-2': '#f5f7fb',
+      hover: 'rgba(0, 0, 0, 0.035)',
+      border: 'rgba(15, 25, 45, 0.08)',
+      'border-strong': 'rgba(15, 25, 45, 0.16)',
+      text: '#16202e',
+      'text-dim': '#5b6675',
+      'text-faint': '#8b96a5',
+      accent: '#7c4fe0',
+      'accent-soft': 'rgba(124, 79, 224, 0.12)',
+      'accent-text': '#ffffff',
+      danger: '#d8453f',
+      shadow: '0 4px 16px rgba(20, 30, 50, 0.08)',
+      ...DIAG_LIGHT
+    }
+  }
+}
+
+const CLAUDE_DESKTOP: ThemeDef = {
+  id: 'claude-desktop',
+  name: 'Claude Desktop',
+  dark: true,
+  builtin: true,
+  vars: {
+    bg: '#262624',
+    'bg-panel': '#262624',
+    'bg-canvas': '#262624',
+    surface: '#30302e',
+    'surface-2': '#3a3936',
+    hover: 'rgba(255, 255, 255, 0.06)',
+    border: 'rgba(255, 255, 255, 0.08)',
+    'border-strong': 'rgba(255, 255, 255, 0.15)',
+    text: '#f2f0ed',
+    'text-dim': '#a8a29a',
+    'text-faint': '#7d786f',
+    accent: '#c96442',
+    'accent-soft': 'rgba(201, 100, 66, 0.18)',
+    'accent-text': '#0a0410',
+    danger: '#f4676b',
+    shadow: '0 6px 20px rgba(0, 0, 0, 0.5)',
+    ...DIAG_DARK
+  },
+  altVariant: {
+    vars: {
+      bg: '#faf9f5',
+      'bg-panel': '#ffffff',
+      'bg-canvas': '#faf9f5',
+      surface: '#ffffff',
+      'surface-2': '#f0eee6',
+      hover: 'rgba(30, 30, 28, 0.045)',
+      border: 'rgba(30, 30, 28, 0.1)',
+      'border-strong': 'rgba(30, 30, 28, 0.18)',
+      text: '#3d3d3a',
+      'text-dim': '#6b6862',
+      'text-faint': '#9c988e',
+      accent: '#c96442',
+      'accent-soft': 'rgba(201, 100, 66, 0.12)',
+      'accent-text': '#0a0410',
+      danger: '#d8453f',
+      shadow: '0 4px 16px rgba(30, 30, 28, 0.08)',
+      ...DIAG_LIGHT
+    }
+  }
+}
+
+const NUXT: ThemeDef = {
+  id: 'nuxt',
+  name: 'Nuxt UI',
+  dark: true,
+  builtin: true,
+  vars: {
+    bg: '#020617',
+    'bg-panel': '#020617',
+    'bg-canvas': '#020617',
+    surface: '#0f172a',
+    'surface-2': '#1e293b',
+    hover: 'rgba(255, 255, 255, 0.05)',
+    border: 'rgba(255, 255, 255, 0.08)',
+    'border-strong': 'rgba(255, 255, 255, 0.15)',
+    text: '#f1f5f9',
+    'text-dim': '#94a3b8',
+    'text-faint': '#64748b',
+    accent: '#00dc82',
+    'accent-soft': 'rgba(0, 220, 130, 0.18)',
+    'accent-text': '#0a0410',
+    danger: '#f4676b',
+    shadow: '0 6px 20px rgba(0, 0, 0, 0.55)',
+    ...DIAG_DARK
+  },
+  altVariant: {
+    vars: {
+      bg: '#f0fdf6',
+      'bg-panel': '#f7fefb',
+      'bg-canvas': '#f0fdf6',
+      surface: '#ffffff',
+      'surface-2': '#e6f9ee',
+      hover: 'rgba(0, 168, 107, 0.06)',
+      border: 'rgba(4, 120, 87, 0.12)',
+      'border-strong': 'rgba(4, 120, 87, 0.2)',
+      text: '#052e1c',
+      'text-dim': '#3f7259',
+      'text-faint': '#6b9c85',
+      accent: '#059669',
+      'accent-soft': 'rgba(5, 150, 105, 0.12)',
+      'accent-text': '#0a0410',
+      danger: '#d8453f',
+      shadow: '0 4px 16px rgba(4, 120, 87, 0.08)',
+      ...DIAG_LIGHT
+    }
+  }
+}
+
+const SYNTHWAVE: ThemeDef = {
+  id: 'synthwave',
+  name: 'Synthwave',
+  dark: true,
+  builtin: true,
+  vars: {
+    bg: '#0a0212',
+    'bg-panel': '#0a0212',
+    'bg-canvas': '#0a0212',
+    surface: '#140a1f',
+    'surface-2': '#1d1030',
+    hover: 'rgba(255, 255, 255, 0.05)',
+    border: 'rgba(255, 255, 255, 0.09)',
+    'border-strong': 'rgba(255, 255, 255, 0.16)',
+    text: '#f3e8ff',
+    'text-dim': '#b39ddb',
+    'text-faint': '#7e6ba0',
+    accent: '#ec4899',
+    'accent-soft': 'rgba(236, 72, 153, 0.18)',
+    'accent-text': '#0a0410',
+    danger: '#f4676b',
+    shadow: '0 6px 20px rgba(0, 0, 0, 0.6)',
+    ...DIAG_DARK
+  },
+  altVariant: {
+    vars: {
+      bg: '#fdf4fb',
+      'bg-panel': '#fdf7fc',
+      'bg-canvas': '#fdf4fb',
+      surface: '#ffffff',
+      'surface-2': '#f7e8f5',
+      hover: 'rgba(219, 39, 119, 0.06)',
+      border: 'rgba(157, 23, 77, 0.12)',
+      'border-strong': 'rgba(157, 23, 77, 0.2)',
+      text: '#3b0764',
+      'text-dim': '#86198f',
+      'text-faint': '#a855b0',
+      accent: '#c026d3',
+      'accent-soft': 'rgba(192, 38, 211, 0.12)',
+      'accent-text': '#ffffff',
+      danger: '#d8453f',
+      shadow: '0 4px 16px rgba(157, 23, 77, 0.1)',
+      ...DIAG_LIGHT
+    }
+  }
+}
+
+export const BUILTIN_THEMES: ThemeDef[] = [
+  DEFAULT_THEME,
+  GITHUB_DARK,
+  DRACULA,
+  LINEAR,
+  DISCORD,
+  AMOLED,
+  CLAUDE_DESKTOP,
+  NUXT,
+  SYNTHWAVE
+]
 
 export const DEFAULT_THEME_ID = 'default'

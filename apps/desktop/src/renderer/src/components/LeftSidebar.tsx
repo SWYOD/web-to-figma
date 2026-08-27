@@ -13,6 +13,8 @@ interface Props {
   customThemes: ThemeDef[]
   onThemeIdChange: (id: string) => void
   onCustomThemesChange: (list: ThemeDef[]) => void
+  themeSyncEnabled: boolean
+  onThemeSyncEnabledChange: (enabled: boolean) => void
 }
 
 /** Короткое "host" из URL для подписи под названием — если распарсить не
@@ -39,7 +41,9 @@ export function LeftSidebar({
   themeId,
   customThemes,
   onThemeIdChange,
-  onCustomThemesChange
+  onCustomThemesChange,
+  themeSyncEnabled,
+  onThemeSyncEnabledChange
 }: Props): JSX.Element {
   const [sites, setSites] = useState<RecentSite[]>([])
   const [queueItems, setQueueItems] = useState<QueueItemSummary[]>([])
@@ -175,6 +179,8 @@ export function LeftSidebar({
         customThemes={customThemes}
         onThemeIdChange={onThemeIdChange}
         onCustomThemesChange={onCustomThemesChange}
+        themeSyncEnabled={themeSyncEnabled}
+        onThemeSyncEnabledChange={onThemeSyncEnabledChange}
       />
       {previewAsset && <AssetLightbox asset={previewAsset} onClose={() => setPreviewAsset(null)} />}
     </Panel>

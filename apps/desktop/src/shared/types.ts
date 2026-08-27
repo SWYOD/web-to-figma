@@ -67,6 +67,11 @@ export interface AppSettings {
   /** Import as Component: создавать рядом ещё и один Instance, а не только
    *  сам компонент — см. PickerFloatBar "Import as Component". */
   alsoCreateInstance: boolean
+  /** Транслировать активную тему в Bridge Tools (theme-sync сообщение через
+   *  bridgeServer) при каждой смене темы/режима — см. Shell в App.tsx. По
+   *  умолчанию включено (сохраняет прежнее поведение, это был не-опциональный
+   *  always-on пуш до появления тумблера). */
+  themeSyncEnabled: boolean
 }
 
 export interface BridgeInfo {

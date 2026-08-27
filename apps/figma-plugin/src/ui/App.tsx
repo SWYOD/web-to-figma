@@ -322,6 +322,7 @@ function Plugin(): JSX.Element {
   useEffect(() => {
     const client = new CanvasToolkitClient({
       onStateChange: setToolkitState,
+      onThemeSync: setSyncedTheme,
       runCommand: (command, params) => {
         const id = String(toolkitNextIdRef.current++)
         return new Promise((resolve) => {

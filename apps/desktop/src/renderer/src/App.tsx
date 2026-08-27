@@ -41,6 +41,7 @@ export default function App(): JSX.Element | null {
         onThemeModeChange={(themeMode) => updateSettings({ themeMode })}
         onThemeIdChange={(themeId) => updateSettings({ themeId })}
         onCustomThemesChange={(customThemes) => updateSettings({ customThemes })}
+        onThemeSyncEnabledChange={(themeSyncEnabled) => updateSettings({ themeSyncEnabled })}
       />
     </ThemeProvider>
   )
@@ -50,12 +51,14 @@ function Shell({
   settings,
   onThemeModeChange,
   onThemeIdChange,
-  onCustomThemesChange
+  onCustomThemesChange,
+  onThemeSyncEnabledChange
 }: {
   settings: AppSettings
   onThemeModeChange: (mode: ThemeMode) => void
   onThemeIdChange: (themeId: string) => void
   onCustomThemesChange: (customThemes: ThemeDef[]) => void
+  onThemeSyncEnabledChange: (enabled: boolean) => void
 }): JSX.Element {
   const { resolvedMode, theme } = useTheme()
   const [leftOpen, setLeftOpen] = useState(true)
@@ -64,12 +67,13 @@ function Shell({
   const progressHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
 
   useEffect(() => {
+    if (!settings.themeSyncEnabled) return
     void window.api.syncPluginTheme({
       themeId: theme.id,
       mode: resolvedMode,
       vars: effectiveVariant(theme, resolvedMode)
     })
-  }, [resolvedMode, theme])
+  }, [resolvedMode, theme, settings.themeSyncEnabled])
 
   useEffect(() => {
     const unsubscribe = window.api.onImportProgress((event) => {
@@ -129,6 +133,7 @@ function Shell({
         onThemeModeChange={onThemeModeChange}
         onThemeIdChange={onThemeIdChange}
         onCustomThemesChange={onCustomThemesChange}
+        onThemeSyncEnabledChange={onThemeSyncEnabledChange}
       />
     </div>
   )
@@ -140,7 +145,8 @@ function Workspace({
   settings,
   onThemeModeChange,
   onThemeIdChange,
-  onCustomThemesChange
+  onCustomThemesChange,
+  onThemeSyncEnabledChange
 }: {
   leftOpen: boolean
   rightOpen: boolean
@@ -148,6 +154,7 @@ function Workspace({
   onThemeModeChange: (mode: ThemeMode) => void
   onThemeIdChange: (themeId: string) => void
   onCustomThemesChange: (customThemes: ThemeDef[]) => void
+  onThemeSyncEnabledChange: (enabled: boolean) => void
 }): JSX.Element {
   const [leftWidth, setLeftWidth] = useState(260)
   const leftResizer = useResizer((dx) => setLeftWidth((w) => clamp(w + dx, 200, 480)))
@@ -166,6 +173,8 @@ function Workspace({
               customThemes={settings.customThemes}
               onThemeIdChange={onThemeIdChange}
               onCustomThemesChange={onCustomThemesChange}
+              themeSyncEnabled={settings.themeSyncEnabled}
+              onThemeSyncEnabledChange={onThemeSyncEnabledChange}
             />
           </div>
           <div className="resizer" {...leftResizer} />

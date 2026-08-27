@@ -1,6 +1,6 @@
 import { useEffect, useState } from 'react'
 import { Monitor, Moon, Palette, RefreshCw, Settings, Sun } from 'lucide-react'
-import { BUILTIN_THEMES, DEFAULT_THEME, Popover, Segmented } from '@web-to-figma/ui'
+import { BUILTIN_THEMES, DEFAULT_THEME, Popover, Segmented, Switch } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
 import type { UpdateStatus } from '../../../shared/types'
 import { ThemesGalleryModal } from './ThemesGalleryModal'
@@ -37,6 +37,8 @@ interface Props {
   customThemes: ThemeDef[]
   onThemeIdChange: (id: string) => void
   onCustomThemesChange: (list: ThemeDef[]) => void
+  themeSyncEnabled: boolean
+  onThemeSyncEnabledChange: (enabled: boolean) => void
 }
 
 /**
@@ -57,7 +59,9 @@ export function SettingsPopover({
   themeId,
   customThemes,
   onThemeIdChange,
-  onCustomThemesChange
+  onCustomThemesChange,
+  themeSyncEnabled,
+  onThemeSyncEnabledChange
 }: Props): JSX.Element {
   const [open, setOpen] = useState(false)
   const [galleryOpen, setGalleryOpen] = useState(false)
@@ -89,6 +93,10 @@ export function SettingsPopover({
             </span>
           </button>
           <Segmented value={themeMode} options={THEME_MODE_OPTIONS} onChange={onThemeModeChange} />
+          <div className="settings-row">
+            <span>Синхронизировать тему с Bridge Tools</span>
+            <Switch checked={themeSyncEnabled} onChange={onThemeSyncEnabledChange} />
+          </div>
         </div>
 
         <div className="settings-sep" />

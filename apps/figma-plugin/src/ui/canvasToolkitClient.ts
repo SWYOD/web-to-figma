@@ -22,6 +22,8 @@
  * `{type:'result', id, ok, result|error}`.
  */
 
+import type { ThemeSyncMessage } from '@web-to-figma/bridge-protocol'
+
 export type CanvasToolkitState = 'searching' | 'connecting' | 'connected'
 
 export interface CanvasToolkitClientOptions {
@@ -29,6 +31,11 @@ export interface CanvasToolkitClientOptions {
   onStateChange?: (state: CanvasToolkitState) => void
   /** Выполняет команду через main sandbox (единственное место с доступом к figma.*) — переиспользует runDesignAgentCommand. */
   runCommand: (command: string, params: Record<string, unknown>) => Promise<{ ok: boolean; result?: unknown; error?: string }>
+  /** `theme_sync` — команда от Design Toolkit, не относящаяся к канвасу (никакого
+   *  доступа к figma.* не требует), поэтому перехватывается прямо здесь, в UI-
+   *  iframe, а не гоняется через main sandbox зря — тот же payload, что уже
+   *  приходит от основного bridge к Web To Figma (theme-sync, см. App.tsx). */
+  onThemeSync?: (payload: ThemeSyncMessage['payload']) => void
 }
 
 const DEFAULT_PORT = 53900
@@ -155,6 +162,14 @@ export class CanvasToolkitClient {
     if (msg.type === 'command' && typeof msg.id === 'string') {
       const command = String(msg.command ?? '')
       const params = msg.params && typeof msg.params === 'object' ? (msg.params as Record<string, unknown>) : {}
+      if (command === 'theme_sync') {
+        const { themeId, mode, vars } = params as { themeId?: unknown; mode?: unknown; vars?: unknown }
+        if (typeof themeId === 'string' && (mode === 'light' || mode === 'dark') && vars && typeof vars === 'object') {
+          this.options.onThemeSync?.({ themeId, mode, vars: vars as ThemeSyncMessage['payload']['vars'] })
+        }
+        this.send({ type: 'result', id: msg.id, ok: true })
+        return
+      }
       const outcome = await this.options.runCommand(command, params)
       this.send({ type: 'result', id: msg.id, ok: outcome.ok, ...(outcome.ok ? { result: outcome.result } : { error: outcome.error }) })
     }

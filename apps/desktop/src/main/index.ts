@@ -61,7 +61,8 @@ const DEFAULT_SETTINGS: AppSettings = {
   useMatchedTextStyles: false,
   useMatchedColorStyles: false,
   colorMatchSource: 'style',
-  alsoCreateInstance: false
+  alsoCreateInstance: false,
+  themeSyncEnabled: true
 }
 
 interface BridgeSecret {

@@ -94,6 +94,14 @@ const GEOMETRY_PROPERTIES = new Set<string>([
 
 let knownOwnedIds = new Set<string>()
 let watchedEndpointIds = new Set<string>()
+/** Ids of every ancestor (frame, group, section, ...) of every watched
+ *  endpoint, up to but excluding the page. An endpoint's own `x`/`y`
+ *  properties don't change when its PARENT moves — only its
+ *  `absoluteBoundingBox` does — so the watcher also needs to react to a
+ *  geometry change on one of these, not just on the endpoint itself,
+ *  otherwise dragging a container frame around silently leaves every
+ *  connector attached to something inside it un-rerouted. */
+let watchedAncestorIds = new Set<string>()
 let labelByConnectorId = new Map<string, string>()
 /** Frames a connector/label has been reparented into (see `commonContainerFrame`
  *  below — connectors are page-level by default so they never become
@@ -145,21 +153,30 @@ export function frameOffset(frame: FrameNode): { x: number; y: number } | null {
  *  so it shows up in Figma's Prototype presentation. Endpoints living in
  *  different top-level frames (or directly on the page) have no common
  *  frame; the connector then stays page-level exactly as before this fix. */
-export function commonContainerFrame(a: SceneNode, b: SceneNode): FrameNode | null {
-  const ancestors = (node: SceneNode): BaseNode[] => {
-    const chain: BaseNode[] = []
-    let current: BaseNode | null = node.parent
-    while (current && current.type !== 'PAGE') {
-      chain.push(current)
-      current = current.parent
-    }
-    return chain
+/** Every ancestor (frame, group, section, ...) of `node`, nearest first, up
+ *  to but excluding the page. */
+function ancestorChain(node: BaseNode): BaseNode[] {
+  const chain: BaseNode[] = []
+  let current: BaseNode | null = node.parent
+  while (current && current.type !== 'PAGE') {
+    chain.push(current)
+    current = current.parent
   }
-  const bAncestors = new Set(ancestors(b))
-  for (const node of ancestors(a)) {
+  return chain
+}
+
+export function commonContainerFrame(a: SceneNode, b: SceneNode): FrameNode | null {
+  const bAncestors = new Set(ancestorChain(b))
+  for (const node of ancestorChain(a)) {
     if (node.type === 'FRAME' && bAncestors.has(node) && frameOffset(node)) return node
   }
   return null
+}
+
+/** Registers `node`'s whole ancestor chain into `watchedAncestorIds` — see
+ *  that set's own doc comment for why the watcher needs this. */
+function registerWatchedAncestors(node: BaseNode): void {
+  for (const ancestor of ancestorChain(node)) watchedAncestorIds.add(ancestor.id)
 }
 /** Last geometry actually written per connector — lets connector-to-connector
  *  chains re-route through the watcher (see installSmartConnectorWatcher)
@@ -358,6 +375,7 @@ function connectorPairKey(data: SmartConnectorData): string {
 function refreshOwnedIndex(): Promise<void> {
   knownOwnedIds = new Set<string>()
   watchedEndpointIds = new Set<string>()
+  watchedAncestorIds = new Set<string>()
   labelByConnectorId = new Map<string, string>()
   const scan = (children: readonly SceneNode[]): void => {
     for (const node of children) {
@@ -389,6 +407,13 @@ function refreshOwnedIndex(): Promise<void> {
     if (stale.length) {
       for (const id of stale) containerFrameIds.delete(id)
       persistContainerIndex()
+    }
+    // watchedEndpointIds above only has ids at this point — resolve each to
+    // its actual node so its ancestor chain (frames it lives inside) is
+    // also watched. Bounded by distinct-endpoint count, not document size.
+    for (const id of watchedEndpointIds) {
+      const node = await figma.getNodeByIdAsync(id)
+      if (node) registerWatchedAncestors(node)
     }
   })()
 }
@@ -539,15 +564,22 @@ async function render(connector: VectorNode, data: SmartConnectorData, lanePx = 
 
   const route = routeConnector(a.absoluteBoundingBox, b.absoluteBoundingBox, data.config, lanePx)
   const network = networkFor(route, data.config)
-  const fingerprint = JSON.stringify([network.minX, network.minY, network.vertices, network.segments])
+  // network.minX/minY are absolute page coordinates (routeConnector works
+  // from absoluteBoundingBox); connector.x/y are relative to its actual
+  // parent, which may be a common container frame (after Bake), not the
+  // page — fold the offset-adjusted target into the fingerprint itself
+  // (not the raw absolute value), otherwise baking/unbaking a connector
+  // whose absolute route hasn't changed would skip the .x/.y write
+  // entirely (same fingerprint as before) and leave it at its stale,
+  // now-wrongly-interpreted position — this was a real, confirmed bug.
+  const parentOffset = connector.parent && connector.parent.type === 'FRAME' ? (frameOffset(connector.parent) ?? { x: 0, y: 0 }) : { x: 0, y: 0 }
+  const targetX = network.minX - parentOffset.x
+  const targetY = network.minY - parentOffset.y
+  const fingerprint = JSON.stringify([connector.parent?.id, targetX, targetY, network.vertices, network.segments])
   if (lastGeometryFingerprint.get(connector.id) !== fingerprint) {
     await connector.setVectorNetworkAsync({ vertices: network.vertices, segments: network.segments, regions: [] })
-    // network.minX/minY are absolute page coordinates (routeConnector works
-    // from absoluteBoundingBox); connector.x/y are relative to its actual
-    // parent, which may now be a common container frame, not the page.
-    const parentOffset = connector.parent && connector.parent.type === 'FRAME' ? (frameOffset(connector.parent) ?? { x: 0, y: 0 }) : { x: 0, y: 0 }
-    connector.x = network.minX - parentOffset.x
-    connector.y = network.minY - parentOffset.y
+    connector.x = targetX
+    connector.y = targetY
     lastGeometryFingerprint.set(connector.id, fingerprint)
   }
   connector.fills = []
@@ -656,6 +688,8 @@ async function createOne(a: SceneNode, b: SceneNode, configInput: Partial<SmartC
   knownOwnedIds.add(connector.id)
   watchedEndpointIds.add(a.id)
   watchedEndpointIds.add(b.id)
+  registerWatchedAncestors(a)
+  registerWatchedAncestors(b)
   return connector
 }
 
@@ -913,9 +947,22 @@ export function installSmartConnectorWatcher(onUpdated?: () => void): void {
       // itself be another connector's endpoint (connector-to-connector), so
       // its own geometry changes must still count when it's also watched —
       // see lastGeometryFingerprint above for why this can't loop forever.
-      if (!watchedEndpointIds.has(id)) return false
-      if (change.type === 'DELETE') return true
-      return change.type === 'PROPERTY_CHANGE' && change.properties.some((property) => GEOMETRY_PROPERTIES.has(property))
+      if (watchedEndpointIds.has(id)) {
+        if (change.type === 'DELETE') return true
+        return change.type === 'PROPERTY_CHANGE' && change.properties.some((property) => GEOMETRY_PROPERTIES.has(property))
+      }
+      // An endpoint's OWN x/y don't change when its PARENT moves (only its
+      // absoluteBoundingBox does) — without this, dragging a container
+      // frame around silently left every connector attached to something
+      // inside it un-rerouted. Not treated as relevant on DELETE: an
+      // ancestor's deletion doesn't fire a separate change for the
+      // endpoint itself either, so there's nothing extra to do here for
+      // that case — render() already reports 'broken' once it can't
+      // resolve the endpoint, the next time anything else triggers it.
+      if (watchedAncestorIds.has(id)) {
+        return change.type === 'PROPERTY_CHANGE' && change.properties.some((property) => GEOMETRY_PROPERTIES.has(property))
+      }
+      return false
     })
     if (!relevant) return
     if (timer) clearTimeout(timer)

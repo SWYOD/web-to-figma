@@ -847,6 +847,64 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
         count: createdVariableIds.length + updatedVariableIds.length
       }
     }
+    case 'upsert_color_variables': {
+      const collectionName = String(params.collectionName ?? '').trim()
+      if (!collectionName) throw new Error('collectionName is required.')
+      if (!Array.isArray(params.variables) || params.variables.length === 0) {
+        throw new Error('variables must be a non-empty array.')
+      }
+
+      const collections = await figma.variables.getLocalVariableCollectionsAsync()
+      const collection =
+        collections.find((item) => item.name === collectionName) ??
+        figma.variables.createVariableCollection(collectionName)
+      if (collection.modes.length !== 1 || !collection.modes[0]) {
+        throw new Error(
+          `Collection "${collectionName}" must contain exactly one mode; found ${collection.modes.length}.`
+        )
+      }
+
+      const modeId = collection.modes[0].modeId
+      const existing = new Map<string, Variable>()
+      for (const id of collection.variableIds) {
+        const variable = await figma.variables.getVariableByIdAsync(id)
+        if (variable) existing.set(variable.name, variable)
+      }
+
+      const createdVariableIds: string[] = []
+      const updatedVariableIds: string[] = []
+      const requestNames = new Set<string>()
+      for (const item of params.variables as Array<Record<string, unknown>>) {
+        const name = String(item.name ?? '').trim()
+        if (!name) throw new Error('Each variable requires a non-empty name.')
+        if (requestNames.has(name)) throw new Error(`Duplicate variable name in request: ${name}`)
+        requestNames.add(name)
+        const { color, opacity } = parseHexColor(item.hex)
+        const alpha = item.opacity != null ? toNumber(item.opacity, opacity) : opacity
+
+        let variable = existing.get(name)
+        if (variable && variable.resolvedType !== 'COLOR') {
+          throw new Error(`Existing variable "${name}" is not COLOR.`)
+        }
+        if (!variable) {
+          variable = figma.variables.createVariable(name, collection, 'COLOR')
+          createdVariableIds.push(variable.id)
+        } else {
+          updatedVariableIds.push(variable.id)
+        }
+        if (typeof item.description === 'string') variable.description = item.description
+        variable.setValueForMode(modeId, { ...color, a: alpha })
+      }
+
+      return {
+        collectionId: collection.id,
+        collectionName: collection.name,
+        modeId,
+        createdVariableIds,
+        updatedVariableIds,
+        count: createdVariableIds.length + updatedVariableIds.length
+      }
+    }
     case 'focus': {
       const nodeId = String(params.nodeId ?? '')
       const node = await getNodeByIdGuarded(nodeId)
@@ -1046,6 +1104,16 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       geo.strokes = [figma.variables.setBoundVariableForPaint(basePaint, 'color', variable)]
       return { id: node.id, name: node.name }
     }
+    case 'create_paint_style': {
+      const name = String(params.name ?? '').trim()
+      if (!name) throw new Error('create_paint_style requires a name.')
+      const base = solidPaint(params.hex ?? params.color)
+      const paint: SolidPaint = params.opacity != null ? { ...base, opacity: toNumber(params.opacity, 1) } : base
+      const style = figma.createPaintStyle()
+      style.name = name
+      style.paints = [paint]
+      return { id: style.id, name: style.name }
+    }
     case 'set_shadow': {
       const node = await getNodeByIdGuarded(String(params.nodeId ?? ''))
       if (!isSceneNode(node) || !('effects' in node)) throw new Error('set_shadow requires a node that supports effects.')
@@ -1075,6 +1143,32 @@ export async function runDesignAgentCommand(command: string, params: Record<stri
       if (!styleId) throw new Error('apply_text_style requires a styleId (see list_variables_and_styles).')
       await node.setTextStyleIdAsync(styleId)
       return { id: node.id, name: node.name }
+    }
+    case 'create_text_style': {
+      const name = String(params.name ?? '').trim()
+      if (!name) throw new Error('create_text_style requires a name.')
+      const family = String(params.fontFamily ?? '').trim()
+      const styleName = String(params.fontStyle ?? 'Regular').trim()
+      if (!family) throw new Error('create_text_style requires a fontFamily.')
+      const fontName: FontName = { family, style: styleName }
+      await figma.loadFontAsync(fontName)
+
+      const style = figma.createTextStyle()
+      style.name = name
+      style.fontName = fontName
+      if (params.fontSize != null) style.fontSize = toNumber(params.fontSize, style.fontSize)
+      if (params.lineHeight != null) {
+        style.lineHeight = { unit: 'PIXELS', value: toNumber(params.lineHeight, style.fontSize) }
+      }
+      if (params.letterSpacing != null) {
+        style.letterSpacing = { unit: 'PIXELS', value: toNumber(params.letterSpacing, 0) }
+      }
+      if (params.fontSizeVariableId) {
+        const variable = await figma.variables.getVariableByIdAsync(String(params.fontSizeVariableId))
+        if (!variable) throw new Error(`create_text_style: variable ${String(params.fontSizeVariableId)} not found.`)
+        style.setBoundVariable('fontSize', variable)
+      }
+      return { id: style.id, name: style.name }
     }
     case 'set_image': {
       const node = await getNodeByIdGuarded(String(params.nodeId ?? ''))

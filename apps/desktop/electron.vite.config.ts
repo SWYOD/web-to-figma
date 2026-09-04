@@ -32,7 +32,19 @@ export default defineConfig({
   preload: {
     build: {
       rollupOptions: {
-        input: { index: resolve(__dirname, 'src/preload/index.ts') }
+        input: {
+          index: resolve(__dirname, 'src/preload/index.ts'),
+          // Отдельный, СИЛЬНО урезанный preload для вкладок встроенного
+          // браузера (см. main/browser.ts newTab — оба контроллера, main и
+          // референс) — по запросу пользователя добавляет гугловское
+          // автодополнение прямо на статичную стартовую страницу
+          // (main/startPage.ts, обычный data: URL без доступа к основному
+          // window.api). Собирается в отдельный файл, а не расширяет
+          // index.ts — тот полный API никогда не должен доставаться
+          // произвольным сайтам, которые пользователь открывает в этом же
+          // браузере.
+          browserTab: resolve(__dirname, 'src/preload/browserTab.ts')
+        }
       }
     }
   },

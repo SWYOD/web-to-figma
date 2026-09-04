@@ -1,9 +1,12 @@
 import { useEffect, useRef, useState } from 'react'
-import type { AssetScanResult, BrowserState, ComponentScanResult, ScannedAsset, ScannedComponent, TabsSnapshot } from '../../../shared/types'
+import { Pin } from 'lucide-react'
+import { IconButton } from '@web-to-figma/ui'
+import type { AppSettings, AssetScanResult, BrowserState, ComponentScanResult, ScannedAsset, ScannedComponent, TabsSnapshot } from '../../../shared/types'
 import { BottomPanel } from './BottomPanel'
 import { BrowserTabBar } from './BrowserTabBar'
 import { BrowserToolbar } from './BrowserToolbar'
 import { BrowserViewport } from './BrowserViewport'
+import { useEdgeReveal } from '../hooks/useEdgeReveal'
 
 /** Верхняя граница на СУММУ ассетов по всем накопленным страницам одного
  *  домена (по жалобе пользователя — "если ассетов много, панель тормозит";
@@ -12,6 +15,14 @@ import { BrowserViewport } from './BrowserViewport'
  *  capBatches) — партия показана целиком или не показана вовсе, а не
  *  наполовину, иначе подпись "с какой страницы" стала бы нечестной. */
 const MAX_TOTAL_ASSETS_PER_DOMAIN = 500
+
+// Стартовая страница — свой data: URL (см. main/startPage.ts), не настоящий
+// сайт: сканировать её нечего (по живому багу, поймал пользователь — иконка
+// лупы в её собственной строке поиска попадала в автоскан новой вкладки как
+// обычный "сайт", с пустым pageTitle → подпись партии (AssetsPanel.tsx
+// PageBatch) падала назад на СЫРОЙ нерасшифрованный data: URL — длиннющая
+// строка ломала раскладку панели).
+const isStartPage = (url: string): boolean => url.startsWith('data:text/html')
 
 const EMPTY_STATE: BrowserState = {
   url: '',
@@ -82,7 +93,20 @@ function capBatches(batches: PageAssetBatch[], maxTotal: number): { batches: Pag
   return { batches: batches.slice(dropFrom), capped: true }
 }
 
-export function BrowserPane(): JSX.Element {
+interface Props {
+  distractionFree: boolean
+  onToggleDistractionFree: () => void
+  fullscreenMode: AppSettings['fullscreenMode']
+  /** Закрепление верхней панели (см. App.tsx Workspace leftPinned/rightPinned
+   *  — тот же паттерн, "в любом полноэкранном режиме"). В float-режиме
+   *  форсит инлайн-показ вкладок+тулбара вместо плавающего слоя (см.
+   *  isTopFloat ниже); в push-режиме держит адресную строку видимой без
+   *  наведения — единая механика для обоих случаев через navVisible. */
+  topPinned: boolean
+  onToggleTopPinned: () => void
+}
+
+export function BrowserPane({ distractionFree, onToggleDistractionFree, fullscreenMode, topPinned, onToggleTopPinned }: Props): JSX.Element {
   const [tabsState, setTabsState] = useState<TabsSnapshot>(EMPTY_TABS)
   const [scans, setScans] = useState<Record<string, TabAssetScan>>({})
   const [componentScans, setComponentScans] = useState<Record<string, TabComponentScan>>({})
@@ -90,6 +114,33 @@ export function BrowserPane(): JSX.Element {
   const [bottomMaximized, setBottomMaximized] = useState(false)
   const tabsStateRef = useRef(tabsState)
   tabsStateRef.current = tabsState
+  // Distraction-free (см. App.tsx) — по запросу пользователя "верх браузера
+  // тоже надо скрывающимся, и нижнюю панель с ассетами/компонентами":
+  // BrowserToolbar (навигация+адресная строка) и BottomPanel сворачиваются
+  // так же, как сайдбар/inspector (см. useEdgeReveal докстринг). В push-режиме
+  // BrowserTabBar (вкладки + сам переключатель режима) остаётся видимой
+  // всегда, иначе выключить режим было бы нечем — но в float-режиме (по
+  // запросу пользователя, "чтобы был как бы полный экран сайта") вкладки
+  // ТОЖЕ сворачиваются, вместе с адресной строкой ОДНОЙ группой, и рисуются
+  // НАД страницей в overlay-слое 'panel-top' (см. BrowserTopBarOverlayContent.tsx),
+  // а не раздвигают вьюпорт при показе — тот же hover-gate механизм, что и
+  // у left/right панелей (см. main/index.ts createHoverGate).
+  const isTopFloat = distractionFree && fullscreenMode === 'float' && !topPinned
+  const navReveal = useEdgeReveal()
+  const bottomReveal = useEdgeReveal()
+  const navVisible = topPinned || !distractionFree || navReveal.revealed
+  const bottomVisible = !distractionFree || bottomReveal.revealed
+  const topPinAction = distractionFree && (
+    <IconButton active={topPinned} onClick={onToggleTopPinned} title={topPinned ? 'Открепить панель' : 'Закрепить панель'}>
+      <Pin size={14} fill={topPinned ? 'currentColor' : 'none'} />
+    </IconButton>
+  )
+  const topStripHandlers = isTopFloat
+    ? {
+        onMouseEnter: () => void window.api.overlayPanelHover({ side: 'top', entering: true }),
+        onMouseLeave: () => void window.api.overlayPanelHover({ side: 'top', entering: false })
+      }
+    : { onMouseEnter: navReveal.onMouseEnter, onMouseLeave: navReveal.onMouseLeave }
 
   const activeTab = tabsState.tabs.find((t) => t.id === tabsState.activeTabId) ?? EMPTY_STATE
 
@@ -98,6 +149,7 @@ export function BrowserPane(): JSX.Element {
     if (!activeTabId) return
     const activeTabState = tabs.find((t) => t.id === activeTabId)
     const url = activeTabState?.url ?? ''
+    if (isStartPage(url)) return
     const title = activeTabState?.title || url
     const domain = hostFromUrl(url)
     setScanningTabId(activeTabId)
@@ -221,21 +273,36 @@ export function BrowserPane(): JSX.Element {
 
   return (
     <>
-      <BrowserTabBar
-        tabs={tabsState.tabs}
-        activeTabId={tabsState.activeTabId}
-        onSwitch={(id) => window.api.browserSwitchTab(id)}
-        onClose={(id) => window.api.browserCloseTab(id)}
-        onNewTab={() => window.api.browserNewTab()}
-      />
-      <BrowserToolbar
-        state={activeTab}
-        onNavigate={(input) => window.api.browserNavigate(input)}
-        onBack={() => window.api.browserBack()}
-        onForward={() => window.api.browserForward()}
-        onReload={() => window.api.browserReload()}
-        onStop={() => window.api.browserStop()}
-      />
+      {isTopFloat ? (
+        <div className="edge-reveal-strip edge-reveal-strip-top" {...topStripHandlers} />
+      ) : (
+        <>
+          <BrowserTabBar
+            tabs={tabsState.tabs}
+            activeTabId={tabsState.activeTabId}
+            onSwitch={(id) => window.api.browserSwitchTab(id)}
+            onClose={(id) => window.api.browserCloseTab(id)}
+            onNewTab={() => window.api.browserNewTab()}
+            distractionFree={distractionFree}
+            onToggleDistractionFree={onToggleDistractionFree}
+            pinAction={topPinAction}
+          />
+          {navVisible ? (
+            <div onMouseEnter={navReveal.onMouseEnter} onMouseLeave={navReveal.onMouseLeave}>
+              <BrowserToolbar
+                state={activeTab}
+                onNavigate={(input) => window.api.browserNavigate(input)}
+                onBack={() => window.api.browserBack()}
+                onForward={() => window.api.browserForward()}
+                onReload={() => window.api.browserReload()}
+                onStop={() => window.api.browserStop()}
+              />
+            </div>
+          ) : (
+            <div className="edge-reveal-strip edge-reveal-strip-top" {...topStripHandlers} />
+          )}
+        </>
+      )}
       {/* Явные flex-значения, а не полагаться на авто-basis: у обёртки вьюпорта
           нет обычного контента (BrowserViewport — position:absolute, дырка
           под нативный слой), поэтому "flex:1 1 auto" при maximized панели
@@ -251,15 +318,25 @@ export function BrowserPane(): JSX.Element {
       <div className="browser-viewport-wrap" style={bottomMaximized ? { flex: '0 0 0px' } : undefined}>
         <BrowserViewport />
       </div>
-      <BottomPanel
-        tabs={tabsState.tabs}
-        scans={scans}
-        componentScans={componentScans}
-        scanningTabId={scanningTabId}
-        onScan={scanActiveTab}
-        maximized={bottomMaximized}
-        onMaximizedChange={setBottomMaximized}
-      />
+      {bottomVisible ? (
+        <BottomPanel
+          tabs={tabsState.tabs}
+          scans={scans}
+          componentScans={componentScans}
+          scanningTabId={scanningTabId}
+          onScan={scanActiveTab}
+          maximized={bottomMaximized}
+          onMaximizedChange={setBottomMaximized}
+          onMouseEnter={bottomReveal.onMouseEnter}
+          onMouseLeave={bottomReveal.onMouseLeave}
+        />
+      ) : (
+        <div
+          className="edge-reveal-strip edge-reveal-strip-bottom"
+          onMouseEnter={bottomReveal.onMouseEnter}
+          onMouseLeave={bottomReveal.onMouseLeave}
+        />
+      )}
     </>
   )
 }

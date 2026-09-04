@@ -1,10 +1,14 @@
+import type { ReactNode } from 'react'
 import { useEffect, useState } from 'react'
-import { Globe, Trash2, X } from 'lucide-react'
+import { Globe, Pin, Plus, Trash2, X } from 'lucide-react'
 import { IconButton, Panel, PanelHead, PanelHeadActions, PanelTitle } from '@web-to-figma/ui'
 import type { ThemeDef, ThemeMode } from '@web-to-figma/ui'
-import type { QueueItemSummary, RecentSite } from '../../../shared/types'
+import type { AppSettings, Project, ProjectSite, QueueItemSummary, RecentSite } from '../../../shared/types'
 import { AssetLightbox, type LightboxAsset } from './AssetLightbox'
+import { CreateProjectModal } from './CreateProjectModal'
+import { ProjectSection } from './ProjectSection'
 import { SettingsPopover } from './SettingsPopover'
+import { packDragSite } from '../dragSite'
 
 interface Props {
   themeMode: ThemeMode
@@ -15,6 +19,21 @@ interface Props {
   onCustomThemesChange: (list: ThemeDef[]) => void
   themeSyncEnabled: boolean
   onThemeSyncEnabledChange: (enabled: boolean) => void
+  fullscreenMode: AppSettings['fullscreenMode']
+  onFullscreenModeChange: (mode: AppSettings['fullscreenMode']) => void
+  referenceNamePromptOnAdd: boolean
+  onReferenceNamePromptOnAddChange: (enabled: boolean) => void
+  captureViewport: AppSettings['captureViewport']
+  onCaptureViewportChange: (value: AppSettings['captureViewport']) => void
+  captureFullBlockThumbnail: boolean
+  onCaptureFullBlockThumbnailChange: (enabled: boolean) => void
+  sidePanelsHoverReveal: boolean
+  onSidePanelsHoverRevealChange: (enabled: boolean) => void
+  /** Кнопка pin для float-режима (см. PanelOverlayRoot.tsx/App.tsx Workspace)
+   *  — рендерится сюда, в шапку панели, РЯДОМ с "Новый проект", а не
+   *  абсолютным слоем поверх контента: иначе перекрывала бы уже стоящую
+   *  здесь кнопку "+" (живой баг, скрин пользователя — совпадение углов). */
+  pinAction?: ReactNode
 }
 
 /** Короткое "host" из URL для подписи под названием — если распарсить не
@@ -43,16 +62,54 @@ export function LeftSidebar({
   onThemeIdChange,
   onCustomThemesChange,
   themeSyncEnabled,
-  onThemeSyncEnabledChange
+  onThemeSyncEnabledChange,
+  fullscreenMode,
+  onFullscreenModeChange,
+  referenceNamePromptOnAdd,
+  onReferenceNamePromptOnAddChange,
+  captureViewport,
+  onCaptureViewportChange,
+  captureFullBlockThumbnail,
+  onCaptureFullBlockThumbnailChange,
+  sidePanelsHoverReveal,
+  onSidePanelsHoverRevealChange,
+  pinAction
 }: Props): JSX.Element {
   const [sites, setSites] = useState<RecentSite[]>([])
   const [queueItems, setQueueItems] = useState<QueueItemSummary[]>([])
   const [previewAsset, setPreviewAsset] = useState<LightboxAsset | null>(null)
+  const [projects, setProjects] = useState<Project[]>([])
+  const [expandedProjects, setExpandedProjects] = useState<Set<string>>(new Set())
+  const [creatingProject, setCreatingProject] = useState(false)
 
   useEffect(() => {
     window.api.recentSitesGet().then(setSites)
     return window.api.onRecentSitesUpdated(setSites)
   }, [])
+
+  useEffect(() => {
+    window.api.projectsGet().then((s) => setProjects(s.projects))
+    return window.api.onProjectsUpdated((s) => setProjects(s.projects))
+  }, [])
+
+  // Проект, только что созданный, разворачиваем сразу — иначе пользователь
+  // создаёт проект и не понимает, куда он делся (свёрнут по умолчанию).
+  useEffect(() => {
+    setExpandedProjects((current) => {
+      const missing = projects.filter((p) => !current.has(p.id))
+      if (missing.length === 0) return current
+      const next = new Set(current)
+      for (const p of missing) next.add(p.id)
+      return next
+    })
+  }, [projects])
+
+  const projectUrls = new Set(projects.flatMap((p) => p.sites.map((s) => s.url)))
+  // Закреплённые — всегда наверху "Без проекта" (по запросу пользователя),
+  // внутри каждой группы порядок как пришёл от recentSites (most-recent-first).
+  const unsortedSites = sites
+    .filter((s) => !projectUrls.has(s.url))
+    .sort((a, b) => (a.pinned === b.pinned ? 0 : a.pinned ? -1 : 1))
 
   useEffect(() => {
     window.api.inspectorQueueGet().then(setQueueItems)
@@ -62,6 +119,11 @@ export function LeftSidebar({
   const handleRemove = (e: React.MouseEvent, url: string): void => {
     e.stopPropagation()
     window.api.recentSitesRemove(url)
+  }
+
+  const handleTogglePin = (e: React.MouseEvent, url: string): void => {
+    e.stopPropagation()
+    window.api.recentSitesTogglePin(url)
   }
 
   const handleQueueItemRemove = (e: React.MouseEvent, id: string): void => {
@@ -85,18 +147,62 @@ export function LeftSidebar({
   return (
     <Panel>
       <PanelHead>
-        <PanelTitle>Недавние</PanelTitle>
+        <PanelTitle>Проекты</PanelTitle>
+        <PanelHeadActions>
+          <IconButton title="Новый проект" onClick={() => setCreatingProject(true)}>
+            <Plus size={14} />
+          </IconButton>
+          {pinAction}
+        </PanelHeadActions>
       </PanelHead>
 
       <div className="recent-scroll">
-        {sites.length === 0 && (
+        {projects.map((p) => (
+          <ProjectSection
+            key={p.id}
+            project={p}
+            expanded={expandedProjects.has(p.id)}
+            onToggleExpanded={() =>
+              setExpandedProjects((current) => {
+                const next = new Set(current)
+                if (next.has(p.id)) next.delete(p.id)
+                else next.add(p.id)
+                return next
+              })
+            }
+            onNavigate={(url) => window.api.browserNavigate(url)}
+            onNewTab={(url) => window.api.browserNewTab(url)}
+            onRename={(name) => window.api.projectsRename(p.id, name)}
+            onDelete={() => window.api.projectsDelete(p.id)}
+            onRemoveSite={(url) => window.api.projectsRemoveSite(p.id, url)}
+            onToggleKind={(url, currentKind: ProjectSite['kind']) =>
+              window.api.projectsMoveSiteKind(p.id, url, currentKind === 'site' ? 'reference' : 'site')
+            }
+            onDropSite={async (dragged, toKind) => {
+              if (dragged.fromProjectId) {
+                await window.api.projectsMoveSiteToProject(dragged.fromProjectId, p.id, dragged.url)
+                // Уронили именно в "Референсы"/"Сайты" — переключает kind
+                // на месте, если он не совпадал (no-op, если уже совпадал,
+                // см. main/projects.ts moveSite ранний return).
+                await window.api.projectsMoveSiteKind(p.id, dragged.url, toKind)
+              } else {
+                await window.api.projectsAddSite(p.id, { url: dragged.url, title: dragged.title, faviconUrl: dragged.faviconUrl }, toKind)
+              }
+            }}
+          />
+        ))}
+
+        <div className="sidebar-section-label">Без проекта</div>
+        {unsortedSites.length === 0 && (
           <div className="placeholder-hint recent-empty">Здесь появится история посещённых сайтов.</div>
         )}
-        {sites.map((s) => (
+        {unsortedSites.map((s) => (
           <button
             key={s.url}
             className="recent-row"
             title={s.url}
+            draggable
+            onDragStart={(e) => packDragSite(e, { url: s.url, title: s.title, faviconUrl: s.faviconUrl })}
             onClick={() => window.api.browserNavigate(s.url)}
             // Средняя кнопка — как в обычном браузере: открыть в новой
             // вкладке, а не в текущей (по запросу пользователя). `<button>`
@@ -116,6 +222,13 @@ export function LeftSidebar({
             <span className="recent-row-text">
               <span className="recent-row-title">{s.title || hostFromUrl(s.url)}</span>
               <span className="recent-row-host">{hostFromUrl(s.url)}</span>
+            </span>
+            <span
+              className={`icon-btn xs recent-row-remove${s.pinned ? ' pinned' : ''}`}
+              title={s.pinned ? 'Открепить' : 'Закрепить'}
+              onClick={(e) => handleTogglePin(e, s.url)}
+            >
+              <Pin size={12} fill={s.pinned ? 'currentColor' : 'none'} />
             </span>
             <span className="icon-btn xs recent-row-remove" title="Убрать из истории" onClick={(e) => handleRemove(e, s.url)}>
               <X size={12} />
@@ -181,8 +294,27 @@ export function LeftSidebar({
         onCustomThemesChange={onCustomThemesChange}
         themeSyncEnabled={themeSyncEnabled}
         onThemeSyncEnabledChange={onThemeSyncEnabledChange}
+        fullscreenMode={fullscreenMode}
+        onFullscreenModeChange={onFullscreenModeChange}
+        referenceNamePromptOnAdd={referenceNamePromptOnAdd}
+        onReferenceNamePromptOnAddChange={onReferenceNamePromptOnAddChange}
+        captureViewport={captureViewport}
+        onCaptureViewportChange={onCaptureViewportChange}
+        captureFullBlockThumbnail={captureFullBlockThumbnail}
+        onCaptureFullBlockThumbnailChange={onCaptureFullBlockThumbnailChange}
+        sidePanelsHoverReveal={sidePanelsHoverReveal}
+        onSidePanelsHoverRevealChange={onSidePanelsHoverRevealChange}
       />
       {previewAsset && <AssetLightbox asset={previewAsset} onClose={() => setPreviewAsset(null)} />}
+      {creatingProject && (
+        <CreateProjectModal
+          onClose={() => setCreatingProject(false)}
+          onSubmit={(input) => {
+            setCreatingProject(false)
+            void window.api.projectsCreate(input)
+          }}
+        />
+      )}
     </Panel>
   )
 }

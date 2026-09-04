@@ -1,5 +1,14 @@
 /* Desktop-специфичные классы поверх @web-to-figma/ui (см. docs/design-system.md). */
 
+/* Выделение текста (по запросу пользователя — "везде должно подчиняться
+   теме") — без этого правила браузер берёт системный акцент ОС (на Windows
+   часто оранжевый/синий вне зависимости от темы приложения), заметно
+   контрастирует с тёмным/светлым UI. */
+::selection {
+  background: var(--accent-soft);
+  color: var(--text);
+}
+
 /* Единый scrollbar для ВСЕХ внутренних renderer-поверхностей: сайдбаров,
    нижней панели, модалок, дерева, списков ассетов и overlay-popover. Встроенный
    сайт живёт в отдельном WebContentsView и намеренно сюда не попадает. */
@@ -134,6 +143,17 @@
   border-bottom: 1px solid var(--border);
   overflow-x: auto;
 }
+/* margin-left:auto вместо justify-content:space-between на .browser-tab-bar —
+   тот overflow-x:auto (много вкладок скроллится), а эти действия должны
+   оставаться пришпилены у правого края, а не укатываться вместе со списком
+   вкладок. */
+.browser-tab-bar-actions {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  margin: 0 0 4px auto;
+  padding-left: 6px;
+}
 .browser-tab-list {
   display: flex;
   align-items: flex-end;
@@ -239,9 +259,16 @@
   gap: 1px;
   flex: 0 0 auto;
 }
-.address-bar {
+/* Обёртка нужна только под попап автодополнения (см. BrowserToolbar.tsx,
+   useSearchSuggestions.ts) — несёт то же flex-сжатие в ряду тулбара, что
+   раньше держал сам .address-bar, плюс position:relative под выпадашку. */
+.address-bar-wrap {
+  position: relative;
   flex: 1 1 auto;
   min-width: 0;
+}
+.address-bar {
+  width: 100%;
   display: flex;
   align-items: center;
   gap: 8px;
@@ -389,6 +416,74 @@ body.overlay-body {
    рендерится ЗА пределами border-box). main держит эти два числа в синхроне
    вручную (ResizeObserver меряет ЭТОТ элемент целиком, паддинг входит в
    getBoundingClientRect автоматически) — при изменении здесь поменяй и там. */
+/* Generic popover overlay ('popover' слой, см. main/overlay.ts,
+   PopoverOverlayRoot.tsx) — bounds уже вычислены main'ом впритык к якорю
+   (см. repositionPopoverOverlay), контент просто занимает весь слой, без
+   выравнивания "к низу" как у тулбара пикера. Тень попапа (.popover
+   переиспользует var(--shadow)) может слегка обрезаться по краю
+   WebContentsView — тот же trade-off, что и SHADOW_MARGIN у тулбара, но
+   не критично для маленького dropdown-попапа, сознательно не усложняем. */
+/* НИКАКИХ width/height:100% здесь — тот же trade-off, что у .overlay-toolbar-stack
+   (пикер, работает годами): контент должен сам определять свой ЕСТЕСТВЕННЫЙ
+   размер и его же сообщать через ResizeObserver (см. PopoverOverlayRoot.tsx).
+   width:100% привязал бы ширину контента к ТЕКУЩЕЙ ширине WebContentsView —
+   а та САМА выставляется main'ом на основе предыдущего измерения; если то
+   измерение было маленьким (напр. до первого реального report-size), узкий
+   viewport вынуждал бы контент измеряться ещё уже, тот отчитывался бы ещё
+   меньшим числом — самоусиливающийся цикл до узкой вертикальной полоски,
+   живой баг, поймал пользователь ("попап пропал"). */
+/* display:flex + align-items:flex-start — тот же приём, что у .overlay-root
+   ниже (align-items:center на flex-родителе даёт РЕБЁНКУ по кросс-оси
+   shrink-to-fit вместо дефолтного block-поведения "width:auto = ширина
+   родителя"). Без этого .popover-overlay-stack как голый блочный div взял бы
+   ширину родителя (динамическую, от main) — та же петля, что и с
+   width:100% выше, просто на уровень ниже. */
+.popover-overlay-root {
+  display: flex;
+  align-items: flex-start;
+}
+
+/* Float-панель (см. PanelOverlayRoot.tsx, main/index.ts repositionPanelOverlay)
+   — В ОТЛИЧИЕ от popover-слоя, main тут задаёт ФИКСИРОВАННЫЕ bounds (не по
+   измерению контента, без ResizeObserver вообще) — width:100%/height:100%
+   здесь безопасны, никакой петли: слой всегда СНАЧАЛА получает свой размер
+   от main, контент просто его заполняет, а не наоборот. */
+.panel-overlay-col {
+  width: 100%;
+  height: 100%;
+}
+/* Кнопка закрепления float-панели (см. PanelOverlayRoot.tsx) — один клик
+   переводит панель в pinned-состояние: main/index.ts форс-закрывает этот
+   overlay-слой, а App.tsx Workspace начинает рисовать ту же панель inline
+   в главном окне (уже там своя кнопка открепления, см. .panel-pin-btn в
+   App.tsx JSX — тот же класс, тот же вид, чтобы переход был бесшовным). */
+/* Плавающая верхняя панель браузера (вкладки+адресная строка, см.
+   BrowserTopBarOverlayContent.tsx) — слой стартует с тем же отступом
+   PANEL_TOP, что left/right (см. main/index.ts repositionPanelOverlay),
+   поэтому теперь такая же "плавающая карточка", скруглённая со всех сторон,
+   а не выезжающая вплотную к краю окна панель. */
+.browser-top-overlay-wrap {
+  width: 100%;
+  height: 100%;
+  display: flex;
+  flex-direction: column;
+  overflow: hidden;
+  border-radius: var(--radius-lg);
+  box-shadow: var(--shadow);
+}
+.popover-overlay-stack .popover {
+  position: static;
+  /* .popover задаёт max-height:calc(100vh - 24px)/overflow-y:auto — рассчитано
+     на портал в ГЛАВНОМ окне, где 100vh — реальная высота окна. Здесь же
+     100vh — высота ЭТОГО крошечного popover-слоя, которая САМА вычисляется
+     из измеренного размера контента (см. PopoverOverlayRoot.tsx ResizeObserver)
+     — самоусиливающийся цикл: контент обрезается по 100vh, ResizeObserver
+     репортит уже обрезанный размер, слой остаётся маленьким навсегда. Живой
+     баг, поймал пользователь: попап не показывал списки полностью. */
+  max-height: none;
+  overflow: visible;
+}
+
 .overlay-toolbar-stack {
   display: flex;
   flex-direction: column;
@@ -478,6 +573,632 @@ body.overlay-body {
   display: none;
   flex: 0 0 auto;
 }
+/* Закреплённый сайт (см. LeftSidebar.tsx handleTogglePin) — булавка видна
+   ВСЕГДА, не только по hover, как остальные .recent-row-remove: иначе
+   пользователь не увидит с первого взгляда, какие сайты закреплены. */
+.recent-row-remove.pinned {
+  display: inline-flex;
+  color: var(--accent);
+}
+
+/* ── Верхние вкладки приложения (см. App.tsx/TopViewSwitch.tsx) ──────────── */
+.view-slot {
+  flex: 1 1 auto;
+  display: flex;
+  min-height: 0;
+}
+.view-slot.hidden {
+  display: none;
+}
+.top-view-switch {
+  display: flex;
+  align-items: center;
+  gap: 2px;
+  padding: 3px;
+  border-radius: 999px;
+  background: var(--surface-2);
+}
+.top-view-switch-btn {
+  padding: 5px 14px;
+  border-radius: 999px;
+  font-size: 12.5px;
+  font-weight: 550;
+  color: var(--text-dim);
+}
+.top-view-switch-btn:hover {
+  color: var(--text);
+}
+.top-view-switch-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+
+/* ── Вкладка "Референсы" (см. ReferencesView.tsx/ProjectCard.tsx/SiteCard.tsx) ── */
+.references-view {
+  flex: 1 1 auto;
+  min-width: 0;
+  overflow-y: auto;
+  padding: 20px 24px;
+}
+.references-empty {
+  padding: 8px 0;
+}
+.references-back {
+  display: inline-flex;
+  align-items: center;
+  gap: 6px;
+  font-size: 12.5px;
+  color: var(--text-dim);
+  padding: 6px 0;
+}
+.references-back:hover {
+  color: var(--text);
+}
+.references-project-title {
+  margin: 4px 0 16px;
+  font-size: 18px;
+  font-weight: 650;
+  color: var(--text);
+}
+.references-group-label {
+  margin: 4px 0 8px;
+  font-size: 11px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+/* Разделитель с заголовком над карточками "Без проекта" на стартовом
+   экране (по запросу пользователя) — та же типографика, что
+   .references-group-label, плюс линия, тянущаяся до края колонки. */
+.references-section-divider {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  font-size: 11px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+  white-space: nowrap;
+}
+.references-section-divider::after {
+  content: '';
+  flex: 1 1 auto;
+  height: 1px;
+  background: var(--border);
+}
+/* ── Референсы — трёхколоночный воркспейс (по запросу пользователя, замена
+   drill-down-навигации, см. ReferencesView.tsx) — левая/правая колонки
+   переиспользуют .col/.resizer из packages/ui как есть, тут только то, что
+   специфично центру. ──────────────────────────────────────────────────── */
+.references-right-col {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+}
+.references-start {
+  padding: 16px;
+  overflow-y: auto;
+  display: flex;
+  flex-direction: column;
+  gap: 20px;
+}
+/* Обёртка (см. ReferencesSearchBar.tsx) — сама несёт центрирование/ширину и
+   position:relative под абсолютно спозиционированную выпадашку подсказок;
+   .references-search-bar заполняет её на 100%, а не наоборот, чтобы
+   выпадашка была той же ширины, что и сама строка. */
+.references-search-wrap {
+  position: relative;
+  align-self: center;
+  width: min(560px, 100%);
+}
+.references-search-bar {
+  width: 100%;
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  height: 40px;
+  padding: 0 16px;
+  background: var(--surface-2);
+  border: 1px solid var(--border);
+  border-radius: 999px;
+  color: var(--text-faint);
+  transition: border-color 0.14s, box-shadow 0.14s;
+}
+.references-search-wrap:focus-within .references-search-bar {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+/* Стилизованная попап-выпадашка автодополнения (по запросу пользователя —
+   "гугловское автодополнение, но красивее") — общая для ReferencesSearchBar
+   и BrowserToolbar (см. SearchSuggestionsList.tsx/useSearchSuggestions.ts).
+   Плавное появление + чуть более "воздушная" карточка, чем обычный .popover
+   — заметно отдельный слой поверх контента, не просто список. */
+@keyframes search-suggestions-in {
+  from {
+    opacity: 0;
+    transform: translateY(-4px);
+  }
+  to {
+    opacity: 1;
+    transform: translateY(0);
+  }
+}
+.search-suggestions {
+  position: absolute;
+  top: calc(100% + 8px);
+  left: 0;
+  right: 0;
+  z-index: 5;
+  background: var(--surface);
+  border: 1px solid var(--border);
+  border-radius: 14px;
+  box-shadow: 0 12px 28px rgba(0, 0, 0, 0.28), var(--shadow);
+  overflow: hidden;
+  animation: search-suggestions-in 0.12s ease;
+}
+.search-suggestions-scroll {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  padding: 6px;
+  max-height: 320px;
+  overflow-y: auto;
+}
+.search-suggestion {
+  display: flex;
+  align-items: center;
+  gap: 10px;
+  padding: 9px 10px;
+  border-radius: 9px;
+  color: var(--text);
+  font-size: 12.5px;
+  text-align: left;
+}
+.search-suggestion-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 50%;
+  background: var(--hover);
+  color: var(--text-faint);
+}
+.search-suggestion span {
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.search-suggestion-matched {
+  color: var(--text-faint);
+}
+.search-suggestion:hover,
+.search-suggestion.active {
+  background: var(--hover);
+}
+.search-suggestion.active .search-suggestion-icon {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.references-search-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  background: none;
+  border: none;
+  outline: none;
+  font-size: 13.5px;
+  color: var(--text);
+}
+.references-search-input::placeholder {
+  color: var(--text-faint);
+}
+/* Компактная шапка встроенного референс-браузера (по жалобе пользователя на
+   "большую плашку") — одна строка высотой как обычный тулбар, а не крупный
+   блок с обложкой. */
+.reference-compact-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 8px;
+  height: 40px;
+  padding: 0 10px;
+  border-bottom: 1px solid var(--border);
+}
+.reference-compact-favicon {
+  width: 14px;
+  height: 14px;
+  border-radius: 3px;
+  object-fit: contain;
+  flex: 0 0 auto;
+}
+.reference-compact-favicon-fallback {
+  flex: 0 0 auto;
+  color: var(--text-faint);
+}
+.reference-compact-title {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-compact-collect-btn {
+  flex: 0 0 auto;
+  padding: 5px 12px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.reference-compact-collect-btn:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.reference-compact-hint {
+  padding: 16px;
+}
+/* Встроенный референс-браузер (см. ReferenceBrowserPane.tsx) — по коррекции
+   пользователя: НЕ вкладка "Браузер", отдельный вьюпорт, теперь заполняет
+   всю центральную колонку под компактной шапкой. */
+.reference-browser-pane {
+  display: flex;
+  flex-direction: column;
+  min-height: 0;
+  flex: 1 1 auto;
+}
+.reference-browser-viewport-wrap {
+  position: relative;
+  flex: 1 1 auto;
+  min-height: 0;
+}
+.reference-attach-toggle {
+  flex: 0 0 auto;
+  margin: 8px;
+  padding: 7px;
+  border-radius: 7px;
+  border: 1px dashed var(--border);
+  color: var(--text-dim);
+  font-size: 11.5px;
+  text-align: center;
+}
+.reference-attach-toggle:hover {
+  border-color: var(--accent);
+  color: var(--accent);
+}
+.reference-attach-list {
+  flex: 0 0 auto;
+  margin: 8px;
+  padding: 4px;
+  border-radius: 8px;
+  border: 1px solid var(--border);
+  background: var(--surface-2);
+  max-height: 160px;
+  overflow-y: auto;
+}
+.project-card-grid,
+.site-card-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+  gap: 14px;
+  margin-bottom: 20px;
+}
+.project-card,
+.site-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  overflow: hidden;
+  text-align: left;
+  transition: border-color 0.14s, transform 0.14s;
+}
+.project-card:hover,
+.site-card:hover {
+  border-color: var(--border-strong);
+  transform: translateY(-1px);
+}
+/* Обёртка карточки проекта (по запросу пользователя — угловая кнопка "..."
+   для попапа настроек) — сама .project-card остаётся button на весь клик по
+   карточке, кнопка меню рядом с ней, поверх, только по hover обёртки. */
+.project-card-wrap {
+  position: relative;
+  /* .project-card — теперь ВЛОЖЕННЫЙ <button> (в отличие от прежней
+     разметки, где он сам был прямым grid-item'ом и растягивался
+     CSS Grid'ом justify-items:stretch по умолчанию) — без явного width
+     флекс-контейнер кнопки схлопывался до content-width (живой баг, поймал
+     пользователь: "карточка маленькая"), а меню-кнопка, спозиционированная
+     absolute от ЭТОЙ обёртки, оказывалась далеко за пределами узкой
+     карточки. display:flex тут просто чтобы .project-card занял всю
+     доступную высоту тоже (grid-item не растягивал бы вложенный button
+     по высоте так же, как раньше). */
+  display: flex;
+}
+.project-card-wrap .project-card {
+  width: 100%;
+}
+.project-card-menu-btn {
+  position: absolute;
+  right: 8px;
+  bottom: 8px;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s ease;
+}
+.project-card-wrap:hover .project-card-menu-btn {
+  opacity: 1;
+}
+.project-card-menu-btn:hover {
+  background: var(--accent);
+}
+/* width:100% явно — по умолчанию flex-stretch на .project-card/.site-card
+   (display:flex;flex-direction:column, кросс-ось растягивает детей) должен
+   был дать то же самое, но на практике (родитель — <button>, у того свои
+   дефолтные UA-стили) обложка НЕ растягивалась на всю ширину карточки без
+   этого явного width — живой баг, поймал пользователь: фиолетовая подложка
+   отступала от правого края карточки. */
+.project-card-cover,
+.site-card-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 16 / 10;
+  min-height: 72px;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  overflow: hidden;
+}
+.project-card-cover img,
+.site-card-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.site-card-favicon {
+  width: 20px;
+  height: 20px;
+  object-fit: contain;
+}
+/* Плейсхолдер без превью (ещё нет референса со скриншотом/у обычного сайта
+   его не снимают) — цветной значок ВО ВСЮ область обложки (не мелкая иконка
+   в углу поверх пустой серой коробки — живой баг верстки, поймал
+   пользователь: невыразительно и криво по центру). position:absolute+inset:0
+   вместо width/height:100% на flex/grid-ребёнке — тот не растягивался
+   надёжно (flex-basis/track auto-sizing давали то сжатие, то частичную
+   ширину, живой баг, поймал пользователь дважды). Абсолютное позиционирование
+   относительно .project-card-cover/.site-card-cover (position:relative выше)
+   гарантированно заполняет ровно родителя, без зависимости от flex/grid
+   резолва процентов. */
+.project-card-cover-fallback,
+.site-card-cover-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.project-card-body,
+.site-card-body {
+  padding: 8px 10px 10px;
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+}
+.project-card-name,
+.site-card-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.project-card-description {
+  font-size: 11px;
+  color: var(--text-dim);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-card-meta,
+.site-card-host {
+  font-size: 11px;
+  color: var(--text-faint);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+
+/* ── Левый сайдбар: проекты (см. LeftSidebar.tsx/ProjectSection.tsx) ──────
+   Единый левый отступ по всей колонке: `.recent-scroll` уже даёт 8px, каждый
+   верхнеуровневый ряд (project-section-head, sidebar-section-label,
+   .recent-row) добавляет ещё 8px своих — все выравниваются по одной линии
+   в 16px от края колонки. Вложенное содержимое проекта (.project-section-group)
+   добавляет ещё 8px поверх — 24px, вложенность видна по отступу. Раньше
+   отступы были разнобойные (2px/8px вперемешку) — живой баг, поймал
+   пользователь. */
+.project-section {
+  border-radius: 8px;
+  margin-bottom: 2px;
+}
+.project-section-head {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+  padding: 6px 8px;
+  border-radius: 8px;
+}
+.project-section-head:hover {
+  background: var(--hover);
+}
+.project-section-head.drag-over {
+  background: var(--accent-soft);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+.project-section-toggle {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 16px;
+  height: 16px;
+  color: var(--text-faint);
+}
+.project-section-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 15px;
+  height: 15px;
+  color: var(--text-dim);
+}
+.project-section-name {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.project-section-count {
+  flex: 0 0 auto;
+  font-size: 10.5px;
+  color: var(--text-faint);
+}
+.project-section-rename-input {
+  flex: 1 1 auto;
+  min-width: 0;
+  font-size: 12.5px;
+  color: var(--text);
+  background: var(--surface-2);
+  border: 1px solid var(--border-strong);
+  border-radius: 6px;
+  padding: 4px 6px;
+}
+.project-section-group {
+  padding-left: 8px;
+  border-radius: 6px;
+}
+.project-section-group.drag-over {
+  background: var(--accent-soft);
+  outline: 1px dashed var(--accent);
+  outline-offset: -1px;
+}
+.project-section-group-label {
+  padding: 4px 8px 2px;
+  font-size: 10px;
+  text-transform: uppercase;
+  letter-spacing: 0.04em;
+  color: var(--text-faint);
+}
+.project-section-group-empty {
+  padding: 2px 8px 8px 16px;
+  font-size: 11px;
+  color: var(--text-faint);
+}
+.project-section-empty {
+  padding: 4px 8px 8px 16px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+.project-section-menu-danger {
+  color: var(--danger);
+}
+.project-site-thumb {
+  width: 20px;
+  height: 15px;
+  border-radius: 3px;
+  object-fit: cover;
+}
+
+/* Разделитель "Без проекта" между списком проектов и несортированными сайтами
+   — тот же отступ/масштаб, что и .project-section-group-label, но с верхним
+   отбивом от предыдущего блока (не PanelHead: у того 16px паддинг рассчитан
+   на верх ПАНЕЛИ целиком, не на разделитель внутри уже отступленного
+   .recent-scroll — рассинхрон паддингов и был живым багом). */
+.sidebar-section-label {
+  margin-top: 6px;
+  padding: 8px 8px 4px;
+  font-size: 10px;
+  font-weight: 600;
+  text-transform: uppercase;
+  letter-spacing: 0.7px;
+  color: var(--text-faint);
+  border-top: 1px solid var(--border);
+}
+
+/* ── Тулбар браузера: "Добавить в проект" (см. AddToProjectButton.tsx) ──── */
+.add-to-project-row {
+  display: flex;
+  align-items: center;
+  gap: 4px;
+}
+.add-to-project-name {
+  flex: 1 1 auto;
+  min-width: 0;
+}
+.add-to-project-empty {
+  padding: 4px 0 8px;
+  font-size: 11.5px;
+  color: var(--text-faint);
+}
+
+/* ── Модалка создания проекта (см. CreateProjectModal.tsx) ──────────────── */
+.create-project-body {
+  display: flex;
+  flex-direction: column;
+  min-width: 340px;
+}
+.create-project-icon-grid {
+  display: grid;
+  grid-template-columns: repeat(8, 1fr);
+  gap: 4px;
+  margin-top: 4px;
+}
+.create-project-icon-btn {
+  display: grid;
+  place-items: center;
+  aspect-ratio: 1;
+  border-radius: 8px;
+  color: var(--text-dim);
+  background: var(--surface);
+  border: 1px solid transparent;
+}
+.create-project-icon-btn:hover {
+  background: var(--hover);
+}
+.create-project-icon-btn.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+  border-color: var(--accent);
+}
+.create-project-thumbnail-btn {
+  overflow: hidden;
+}
+.create-project-thumbnail-btn img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.create-project-description {
+  resize: vertical;
+  min-height: 54px;
+  font-family: inherit;
+}
 
 /* ── Левый сайдбар: очередь мульти-выбора (см. LeftSidebar.tsx) ─────────── */
 .queue-scroll {
@@ -502,50 +1223,141 @@ body.overlay-body {
 .toolbar {
   position: relative;
 }
-.import-progress-ui {
-  position: absolute;
-  z-index: 5;
-  inset: auto 0 0;
-  pointer-events: none;
+
+/* ── Distraction-free: полоски раскрытия по наведению на край
+   (см. App.tsx useEdgeReveal) — тонкая HTML-полоска ВНЕ области нативного
+   WebContentsView браузера (тот перехватывает ввод раньше DOM, наведение
+   под ним не поймать), см. useEdgeReveal.ts докстринг. Раскрытая панель
+   РАЗДВИГАЕТ browser-pane обычным flex-реflow, не всплывает поверх —
+   единственный вариант, совместимый с этим ограничением, подтверждено
+   мокапом пользователю. */
+.edge-reveal-strip {
+  flex: 0 0 auto;
+  position: relative;
 }
-.import-progress-copy {
+.edge-reveal-strip::after {
+  content: '';
   position: absolute;
-  left: 50%;
-  bottom: 7px;
-  max-width: min(46vw, 620px);
+  background: var(--border);
+  opacity: 0;
+  transition: opacity 0.14s;
+}
+.edge-reveal-strip:hover::after {
+  opacity: 1;
+  background: var(--accent);
+}
+.edge-reveal-strip-top {
+  width: 100%;
+  height: 14px;
+}
+.edge-reveal-strip-top::after {
+  inset: auto 0 0;
+  height: 2px;
+}
+.edge-reveal-strip-left,
+.edge-reveal-strip-right {
+  width: 14px;
+  align-self: stretch;
+}
+.edge-reveal-strip-left::after {
+  inset: 0 0 0 auto;
+  width: 2px;
+}
+.edge-reveal-strip-right::after {
+  inset: 0 auto 0 0;
+  width: 2px;
+}
+.edge-reveal-strip-bottom {
+  width: 100%;
+  height: 14px;
+}
+.edge-reveal-strip-bottom::after {
+  inset: 0 0 auto;
+  height: 2px;
+}
+/* Прогресс импорта — ТОЛЬКО в постоянно-видимом overlay-слое (см.
+   OverlayRoot.tsx, рядом с .picker-float-bar), больше не дублируется
+   инлайн в тулбаре главного окна (по запросу пользователя — понравилось
+   именно "над тулбаром", инлайн-версию убрали как лишнюю). Это же
+   единственное место, гарантированно видимое НАД браузером в любом режиме,
+   включая fullscreen с прижатым тулбаром — раньше плашка в главном окне
+   пряталась ЗА нативным browser-вьюпортом, тот всегда рисуется поверх
+   обычного HTML главного окна. */
+.overlay-import-progress {
   display: flex;
   align-items: center;
-  gap: 7px;
-  padding: 4px 9px;
+  gap: 9px;
+  /* Вариант B из демо-сравнения (см. чат) — пользователь пожаловался, что
+     46vw/480px обрезали detail на полуслове (особенно длинные тексты
+     ошибок); шире максимум даёт пилюле вырасти под реальный текст вместо
+     обрезания/переноса. */
+  max-width: min(70vw, 640px);
+  padding: 8px 10px 8px 12px;
   color: var(--text);
-  background: color-mix(in srgb, var(--bg-panel) 92%, transparent);
+  background: var(--surface);
   border: 1px solid var(--border);
-  border-radius: 999px;
-  box-shadow: var(--shadow-sm);
-  font-size: 11px;
-  transform: translateX(-50%);
+  border-radius: 14px;
+  box-shadow: var(--shadow);
+  font-size: 12px;
+}
+.overlay-import-progress-icon {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  color: var(--accent);
+}
+.overlay-import-progress.success .overlay-import-progress-icon { color: #22c55e; }
+.overlay-import-progress.error .overlay-import-progress-icon { color: var(--danger); }
+.overlay-import-progress-icon .spin {
+  animation: overlay-import-progress-spin 0.9s linear infinite;
+}
+@keyframes overlay-import-progress-spin {
+  to { transform: rotate(360deg); }
+}
+/* Подпись статуса ("Чтение DOM…", "Готово за 2.1 с", текст ошибки) — раньше
+   была видна только в title-тултипе при наведении, по жалобе пользователя
+   ("не показывает статусы") теперь всегда на виду второй строкой. */
+.overlay-import-progress-text {
+  display: flex;
+  flex-direction: column;
+  gap: 1px;
+  min-width: 0;
+}
+.overlay-import-progress-label {
   white-space: nowrap;
+  font-weight: 600;
 }
-.import-progress-detail {
-  overflow: hidden;
+.overlay-import-progress-detail {
+  white-space: nowrap;
   color: var(--text-faint);
-  text-overflow: ellipsis;
+  font-size: 11px;
 }
-.import-progress-track {
-  width: 100%;
+.overlay-import-progress-track {
+  flex: 0 0 auto;
+  width: 56px;
   height: 3px;
   overflow: hidden;
+  border-radius: 999px;
   background: color-mix(in srgb, var(--border) 72%, transparent);
 }
-.import-progress-fill {
+.overlay-import-progress-fill {
   height: 100%;
   background: linear-gradient(90deg, var(--accent), color-mix(in srgb, var(--accent) 65%, #60a5fa));
-  border-radius: 0 999px 999px 0;
-  box-shadow: 0 0 8px color-mix(in srgb, var(--accent) 65%, transparent);
   transition: width 180ms ease;
 }
-.import-progress-ui.success .import-progress-fill { background: #22c55e; }
-.import-progress-ui.error .import-progress-fill { background: var(--danger); }
+.overlay-import-progress-cancel {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 17px;
+  height: 17px;
+  border-radius: 50%;
+  color: var(--text-faint);
+}
+.overlay-import-progress-cancel:hover {
+  background: var(--danger);
+  color: #fff;
+}
 .queue-row-thumbnail-empty {
   border: 1px dashed var(--border);
 }
@@ -788,6 +1600,272 @@ body.overlay-body {
   background: var(--danger);
 }
 
+/* ── Референс-элементы (см. ReferenceItemCard.tsx) — карточка по паттерну
+   .site-card (обложка + всегда видимый body), не .asset-tile: имя/описание
+   тут смысловые, не должны прятаться за hover. ──────────────────────────── */
+.reference-item-grid {
+  display: grid;
+  grid-template-columns: repeat(auto-fill, minmax(160px, 1fr));
+  align-items: stretch;
+  gap: 10px;
+}
+.reference-item-card {
+  display: flex;
+  flex-direction: column;
+  border-radius: var(--radius-lg);
+  border: 1px solid var(--border);
+  background: var(--surface);
+  /* НЕ overflow:hidden тут (было раньше) — попап комментария (см.
+     .reference-item-comment-popover) абсолютно позиционирован внутри этой
+     карточки и должен уметь вылезать за её границы, а overflow:hidden на
+     родителе обрезает любых абсолютных потомков независимо от их собственного
+     z-index (живой баг, поймал пользователь — "обрезается поле комментария").
+     Скругление верхних углов превью теперь на самом .reference-item-cover
+     ниже, не на карточке целиком. */
+}
+.reference-item-cover {
+  position: relative;
+  width: 100%;
+  aspect-ratio: 4 / 3;
+  flex-shrink: 0;
+  background: var(--surface-2);
+  overflow: hidden;
+  border-radius: var(--radius-lg) var(--radius-lg) 0 0;
+}
+.reference-item-cover.clickable {
+  cursor: zoom-in;
+}
+.reference-item-cover img {
+  width: 100%;
+  height: 100%;
+  object-fit: cover;
+}
+.reference-item-cover-fallback {
+  position: absolute;
+  inset: 0;
+  display: grid;
+  place-items: center;
+  color: var(--text-faint);
+  font-size: 11px;
+  font-family: 'SF Mono', ui-monospace, monospace;
+}
+.reference-item-sent-badge {
+  position: absolute;
+  top: 6px;
+  left: 6px;
+  display: grid;
+  place-items: center;
+  width: 18px;
+  height: 18px;
+  border-radius: 50%;
+  background: #22c55e;
+  color: #fff;
+}
+.reference-item-cover-remove {
+  position: absolute;
+  top: 6px;
+  right: 6px;
+  display: grid;
+  place-items: center;
+  width: 22px;
+  height: 22px;
+  border-radius: 6px;
+  background: rgba(0, 0, 0, 0.55);
+  color: #fff;
+  opacity: 0;
+  transition: opacity 0.12s, background 0.12s;
+}
+.reference-item-card:hover .reference-item-cover-remove,
+.site-card:hover .reference-item-cover-remove {
+  opacity: 1;
+}
+.reference-item-cover-remove:hover {
+  background: var(--danger);
+}
+.reference-item-body {
+  flex: 1 1 auto;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.reference-item-meta {
+  display: flex;
+  flex-direction: column;
+  gap: 2px;
+  cursor: text;
+  min-height: 28px;
+}
+.reference-item-name {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-item-description {
+  font-size: 11px;
+  color: var(--text-faint);
+  display: -webkit-box;
+  -webkit-line-clamp: 2;
+  -webkit-box-orient: vertical;
+  overflow: hidden;
+}
+.reference-item-name-input {
+  width: 100%;
+  border: 1px solid var(--border);
+  border-radius: 5px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  padding: 3px 6px;
+  font-size: 12.5px;
+  font-weight: 600;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.reference-item-name-input:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.reference-item-actions {
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  /* Прижимает ряд кнопок к низу карточки (по запросу пользователя) —
+     карточки в сетке одной высоты (grid stretch по умолчанию), но имя у
+     разных элементов занимает 1 или 2 строки, без этого кнопки скакали бы
+     по высоте вместе с текстом вместо ровной линии по всей сетке. */
+  margin-top: auto;
+}
+.reference-item-comment {
+  flex: 0 0 auto;
+  display: grid;
+  place-items: center;
+  width: 24px;
+  height: 24px;
+  border-radius: 6px;
+  color: var(--text-faint);
+}
+.reference-item-comment:hover {
+  background: var(--hover);
+  color: var(--text);
+}
+.reference-item-comment.has-comment {
+  color: var(--accent);
+}
+.reference-item-comment.active {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+/* Инлайн-поле комментария (по прямому запросу пользователя — не поп-ап, а
+   раскрывающееся поле прямо в теле карточки, см. ReferenceItemCard.tsx
+   докстринг про причину отказа от position:absolute/portal попапа). Обычный
+   document flow — раздвигает карточку вниз, никакой отдельной позиционной
+   логики не нужно. */
+.reference-item-comment-inline {
+  display: flex;
+  flex-direction: column;
+  gap: 6px;
+}
+.reference-item-comment-inline textarea {
+  width: 100%;
+  resize: none;
+  border: 1px solid var(--border);
+  border-radius: 6px;
+  background: var(--surface-2);
+  color: var(--text);
+  font-family: inherit;
+  font-size: 11.5px;
+  padding: 6px 8px;
+  outline: none;
+  transition: border-color 0.12s, box-shadow 0.12s;
+}
+.reference-item-comment-inline textarea:focus {
+  border-color: var(--accent);
+  box-shadow: 0 0 0 3px var(--accent-soft);
+}
+.reference-item-send {
+  flex: 1 1 auto;
+  display: flex;
+  align-items: center;
+  justify-content: center;
+  gap: 5px;
+  height: 24px;
+  border-radius: 6px;
+  background: var(--hover);
+  color: var(--text);
+  font-size: 11px;
+}
+.reference-item-send:hover {
+  background: var(--accent-soft);
+  color: var(--accent);
+}
+.reference-item-send.error {
+  background: var(--danger);
+  color: #fff;
+}
+.reference-items-panel {
+  flex: 1 1 auto;
+  min-height: 0;
+  min-width: 0;
+  padding: 8px;
+  display: flex;
+  flex-direction: column;
+  gap: 10px;
+}
+.reference-items-panel-head {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 10px;
+}
+.reference-items-panel-scroll {
+  flex: 1 1 auto;
+  min-height: 0;
+  overflow-y: auto;
+}
+.reference-items-panel-title {
+  font-size: 12.5px;
+  font-weight: 600;
+  color: var(--text);
+  overflow: hidden;
+  text-overflow: ellipsis;
+  white-space: nowrap;
+}
+.reference-items-send-all {
+  flex: 0 0 auto;
+  display: flex;
+  align-items: center;
+  gap: 6px;
+  padding: 5px 10px;
+  border-radius: 7px;
+  background: var(--accent);
+  color: #fff;
+  font-size: 11.5px;
+  font-weight: 600;
+  white-space: nowrap;
+}
+.reference-items-send-all:hover {
+  background: color-mix(in srgb, var(--accent) 85%, #000);
+}
+.reference-items-send-all-bar {
+  flex: 0 0 auto;
+  margin: 4px -8px -8px;
+  padding: 10px;
+  background: linear-gradient(to top, var(--bg) 60%, transparent);
+}
+.reference-items-send-all-bar .reference-items-send-all {
+  width: 100%;
+  justify-content: center;
+  height: 34px;
+  border-radius: var(--radius-lg);
+  font-size: 12.5px;
+  box-shadow: 0 6px 18px rgba(0, 0, 0, 0.25);
+}
+
 /* ── Read-only распознавание компонентов ───────────────────────────────── */
 .components-panel {
   flex: 1 1 auto;
@@ -1027,7 +2105,7 @@ body.overlay-body {
   border-radius: 5px;
   text-align: left;
   white-space: nowrap;
-  cursor: default;
+  cursor: pointer;
 }
 .element-tree-row:hover {
   background: var(--surface-2);
@@ -1043,6 +2121,9 @@ body.overlay-body {
   display: grid;
   place-items: center;
   color: var(--text-faint);
+}
+.element-tree-chevron[role='button'] {
+  cursor: pointer;
 }
 .element-tree-tag,
 .element-tree-id,

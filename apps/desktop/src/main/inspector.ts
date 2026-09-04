@@ -23,7 +23,7 @@ import { parseAppearance, parseLayout, parseTypography, toComputedStyleMap } fro
 //   type TooltipAccessibilityInfo,
 //   type TooltipMode
 // } from './hoverTooltip'
-import type { ElementSummary, ElementTreeNode, PickState, QueueItemSummary, SelectionResult } from '../shared/types'
+import type { CaptureViewportSettings, ElementSummary, ElementTreeNode, PickState, QueueItemSummary, SelectionResult } from '../shared/types'
 
 const log = createConsoleLogger('inspector')
 
@@ -69,7 +69,8 @@ function toElementTree(node: DomSnapshotNode, key = '0'): ElementTreeNode {
     id: node.id,
     classes: node.classes,
     ...(text ? { text: text.slice(0, 80) } : {}),
-    children: elementChildren.map((child, index) => toElementTree(child, `${key}.${index}`))
+    children: elementChildren.map((child, index) => toElementTree(child, `${key}.${index}`)),
+    ...(node.sourceSelector ? { sourceSelector: node.sourceSelector } : {})
   }
 }
 
@@ -83,16 +84,34 @@ async function getElementTreeParent(wc: WebContents, backendNodeId: number): Pro
     if (!objectId) return null
     const result = (await wc.debugger.sendCommand('Runtime.callFunctionOn', {
       objectId,
+      // sourceSelector считается той же логикой, что и в buildPreviewSnapshotTree
+      // (см. domSnapshot.ts) — держит родителя кликабельным в дереве наравне с
+      // обычными узлами (см. Api.inspectorSelectTreeNode).
       functionDeclaration: `function () {
         const parent = this.parentElement
         if (!parent) return null
         const classValue = typeof parent.className === 'string' ? parent.className : (parent.getAttribute('class') || '')
+        const path = (el) => {
+          if (el.id && document.querySelectorAll('#' + CSS.escape(el.id)).length === 1) return '#' + CSS.escape(el.id)
+          const parts = []
+          let current = el
+          while (current && current.nodeType === 1) {
+            const tag = current.tagName.toLowerCase()
+            const p = current.parentElement
+            if (!p) { parts.unshift(tag); break }
+            const siblings = Array.from(p.children)
+            parts.unshift(tag + ':nth-child(' + (siblings.indexOf(current) + 1) + ')')
+            current = p
+          }
+          return parts.join(' > ')
+        }
         return {
           key: 'parent',
           tag: parent.tagName.toLowerCase(),
           id: parent.id || null,
           classes: classValue.split(/\\s+/).filter(Boolean),
-          children: []
+          children: [],
+          sourceSelector: path(parent)
         }
       }`,
       returnByValue: true
@@ -111,11 +130,12 @@ async function getElementTreeParent(wc: WebContents, backendNodeId: number): Pro
 // отдают мобильную/узкую раскладку вместо desktop-flex, который видит
 // пользователь в обычном браузере (см. docs/architecture.md, живая проверка
 // на ris.pxls-cdn.ru/standardization). `withDesktopViewport` временно
-// раздвигает CDP-viewport хотя бы до этого reference-размера через
-// Emulation.setDeviceMetricsOverride (реальный layout страницы пересчитывается,
-// backendNodeId остаётся валиден — идентичность DOM-узла не зависит от
-// раскладки). Никогда не СУЖАЕМ — если реальный viewport и так шире
-// (пользователь развернул окно на большом экране), используем его.
+// раздвигает/сужает CDP-viewport до выбранного в настройках брейкпоинта
+// через Emulation.setDeviceMetricsOverride (реальный layout страницы
+// пересчитывается, backendNodeId остаётся валиден — идентичность DOM-узла
+// не зависит от раскладки). Раньше это был всегда-хардкод-минимум
+// 1440×900, не уже; теперь настраивается (см. AppSettings.captureViewport)
+// — по запросу пользователя, с возможностью вообще выключить override.
 //
 // ВАЖНО: это ре-раскладка РЕАЛЬНОГО видимого webContents (offscreen-снапшот
 // в CDP не сделать) — на видимой странице это выглядит как заметный "дёрг"
@@ -127,8 +147,6 @@ async function getElementTreeParent(wc: WebContents, backendNodeId: number): Pro
 // Panel снимает снапшот на текущем реальном viewport без какого-либо дёрга,
 // как было до этой фичи; "дёрг" остаётся только один раз на committing-действие
 // Import as Frame, где это ощутимо более приемлемо, чем на каждом exploratory-клике.
-const CAPTURE_MIN_WIDTH = 1440
-const CAPTURE_MIN_HEIGHT = 900
 
 // // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — опрос позиции курсора (50мс), см. hoverTooltip.ts.
 // const HOVER_POLL_MS = 50
@@ -267,7 +285,7 @@ const RESTORE_PICK_HIGHLIGHT_FUNCTION = `function() {
  *  вкладке искать узел, и сам backendNodeId. `thumbnail` — маленький
  *  JPEG-скриншот элемента догружается отдельным offscreen renderer (см.
  *  `scheduleQueueThumbnail`), чтобы не трогать compositor видимой страницы. */
-interface QueueItem {
+export interface QueueItem {
   id: string
   result: SelectionResult
   conversion: { node: DesignNode; diagnostics: ConversionWarning[] }
@@ -332,6 +350,14 @@ export class ElementPicker {
   private queueMode = false
   private queue: QueueItem[] = []
   private pendingQueueItem: QueueItem | null = null
+  /** Сбор референс-элементов для конкретного сайта (по запросу пользователя,
+   *  см. shared/types.ts ReferenceItem) — параллельно queueMode, не замена:
+   *  весь механизм пика/подтверждения (pendingQueueItem, confirmQueueAdd/
+   *  Cancel) переиспользуется как есть, только index.ts решает, куда уходит
+   *  подтверждённый item — в обычную `queue` (обычный Import Queue) или в
+   *  ReferenceItemsStore, когда referenceSiteKey не null (см.
+   *  inspector:queue-confirm-add в index.ts). null — сессии сбора нет. */
+  private referenceSiteKey: string | null = null
   /** webContents, на котором СЕЙЧАС висит `handleBeforeInput` (Esc) — раньше
    *  этот listener жил строго внутри активного pick-режима (снимался вместе
    *  с debugger'ом сразу после каждого клика в `cleanupDebugger`), из-за чего
@@ -369,7 +395,28 @@ export class ElementPicker {
     /** Полный queue capture выполняется позже и может читать скрытую вкладку,
      * не переключая её перед глазами пользователя. */
     private readonly getWebContentsForTab: (tabId: string) => WebContents | null,
-    private readonly getViewportSize: () => { width: number; height: number }
+    private readonly getViewportSize: () => { width: number; height: number },
+    /** Настройка "как захватывать пикером" (см. AppSettings.captureViewport
+     *  докстринг, withDesktopViewport) — асинхронно (settings.json читается
+     *  с диска, см. main/index.ts), заново на каждый реальный импорт, не
+     *  кешируется тут: пользователь может поменять настройку, пока
+     *  приложение уже открыто. */
+    private readonly getCaptureViewport: () => Promise<CaptureViewportSettings>,
+    /** Настройка "захватывать блок целиком, со скроллом" (по запросу
+     *  пользователя, см. AppSettings.captureFullBlockThumbnail докстринг) —
+     *  включает fullElement-режим в scheduleQueueThumbnail: длинный блок
+     *  (выше окна встроенного браузера) снимается целиком, а не обрезается
+     *  по границе видимой области. */
+    private readonly getThumbnailFullBlockCapture: () => Promise<boolean>,
+    /** Офскрин-миниатюра элемента очереди готова (см. scheduleQueueThumbnail)
+     *  — вызывается ВСЕГДА по id, независимо от того, ещё ли этот item в
+     *  очереди/pending (референс-элементы index.ts коммитит в
+     *  ReferenceItemsStore почти сразу после пика, обычно раньше, чем
+     *  успевает отработать офскрин-снимок — onQueueChange/onQueuePending его
+     *  к этому моменту уже не находят и молча теряют миниатюру, живой баг,
+     *  поймал пользователь). index.ts сam решает, что делать с готовой
+     *  миниатюрой для уже закоммиченного элемента. */
+    private readonly onItemThumbnailReady?: (id: string, thumbnail: string) => void
     // ВКЛЮЧИТЬ ДЛЯ КАСТОМНОГО ТУЛТИПА — 6-й и 7-й параметры конструктора:
     // , private readonly getEffectiveTheme: () => Promise<TooltipMode>
     // /** Экранные координаты (не window-relative) прямоугольника WebContentsView
@@ -669,31 +716,37 @@ export class ElementPicker {
   }
 
   /**
-   * Временно раздвигает CDP-viewport страницы до `CAPTURE_MIN_WIDTH`×`CAPTURE_MIN_HEIGHT`
-   * (не сужая, если реальный viewport и так шире) на время `fn`, потом снимает
-   * override — см. комментарий у констант выше про причину и живую проверку.
+   * Временно раздвигает/сужает CDP-viewport страницы до выбранного в
+   * настройках брейкпоинта (см. AppSettings.captureViewport) на время `fn`,
+   * потом снимает override — см. комментарий у констант выше про причину и
+   * живую проверку. По запросу пользователя опционально: `forced: false`
+   * — вообще ничего не трогает, `fn` снимается на РЕАЛЬНОМ текущем
+   * viewport встроенного браузера as-is. `forced: true` — точный override
+   * на `width`×`height` (не только "не уже", как раньше было хардкожено с
+   * CAPTURE_MIN_WIDTH/HEIGHT — раз пользователь явно выбирает брейкпоинт
+   * (напр. Mobile), это должно реально сузить viewport, даже если окно
+   * встроенного браузера сейчас шире, иначе выбор брейкпоинта был бы
+   * бессмысленным для десктопного окна).
    */
   private async withDesktopViewport<T>(dbg: WebContents['debugger'], fn: () => Promise<T>): Promise<T> {
+    const { forced, width, height } = await this.getCaptureViewport()
+    if (!forced) return fn()
     let overridden = false
     try {
       const metrics = (await dbg.sendCommand('Page.getLayoutMetrics')) as {
         cssVisualViewport?: { clientWidth: number; clientHeight: number }
       }
       const current = metrics.cssVisualViewport
-      if (current) {
-        const width = Math.max(current.clientWidth, CAPTURE_MIN_WIDTH)
-        const height = Math.max(current.clientHeight, CAPTURE_MIN_HEIGHT)
-        if (width > current.clientWidth || height > current.clientHeight) {
-          await dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
-            width: Math.round(width),
-            height: Math.round(height),
-            deviceScaleFactor: 0,
-            mobile: false
-          })
-          overridden = true
-          // Даём странице пересчитать layout/media-query-зависимый CSS перед снятием box-модели.
-          await new Promise((resolve) => setTimeout(resolve, 100))
-        }
+      if (!current || current.clientWidth !== width || current.clientHeight !== height) {
+        await dbg.sendCommand('Emulation.setDeviceMetricsOverride', {
+          width: Math.round(width),
+          height: Math.round(height),
+          deviceScaleFactor: 0,
+          mobile: false
+        })
+        overridden = true
+        // Даём странице пересчитать layout/media-query-зависимый CSS перед снятием box-модели.
+        await new Promise((resolve) => setTimeout(resolve, 100))
       }
       return await fn()
     } finally {
@@ -849,6 +902,16 @@ export class ElementPicker {
     return this.queueMode
   }
 
+  /** Не трогает queueMode/pendingQueueItem — index.ts включает оба вместе
+   *  (reference:session-start), но это независимые переключатели. */
+  setReferenceMode(siteKey: string | null): void {
+    this.referenceSiteKey = siteKey
+  }
+
+  getReferenceSiteKey(): string | null {
+    return this.referenceSiteKey
+  }
+
   getQueue(): QueueItemSummary[] {
     return this.queue.map((item) => ({ id: item.id, element: item.result.element, thumbnail: item.thumbnail }))
   }
@@ -910,6 +973,24 @@ export class ElementPicker {
     this.queueThumbnailJobs = this.queueThumbnailJobs
       .catch(() => undefined)
       .then(async () => {
+        // ВЕРНУЛИСЬ на офскрин-перезагрузку — короткая попытка снимать живым
+        // `capturePage()` прямо с этой вкладки (без реолада) регулярно ловила
+        // НОВЫЙ живой баг, поймал пользователь скриншотом: пикер к моменту
+        // выполнения этого фонового job'а мог УЖЕ переключиться в
+        // inspect-режим на СЛЕДУЮЩИЙ элемент (confirmQueueAdd сразу
+        // перезапускает pick, см. ниже) — нативная CDP-подсказка
+        // Overlay.setInspectMode (рамка + Accessibility-тултип) в этот
+        // момент реально нарисована НАД страницей и попадала прямо в кадр
+        // миниатюры ПРЕДЫДУЩЕГО элемента. Согнать этот оверлей вручную перед
+        // съёмкой было бы ещё хуже — тот же CDP debugger session сейчас
+        // может быть занят активным pick'ом пользователя, дёргать
+        // Overlay.setInspectMode('none') из фонового job'а оборвало бы его
+        // текущее наведение. Офскрин-окно полностью изолировано от live-
+        // страницы и её picker-состояния — этой категории багов там в
+        // принципе неоткуда взяться, только осознанный размен: чуть менее
+        // надёжный re-locate элемента после чистой перезагрузки (см. ниже
+        // retry-loop в componentScanner.ts, это и есть основной рычаг
+        // надёжности, который тут реально стоит крутить дальше).
         const thumbnail = await captureElementPreviewOffscreen(
           sourceWc,
           item.sourceUrl,
@@ -921,7 +1002,8 @@ export class ElementPicker {
             classes: item.result.element.classes,
             width: item.result.element.width,
             height: item.result.element.height
-          }
+          },
+          await this.getThumbnailFullBlockCapture()
         )
         if (!thumbnail) return
         item.thumbnail = thumbnail
@@ -929,18 +1011,25 @@ export class ElementPicker {
           this.onQueuePending({ id: item.id, element: item.result.element, thumbnail })
         }
         if (this.queue.some((queued) => queued.id === item.id)) this.onQueueChange(this.getQueue())
+        this.onItemThumbnailReady?.(item.id, thumbnail)
       })
   }
 
   /** "Добавить" в попапе подтверждения — переносит pending-item в очередь и,
    *  если queueMode всё ещё активен, сразу перезапускает pick для следующего
    *  элемента (см. класс-докстринг — это и есть "поочерёдный выбор"). */
-  confirmQueueAdd(): void {
-    if (!this.pendingQueueItem) return
-    this.queue.push(this.pendingQueueItem)
+  /** Возвращает добавленный item (или null, если подтверждать было нечего) —
+   *  нужно index.ts, чтобы синхронно решить, диверсировать ли его в
+   *  ReferenceItemsStore (см. referenceSiteKey выше), не дожидаясь
+   *  широковещания onQueueChange. */
+  confirmQueueAdd(): QueueItem | null {
+    if (!this.pendingQueueItem) return null
+    const item = this.pendingQueueItem
+    this.queue.push(item)
     this.pendingQueueItem = null
     this.onQueueChange(this.getQueue())
     if (this.queueMode) void this.start()
+    return item
   }
 
   /** "Отменить" — тот же авто-рестарт пика, просто без добавления в очередь. */
@@ -1022,6 +1111,63 @@ export class ElementPicker {
     }
 
     return { documents, failed }
+  }
+
+  /** Референс-версия prepareQueueDocuments выше — та же логика повторного
+   *  захвата DesignDocument по координатам (tabId/backendNodeId/sourceUrl,
+   *  тот же CDP attach/withDesktopViewport/captureAndConvert путь), но
+   *  элементы приходят НЕ из this.queue (референс-элементы в неё никогда не
+   *  попадают, см. referenceSiteKey докстринг), а переданы явно — и
+   *  результат помечен id элемента, а не безымянным массивом, чтобы
+   *  index.ts мог по одному отмечать ReferenceItem как отправленный/с ошибкой,
+   *  а не только считать общий failed. */
+  async prepareReferenceDocuments(
+    items: Array<{ id: string; tabId: string; backendNodeId: number; sourceUrl: string }>,
+    viewport: { width: number; height: number },
+    onProgress?: (completed: number, total: number) => void
+  ): Promise<Array<{ id: string; document: DesignDocument } | { id: string; error: string }>> {
+    const results: Array<{ id: string; document: DesignDocument } | { id: string; error: string }> = []
+    let completed = 0
+
+    for (const item of items) {
+      const wc = this.getWebContentsForTab(item.tabId)
+      if (!wc || wc.isDestroyed() || wc.getURL() !== item.sourceUrl) {
+        results.push({ id: item.id, error: 'Исходная вкладка недоступна' })
+        completed++
+        onProgress?.(completed, items.length)
+        continue
+      }
+      const dbg = wc.debugger
+      let attached = false
+      try {
+        await waitForDebuggerRelease(dbg)
+        dbg.attach(CDP_PROTOCOL_VERSION)
+        attached = true
+        await dbg.sendCommand('DOM.enable')
+        await dbg.sendCommand('CSS.enable')
+        await this.withDesktopViewport(dbg, () => this.captureAndConvert(wc, item.backendNodeId))
+        if (!this.lastConversion) throw new Error('Reference conversion is empty')
+        results.push({
+          id: item.id,
+          document: {
+            version: 1,
+            root: this.lastConversion.node,
+            assets: this.lastAssets,
+            diagnostics: this.lastConversion.diagnostics,
+            metadata: { sourceUrl: item.sourceUrl, capturedAt: new Date().toISOString(), viewport }
+          }
+        })
+      } catch (err) {
+        results.push({ id: item.id, error: (err as Error).message })
+        log.warn('failed to prepare reference item', { id: item.id, message: (err as Error).message })
+      } finally {
+        if (attached && dbg.isAttached()) dbg.detach()
+        completed++
+        onProgress?.(completed, items.length)
+      }
+    }
+
+    return results
   }
 
   /** Ставит персистентный (переживающий detach debugger'а) outline на
@@ -1143,6 +1289,63 @@ export class ElementPicker {
       return true
     } catch (err) {
       log.warn('prepareForImport failed', { message: (err as Error).message })
+      return false
+    } finally {
+      if (!alreadyAttached && dbg.isAttached()) dbg.detach()
+    }
+  }
+
+  /** Клик по узлу в Element tree (см. InspectorPanel CompactElementTree) —
+   *  переключает текущее выделение на ЭТОТ DOM-элемент по его `sourceSelector`
+   *  (тот же CSS-путь, который уже считает buildPreviewSnapshotTree для
+   *  каждого узла превью-дерева, см. domSnapshot.ts), тем же путём, что и
+   *  обычный клик пикером (captureAndConvert + onSelect), только без захода
+   *  в pick-режим/CDP Overlay.setInspectMode. `DOM.getDocument`+
+   *  `DOM.querySelector`+`DOM.describeNode` — тот же паттерн поиска узла по
+   *  селектору, что уже используется в selectFullPage() выше (там — с
+   *  фиксированным селектором 'body'). Персистентная подсветка на странице
+   *  переставляется так же, как в highlightBackendNode(): сперва снимается
+   *  предыдущая (CLEAR_PICK_HIGHLIGHT_SCRIPT), затем ставится новая — иначе
+   *  на странице копились бы обводки от каждого клика по дереву. preview:true
+   *  — тот же облегчённый снапшот, что у обычного клика пикером (см.
+   *  handleInspectNodeRequested), полный захват нужен только на реальном
+   *  импорте. Возвращает false, если селектор не находит узел — страница
+   *  могла перезагрузиться/измениться с момента захвата дерева. */
+  async selectBySourceSelector(sourceSelector: string): Promise<boolean> {
+    const wc = this.getWebContents()
+    if (!wc) return false
+    const dbg = wc.debugger
+    const alreadyAttached = dbg.isAttached()
+    try {
+      if (!alreadyAttached) {
+        dbg.attach(CDP_PROTOCOL_VERSION)
+        await dbg.sendCommand('DOM.enable')
+        await dbg.sendCommand('CSS.enable')
+      }
+      const { root } = (await dbg.sendCommand('DOM.getDocument', { depth: 0 })) as { root: { nodeId: number } }
+      const { nodeId } = (await dbg.sendCommand('DOM.querySelector', {
+        nodeId: root.nodeId,
+        selector: sourceSelector
+      })) as { nodeId: number }
+      if (!nodeId) return false
+      const { node } = (await dbg.sendCommand('DOM.describeNode', { nodeId })) as { node: { backendNodeId: number } }
+      const backendNodeId = node.backendNodeId
+      const { object } = (await dbg.sendCommand('DOM.resolveNode', { backendNodeId })) as {
+        object: { objectId?: string }
+      }
+      if (object.objectId) {
+        await dbg.sendCommand('Runtime.evaluate', { expression: CLEAR_PICK_HIGHLIGHT_SCRIPT }).catch(() => {})
+        await dbg
+          .sendCommand('Runtime.callFunctionOn', { functionDeclaration: APPLY_PICK_HIGHLIGHT_FUNCTION, objectId: object.objectId })
+          .catch(() => {})
+      }
+      const result = await this.captureAndConvert(wc, backendNodeId, { preview: true })
+      this.lastBackendNodeId = backendNodeId
+      this.lastSelectionResult = result
+      this.onSelect(result)
+      return true
+    } catch (err) {
+      log.warn('selectBySourceSelector failed', { message: (err as Error).message })
       return false
     } finally {
       if (!alreadyAttached && dbg.isAttached()) dbg.detach()

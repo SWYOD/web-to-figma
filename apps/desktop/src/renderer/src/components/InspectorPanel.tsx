@@ -1,6 +1,7 @@
+import type { ReactNode } from 'react'
 import { useEffect, useMemo, useState } from 'react'
 import { Check, ChevronDown, ChevronRight, Copy } from 'lucide-react'
-import { Block, BlockHead, Panel, PanelHead, PanelTitle, Segmented, Switch } from '@web-to-figma/ui'
+import { Block, BlockHead, Panel, PanelHead, PanelHeadActions, PanelTitle, Segmented, Switch } from '@web-to-figma/ui'
 import { computeConfidenceScore, confidenceLevel, type ConfidenceLevel } from '@web-to-figma/conversion-engine'
 import type { ConversionWarning } from '@web-to-figma/design-ast'
 import type { AppSettings, ElementSummary, ElementTreeNode, PickState } from '../../../shared/types'
@@ -10,7 +11,13 @@ const LEVEL_LABEL: Record<ConfidenceLevel, string> = { high: 'высокая', m
 const EMPTY_PICK: PickState = { active: false, error: null }
 const TRANSPARENT = /^(rgba\(0,\s*0,\s*0,\s*0\)|transparent)$/i
 
-export function InspectorPanel(): JSX.Element {
+interface Props {
+  /** См. LeftSidebar.tsx Props.pinAction — тот же паттерн: кнопка pin для
+   *  float-режима рендерится в шапку панели, а не абсолютным слоем поверх. */
+  pinAction?: ReactNode
+}
+
+export function InspectorPanel({ pinAction }: Props): JSX.Element {
   const [pick, setPick] = useState<PickState>(EMPTY_PICK)
   const [selection, setSelection] = useState<ElementSummary | null>(null)
   const [elementTree, setElementTree] = useState<ElementTreeNode | null>(null)
@@ -88,6 +95,7 @@ export function InspectorPanel(): JSX.Element {
     <Panel>
       <PanelHead>
         <PanelTitle>Inspector</PanelTitle>
+        {pinAction && <PanelHeadActions>{pinAction}</PanelHeadActions>}
       </PanelHead>
       <Block>
         <BlockHead>Element picker</BlockHead>
@@ -206,11 +214,26 @@ function CompactElementTree({ tree, parent }: { tree: ElementTreeNode; parent: E
           type="button"
           className={`element-tree-row${node.key === tree.key ? ' selected' : ''}`}
           style={{ paddingLeft: `${6 + depth * 13}px` }}
-          onClick={() => hasChildren && toggle(node.key)}
-          aria-expanded={hasChildren ? isExpanded : undefined}
+          // Клик по строке переключает текущее выделение на этот DOM-элемент
+          // (см. main/inspector.ts selectBySourceSelector) — по запросу
+          // пользователя, раньше дерево было доступно только для просмотра.
+          // Раскрытие/сворачивание ветки — отдельный клик по шеврону (см.
+          // ниже), чтобы не выбирать элемент случайно вместе с разворачиванием
+          // поддерева. Узлы без sourceSelector (не должно случаться для
+          // preview-снапшота, но на всякий случай) просто не кликабельны.
+          onClick={() => node.sourceSelector && void window.api.inspectorSelectTreeNode(node.sourceSelector)}
           title={node.text || undefined}
         >
-          <span className="element-tree-chevron">
+          <span
+            className="element-tree-chevron"
+            role={hasChildren ? 'button' : undefined}
+            aria-expanded={hasChildren ? isExpanded : undefined}
+            onClick={(e) => {
+              if (!hasChildren) return
+              e.stopPropagation()
+              toggle(node.key)
+            }}
+          >
             {hasChildren ? isExpanded ? <ChevronDown size={12} /> : <ChevronRight size={12} /> : null}
           </span>
           <span className="element-tree-tag">{node.tag}</span>

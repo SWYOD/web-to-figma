@@ -2,11 +2,16 @@ import { useEffect, useState } from 'react'
 import { Cable, Check, Copy } from 'lucide-react'
 import { IconButton, Popover, StatusRow } from '@web-to-figma/ui'
 import type { BridgeInfo } from '../../../shared/types'
+import { usePopoverVisibility } from '../hooks/usePopoverVisibility'
 
 export function BridgePopover(): JSX.Element {
   const [open, setOpen] = useState(false)
   const [info, setInfo] = useState<BridgeInfo | null>(null)
   const [copied, setCopied] = useState(false)
+  // Кнопка в toolbar-right — попап раскрывается вниз прямо над browser-pane
+  // (нативный WebContentsView всегда поверх HTML, см. usePopoverVisibility
+  // докстринг), без этого был бы виден только частично/не виден вовсе.
+  usePopoverVisibility(open)
 
   useEffect(() => {
     window.api.getBridgeInfo().then(setInfo)

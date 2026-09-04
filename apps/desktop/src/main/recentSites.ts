@@ -1,6 +1,7 @@
 import { app } from 'electron'
 import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
+import { isSearchQueryUrl } from './browser'
 import { isStartPage } from './startPage'
 import type { RecentSite } from '../shared/types'
 
@@ -77,15 +78,49 @@ export class RecentSitesStore {
 
   /** Новая top-level навигация — стартовую страницу (data: URL) не запоминаем
    *  (см. isStartPage), реальный title/favicon подтянутся чуть позже отдельными
-   *  событиями через updateLatestMeta. Дедуп по домену (см. siteKey), не по
-   *  точному URL — переход на другую страницу того же домена ОБНОВЛЯЕТ
-   *  существующую запись (новый url/время), а не создаёт вторую. */
+   *  событиями через updateLatestMeta. Свободнотекстовый гугл-поиск (см.
+   *  isSearchQueryUrl) — тоже не запоминаем (по запросу пользователя: "любой
+   *  поиск не по домену... не должен попадать в недавние") — это не сайт,
+   *  который пользователь выбрал, а промежуточный результат поиска. Дедуп по
+   *  домену (см. siteKey), не по точному URL — переход на другую страницу
+   *  того же домена ОБНОВЛЯЕТ существующую запись (новый url/время), а не
+   *  создаёт вторую. `pinned` переносится со старой записи на новую — иначе
+   *  закрепление слетало бы при каждом повторном визите на тот же домен
+   *  (живой баг, по запросу пользователя: "закрепление сайта в левом меню"). */
   async recordVisit(url: string): Promise<void> {
-    if (!url || isStartPage(url)) return
+    if (!url || isStartPage(url) || isSearchQueryUrl(url)) return
     const key = siteKey(url)
+    const existing = this.list.find((s) => siteKey(s.url) === key)
     this.list = this.list.filter((s) => siteKey(s.url) !== key)
-    this.list.unshift({ url, title: '', faviconUrl: null, visitedAt: new Date().toISOString() })
-    if (this.list.length > CAP) this.list.length = CAP
+    this.list.unshift({
+      url,
+      title: '',
+      faviconUrl: null,
+      visitedAt: new Date().toISOString(),
+      ...(existing?.pinned ? { pinned: true } : {})
+    })
+    // Закреплённые не подпадают под потолок CAP — обрезаем только хвост
+    // из НЕзакреплённых записей, иначе закреплённый сайт, к которому долго
+    // не возвращались, вытеснился бы обычной историей посещений.
+    if (this.list.length > CAP) {
+      let toDrop = this.list.length - CAP
+      for (let i = this.list.length - 1; i >= 0 && toDrop > 0; i--) {
+        if (!this.list[i]!.pinned) {
+          this.list.splice(i, 1)
+          toDrop--
+        }
+      }
+    }
+    await this.persist()
+  }
+
+  /** Закрепление сайта (по запросу пользователя) — держит запись видимой
+   *  вверху "Без проекта" (см. LeftSidebar.tsx сортировку) и защищает от
+   *  вытеснения по CAP в recordVisit выше. */
+  async togglePin(url: string): Promise<void> {
+    const entry = this.list.find((s) => s.url === url)
+    if (!entry) return
+    entry.pinned = !entry.pinned
     await this.persist()
   }
 

@@ -1,4 +1,4 @@
-import { app, BrowserWindow, clipboard, ipcMain, nativeImage, shell } from 'electron'
+import { app, BrowserWindow, clipboard, dialog, ipcMain, nativeImage, shell } from 'electron'
 // import { nativeTheme, type Rectangle } from 'electron' // нужно, если включить getEffectiveTheme/getViewScreenBounds ниже
 import { join, dirname } from 'path'
 import { promises as fs } from 'fs'
@@ -14,10 +14,13 @@ import {
   type ThemeSyncMessage
 } from '@web-to-figma/bridge-protocol'
 import { createConsoleLogger } from '@web-to-figma/shared'
-import { BrowserController } from './browser'
+import { BrowserController, isSearchQueryUrl, normalizeUrlInput } from './browser'
 import { attachEditContextMenu } from './contextMenu'
 import { ElementPicker } from './inspector'
 import { RecentSitesStore } from './recentSites'
+import { ProjectsStore } from './projects'
+import { ReferenceItemsStore, referenceSiteKey } from './referenceItems'
+import { StandaloneReferenceSitesStore } from './standaloneReferenceSites'
 import { OverlayController } from './overlay'
 import { scanPageAssets } from './assetScanner'
 import { captureComponentDocument, captureComponentPreviewsOffscreen, scanPageComponents } from './componentScanner'
@@ -35,12 +38,19 @@ import type {
   ImportProgressEvent,
   OverlaySize,
   PickState,
+  PopoverOpenParams,
+  CreateProjectInput,
+  Project,
+  ProjectsSnapshot,
   QueueImportResult,
   QueueItemSummary,
   RecentSite,
+  ReferenceItem,
+  ReferenceSessionState,
   ScannedAsset,
   ScannedComponent,
   SelectionResult,
+  StandaloneReferenceSite,
   TabsSnapshot,
   ViewBounds
 } from '../shared/types'
@@ -49,7 +59,13 @@ import type {
 // "@web-to-figma/desktop" оно ненадёжно) — фиксирует путь app.getPath('userData')
 // независимо от того, как запущен процесс (electron-vite dev / packaged build).
 app.setName('web-to-figma')
-if (!app.isPackaged) app.commandLine.appendSwitch('remote-debugging-port', '9333')
+if (!app.isPackaged) {
+  app.commandLine.appendSwitch('remote-debugging-port', '9333')
+  // Позволяет подключаться DevTools-фронтендом извне localhost (по умолчанию
+  // Chromium режектит WebSocket не с того же origin) — временно для живой
+  // отладки верстки через CDP, только в dev.
+  app.commandLine.appendSwitch('remote-allow-origins', '*')
+}
 
 const isDev = !app.isPackaged
 const log = createConsoleLogger('main')
@@ -62,7 +78,20 @@ const DEFAULT_SETTINGS: AppSettings = {
   useMatchedColorStyles: false,
   colorMatchSource: 'style',
   alsoCreateInstance: false,
-  themeSyncEnabled: true
+  themeSyncEnabled: true,
+  fullscreenMode: 'push',
+  referenceNamePromptOnAdd: false,
+  // Прежнее хардкод-поведение (см. AppSettings.captureViewport докстринг) —
+  // ничего не меняется для существующих пользователей, пока не тронут
+  // настройку сами.
+  captureViewport: { forced: true, width: 1440, height: 900 },
+  // Включено по умолчанию — прямо чинит жалобу пользователя ("длинные
+  // блоки в миниатюре захватывает не полностью"), а не только опция для
+  // тех, кто явно попросит.
+  captureFullBlockThumbnail: true,
+  // false — сохраняет прежнее поведение (см. AppSettings.sidePanelsHoverReveal
+  // докстринг), опция для тех, кто явно включит.
+  sidePanelsHoverReveal: false
 }
 
 interface BridgeSecret {
@@ -130,21 +159,79 @@ let bridgeServer: BridgeServer | null = null
 let latestPluginTheme: ThemeSyncMessage | null = null
 let bridgeInfo: BridgeInfo = { port: 0, pairingToken: '', connectionCount: 0 }
 let browserController: BrowserController | null = null
+// Второй, независимый встроенный браузер (по коррекции пользователя — "Открыть
+// браузер" на странице референс-сайта НЕ должен переходить на вкладку
+// "Браузер"/раздвигать её; вместо этого прямо в References встраивается
+// отдельный вьюпорт, без нижней панели Ассеты/Компоненты, с собственными
+// вкладками). BrowserController не держит singleton-состояния сам по себе
+// (см. класс) — второй инстанс безопасен, монтируется ЛЕНИВО (см.
+// mountReferenceBrowser) при первом reference:session-start, а не сразу при
+// старте окна (обычно референсы вообще не открываются в сессии).
+let referenceBrowserController: BrowserController | null = null
+let referenceBrowserViewportBounds: ViewBounds | null = null
 let elementPicker: ElementPicker | null = null
 let overlayController: OverlayController | null = null
 const componentPreviewJobs = new Map<string, symbol>()
 let importProgressSequence = 0
+// Отмена импорта (по запросу пользователя) — ключ AbortController'ом по id
+// прогресса (тот же id, что уходит в renderer через import:progress), не
+// единственным "текущим" — очередь мульти-импорта может держать несколько
+// параллельно. `bridgeServer.request()` не умеет по-настоящему прервать уже
+// отправленный запрос (нет abort-параметра, см. packages/bridge-protocol) —
+// withCancel ниже гонится с этим сигналом и отклоняет ПРОМИС раньше, реальный
+// ответ от Figma (если всё же придёт) просто игнорируется дальше по цепочке.
+const importCancelHandles = new Map<string, AbortController>()
 
-function createImportProgress(label: string, total = 1): {
+class ImportCancelledError extends Error {
+  constructor() {
+    super('Импорт отменён')
+  }
+}
+
+function withCancel<T>(work: Promise<T>, signal: AbortSignal): Promise<T> {
+  if (signal.aborted) return Promise.reject(new ImportCancelledError())
+  return new Promise<T>((resolve, reject) => {
+    const onAbort = (): void => reject(new ImportCancelledError())
+    signal.addEventListener('abort', onAbort, { once: true })
+    work.then(
+      (v) => {
+        signal.removeEventListener('abort', onAbort)
+        resolve(v)
+      },
+      (err) => {
+        signal.removeEventListener('abort', onAbort)
+        reject(err)
+      }
+    )
+  })
+}
+
+function createImportProgress(
+  label: string,
+  total = 1
+): {
   update: (phase: ImportProgressEvent['phase'], progress: number, detail?: string, current?: number) => void
   finish: (ok: boolean, detail?: string) => void
+  id: string
+  signal: AbortSignal
 } {
   const id = `import-${Date.now()}-${++importProgressSequence}`
+  const controller = new AbortController()
+  importCancelHandles.set(id, controller)
   const emit = (event: Omit<ImportProgressEvent, 'id' | 'label' | 'total'>): void => {
-    mainWindow?.webContents.send('import:progress', { id, label, total, ...event } satisfies ImportProgressEvent)
+    const payload = { id, label, total, ...event } satisfies ImportProgressEvent
+    mainWindow?.webContents.send('import:progress', payload)
+    // Дублируем в 'picker' — тот единственный слой, который постоянно виден
+    // НАД браузером в ЛЮБОМ режиме, включая полноэкранный (см. OverlayRoot.tsx
+    // докстринг) — по жалобе пользователя, в fullscreen прогресс в главном
+    // окне (обычная HTML-плашка ПОД нативным browser-вьюпортом) не виден
+    // вообще, тулбар там скрыт.
+    overlayController?.send('picker', 'import:progress', payload)
   }
   emit({ state: 'running', phase: 'preparing', progress: 0, detail: 'Подготовка…' })
   return {
+    id,
+    signal: controller.signal,
     update: (phase, progress, detail, current) =>
       emit({
         state: 'running',
@@ -153,13 +240,15 @@ function createImportProgress(label: string, total = 1): {
         ...(detail ? { detail } : {}),
         ...(current !== undefined ? { current } : {})
       }),
-    finish: (ok, detail) =>
+    finish: (ok, detail) => {
+      importCancelHandles.delete(id)
       emit({
         state: ok ? 'success' : 'error',
         phase: 'complete',
         progress: 1,
         detail: detail ?? (ok ? 'Готово' : 'Ошибка')
       })
+    }
   }
 }
 
@@ -236,14 +325,59 @@ let toolbarOverlayHeight = TOOLBAR_HEIGHT_GUESS
 // и должен ЗНАТЬ, что показывать снова не нужно, пока модалка открыта.
 let overlaySuppressed = false
 
+/** Ленивый монтаж второго встроенного браузера (см. referenceBrowserController
+ *  докстринг) — вызывается из reference:session-start, не из createWindow():
+ *  большинство сессий вообще не заходят в референсы, заводить второй набор
+ *  WebContentsView заранее незачем. `onNavigate`/`onFocus` у главного
+ *  браузера намеренно не дублируются — recentSites/collapse-popover
+ *  семантика этому режиму не нужна (см. план). */
+function mountReferenceBrowser(): BrowserController | null {
+  if (referenceBrowserController) return referenceBrowserController
+  if (!mainWindow) return null
+  referenceBrowserController = new BrowserController(mainWindow, (snapshot: TabsSnapshot) => {
+    mainWindow?.webContents.send('reference-browser:tabs', snapshot)
+    // Уточняет title/favicon сайта без проекта постфактум (см.
+    // StandaloneReferenceSitesStore.updateMeta докстринг) — та же логика,
+    // что RecentSitesStore получает от главного браузера, тут нужна только
+    // для стандэлон-референсов: у привязанных к проекту title/favicon и так
+    // захвачены один раз при добавлении (см. main/projects.ts addSite).
+    if (referenceSession && !referenceSession.projectId) {
+      for (const tab of snapshot.tabs) {
+        if (tab.url === referenceSession.siteUrl) {
+          void standaloneReferenceSitesStore.updateMeta(tab.url, { title: tab.title, faviconUrl: tab.faviconUrl })
+        }
+      }
+    }
+  })
+  // НЕ .mount() (то грузит стартовую страницу) — вызывающая сторона
+  // (reference:session-start) сразу создаёт вкладку с РЕАЛЬНЫМ url. Раньше
+  // тут сначала грузилась стартовая страница, а следом (той же наносекундой)
+  // прилетал .navigate(siteUrl) поверх ещё не начавшего загружаться
+  // предыдущего loadURL — гонка из двух почти одновременных loadURL на
+  // свежесозданном webContents, живой баг, поймал пользователь ("сайты не
+  // загружаются", воспроизводилось нестабильно — именно гонка, не постоянная
+  // поломка).
+  return referenceBrowserController
+}
+
 function repositionToolbarOverlay(): void {
-  if (overlaySuppressed) {
-    overlayController?.hide()
+  // overlaySuppressed следует за activeView главного окна ('browser' vs
+  // 'references', см. App.tsx Shell) и не знает про embedded-режим сбора
+  // референсов (activeView там всё ещё 'references', suppressed=true) —
+  // референс-сессия ИГНОРИРУЕТ этот флаг целиком, а не пытается им
+  // координироваться (никакой гонки между двумя независимыми источниками
+  // правды: пока референс-сессия активна, ей просто не мешает то, что
+  // Shell-эффект думает про обычный браузер).
+  if (overlaySuppressed && !referenceSession) {
+    overlayController?.hide('picker')
     return
   }
-  const bounds = browserViewportBounds
+  // Референс-сессия переносит плавающий тулбар пикера на встроенный
+  // референс-браузер вместо главного — тот же ОДИН 'picker' слой, просто
+  // другой якорь, а не второй тулбар.
+  const bounds = referenceSession ? referenceBrowserViewportBounds : browserViewportBounds
   if (!bounds || bounds.width <= 0 || bounds.height <= 0) {
-    overlayController?.hide()
+    overlayController?.hide('picker')
     return
   }
   // Не шире самой браузерной области — иначе при очень узком окне тулбар
@@ -251,7 +385,7 @@ function repositionToolbarOverlay(): void {
   const width = Math.min(toolbarOverlayWidth, bounds.width)
   const x = Math.round(bounds.x + bounds.width / 2 - width / 2)
   const anchorBottom = bounds.y + bounds.height - TOOLBAR_BOTTOM_GAP
-  overlayController?.setBounds({
+  overlayController?.setBounds('picker', {
     x,
     y: Math.round(anchorBottom - toolbarOverlayHeight),
     width: Math.max(1, Math.ceil(width)),
@@ -259,7 +393,332 @@ function repositionToolbarOverlay(): void {
   })
 }
 
+// Generic popover overlay ('popover' слой) — anchor в тех же window-relative
+// координатах, что и browserViewportBounds (renderer шлёт getBoundingClientRect()
+// своей кнопки, см. AddToProjectButton.tsx). Гэп/угадываемый начальный размер —
+// тот же смысл, что TOOLBAR_*_GUESS/TOOLBAR_VISUAL_BOTTOM_GAP выше, только для
+// попапа, открывающегося ВНИЗ-ВПРАВО от кнопки (как обычный dropdown), а не
+// центрированного снизу браузера.
+const POPOVER_GAP = 6
+const POPOVER_WIDTH_GUESS = 260
+const POPOVER_HEIGHT_GUESS = 120
+let popoverAnchor: ViewBounds | null = null
+let popoverSize: OverlaySize = { width: POPOVER_WIDTH_GUESS, height: POPOVER_HEIGHT_GUESS }
+
+function repositionPopoverOverlay(): void {
+  if (!popoverAnchor || !mainWindow) return
+  const winBounds = mainWindow.getContentBounds()
+  const width = Math.min(popoverSize.width, winBounds.width)
+  const height = Math.min(popoverSize.height, winBounds.height)
+  // Открывается вниз-вправо от якоря, прижатый правым краем к правому краю
+  // якоря (тот же 'down'-плейсмент, что у обычного Popover.tsx) — если снизу
+  // не влезает, переворачивается вверх от якоря.
+  let x = Math.round(popoverAnchor.x + popoverAnchor.width - width)
+  x = Math.max(0, Math.min(x, winBounds.width - width))
+  const spaceBelow = winBounds.height - (popoverAnchor.y + popoverAnchor.height)
+  const openUp = spaceBelow < height + POPOVER_GAP && popoverAnchor.y > height + POPOVER_GAP
+  const y = openUp ? Math.round(popoverAnchor.y - POPOVER_GAP - height) : Math.round(popoverAnchor.y + popoverAnchor.height + POPOVER_GAP)
+  overlayController?.setBounds('popover', { x, y: Math.max(0, y), width: Math.max(1, Math.ceil(width)), height: Math.max(1, Math.ceil(height)) })
+}
+
+function closePopoverOverlay(): void {
+  if (!popoverAnchor) return
+  popoverAnchor = null
+  overlayController?.hide('popover')
+  mainWindow?.webContents.send('overlay:popover-closed', undefined)
+}
+
+/** Ref-count с задержкой на закрытие — по запросу пользователя, "float" режим
+ *  distraction-free (см. App.tsx Workspace, AppSettings.fullscreenMode). Два
+ *  НЕЗАВИСИМЫХ источника наведения на одну и ту же плавающую панель: тонкая
+ *  полоска-край в главном окне ('strip') и сам плавающий overlay-слой панели
+ *  ('content', см. PanelOverlayRoot.tsx) — они живут в РАЗНЫХ webContents, не
+ *  могут делить один React-хук с таймером, как это делает push-режим
+ *  (useEdgeReveal). Панель остаётся открытой, пока ХОТЯ БЫ один источник её
+ *  держит; закрывается с той же задержкой, что и useEdgeReveal (см. её
+ *  докстринг про анти-flicker на стыке полоски/панели), только теперь считая
+ *  источники, а не строя один общий таймер. */
+function createHoverGate(onChange: (open: boolean) => void): { enter: () => void; leave: () => void; forceClose: () => void } {
+  let sources = 0
+  let hideTimer: ReturnType<typeof setTimeout> | null = null
+  return {
+    enter: () => {
+      if (hideTimer) {
+        clearTimeout(hideTimer)
+        hideTimer = null
+      }
+      sources++
+      if (sources === 1) onChange(true)
+    },
+    leave: () => {
+      sources = Math.max(0, sources - 1)
+      if (sources === 0) {
+        hideTimer = setTimeout(() => onChange(false), 200)
+      }
+    },
+    // Панель закрепили (см. AppSettings — pin, по запросу пользователя "в
+    // любом полноэкранном режиме") — в float-режиме закреплённая панель
+    // переключается на inline-показ (см. App.tsx effectiveLeftOpen), плавающий
+    // слой больше не нужен НЕЗАВИСИМО от того, сколько источников наведения
+    // всё ещё "держат" его технически (курсор мог остаться на полоске/панели)
+    // — закрываем сразу, без задержки, и сбрасываем счётчик.
+    forceClose: () => {
+      sources = 0
+      if (hideTimer) {
+        clearTimeout(hideTimer)
+        hideTimer = null
+      }
+      onChange(false)
+    }
+  }
+}
+
+// Плавающие панели ('panel-left'/'panel-right'/'panel-top' слои) — второй
+// режим distraction-free (см. AppSettings.fullscreenMode 'float'),
+// альтернатива push/resize: панель рисуется НАД browser-pane в отдельном
+// overlay-слое, а не раздвигает его. Фиксированный размер (не resizable, в
+// отличие от push-режима — там ширину/высоту меряет сам Workspace/BrowserPane)
+// — сознательно упрощено для v1, см. PLAN addendum. 'left'/'right' — от низа
+// тулбара до низа окна на всю доступную высоту; 'top' — вкладки+адресная
+// строка браузера (см. BrowserPane.tsx), позиционируется НАД
+// browserViewportBounds (см. browser:set-bounds ниже — тот же прямоугольник,
+// что главное окно репортит для нативного browser-пейна), а не НАД всем
+// окном — иначе перекрывал бы левую/правую колонки, если те открыты.
+// 'references-left' — левый сайдбар вкладки "Референсы" во float-режиме (по
+// запросу пользователя, "боковые панели в референс режиме всё равно не
+// флоат") — ОТДЕЛЬНЫЙ overlay-слой от 'left' (тот жёстко показывает
+// LeftSidebar основного браузера), а не тот же самый слой с переключением
+// контента: hover-gate для 'left' привязан к leftReveal основного Workspace,
+// который вообще не смотрит на активную вкладку верхнего уровня — если бы
+// один слой показывал то LeftSidebar, то ReferencesSidebar по какому-то
+// внешнему признаку, пришлось бы либо дублировать вообще все left/right
+// hover-триггеры под обе вкладки, либо городить синхронизацию между Workspace
+// и ReferencesView, которых сейчас нет и не должно появляться ради этого.
+// Правая колонка (галерея референсов) НЕ переведена на float в этом заходе —
+// ReferenceItemsPanel зависит от ТЕКУЩЕГО выбранного сайта (selectedSite),
+// это React state ReferencesView.tsx, а не статический список типа проектов;
+// синхронизировать его в отдельный overlay-рендерер (новый IPC bounce на
+// каждое изменение выбора) - отдельная, более крупная задача, левая панель
+// (просто навигация — проекты/сайты, ReferencesSidebar и так почти
+// самодостаточна) оказалась посильной именно потому, что ей нужно
+// синхронизировать только ДВА исходящих действия (клик по сайту/сайту без
+// проекта), а не входящее состояние.
+type PanelSide = 'left' | 'right' | 'top' | 'references-left' | 'references-right'
+const PANEL_WIDTH: Record<'left' | 'right' | 'references-left' | 'references-right', number> = {
+  left: 280,
+  right: 380,
+  'references-left': 280,
+  'references-right': 380
+}
+// Какая вкладка верхнего уровня активна СЕЙЧАС (см. App.tsx Shell
+// activeView) — нужно ТОЛЬКО чтобы hover-gate левой колонки знал, какой
+// overlay-слой открывать ('left' или 'references-left'), см. leftPanelGate
+// ниже. Обновляется через app:set-active-view (зовёт App.tsx при каждой
+// смене вкладки), больше нигде не читается.
+let activeTopView: 'browser' | 'references' = 'browser'
+// 10px — тот же отступ, что и padding у .workspace в push-режиме (см.
+// components.css) — раньше было 52 (с запасом "под тулбар", когда top-панель
+// ещё не была плавающей отдельным слоем): пользователь явно попросил поднять
+// все три плавающие панели ближе к краю окна (скрин — стрелка вверх на левой
+// панели, "можно растянуть боковые панели наверх"), единая константа держит
+// left/right/top визуально согласованными автоматически.
+const PANEL_TOP = 10
+const BROWSER_TOP_BAR_HEIGHT = 84
+
+function repositionPanelOverlay(side: PanelSide): void {
+  if (!mainWindow) return
+  const winBounds = mainWindow.getContentBounds()
+  if (side === 'top') {
+    // y: PANEL_TOP (не вычитание BROWSER_TOP_BAR_HEIGHT из bounds.y) — в
+    // float top-режиме сам bounds.y мал (там теперь только тонкая полоска
+    // ревила, а не полноразмерный тулбар, см. BrowserPane.tsx isTopFloat),
+    // так что старая формула почти всегда уходила в отрицательные значения
+    // и клэмпилась в 0 — плавающая панель садилась вплотную к краю окна, БЕЗ
+    // отступа, в отличие от left/right (те всегда начинаются с PANEL_TOP).
+    // Единый отступ — жалоба пользователя на скриншоте, "разные отступы от
+    // верхнего края".
+    // Пока виден встроенный референс-браузер, а не основной (см.
+    // referenceBrowserVisible докстринг — шире просто активной сессии сбора,
+    // покрывает и "поиск сайта"), плавающая top-панель должна
+    // позиционироваться над ЕГО viewport'ом, иначе легла бы на координаты
+    // основного браузера (который сейчас вообще не отрисован) — живой баг,
+    // поймал пользователь: "режим выбран поверх, а он почему-то раздвигает".
+    const bounds = referenceBrowserVisible ? referenceBrowserViewportBounds : browserViewportBounds
+    if (!bounds || bounds.width <= 0) return
+    overlayController?.setBounds('panel-top', {
+      x: Math.round(bounds.x),
+      y: PANEL_TOP,
+      width: Math.max(1, Math.ceil(bounds.width)),
+      height: BROWSER_TOP_BAR_HEIGHT
+    })
+    return
+  }
+  const width = Math.min(PANEL_WIDTH[side], winBounds.width)
+  const height = Math.max(0, winBounds.height - PANEL_TOP)
+  const x = side === 'left' || side === 'references-left' ? 0 : Math.max(0, winBounds.width - width)
+  overlayController?.setBounds(`panel-${side}`, { x, y: PANEL_TOP, width: Math.max(1, Math.ceil(width)), height: Math.max(1, Math.ceil(height)) })
+}
+
+const panelVisible: Record<PanelSide, boolean> = {
+  left: false,
+  right: false,
+  top: false,
+  'references-left': false,
+  'references-right': false
+}
+
+async function showPanelOverlay(side: PanelSide): Promise<void> {
+  if (!mainWindow) return
+  const id = `panel-${side}` as const
+  if (!overlayController?.isMounted(id)) {
+    // side уже закодирован в URL слоя (?overlay=panel-left/-right/-top, см.
+    // main.tsx) — контенту не нужно отдельное сообщение "какую панель
+    // рендерить", он просто монтируется один раз и дальше только меняются
+    // bounds (тот же приём, что и у постоянно смонтированного 'picker' слоя).
+    const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+    await overlayController?.mount(id, mainWindow, devUrl)
+  }
+  panelVisible[side] = true
+  repositionPanelOverlay(side)
+}
+
+function hidePanelOverlay(side: PanelSide): void {
+  panelVisible[side] = false
+  overlayController?.hide(`panel-${side}`)
+}
+
+/** Клик в страницу браузера/переключение вида — тот же сигнал, что уже
+ *  закрывает popover overlay (см. closePopoverOverlay) — закрывает и
+ *  открытые плавающие панели, СРАЗУ, без задержки hover-gate (это не
+ *  hover-уход, а явное "ушли из режима"). */
+function closeAllPanelOverlays(): void {
+  if (panelVisible.left) hidePanelOverlay('left')
+  if (panelVisible.right) hidePanelOverlay('right')
+  if (panelVisible.top) hidePanelOverlay('top')
+  if (panelVisible['references-left']) hidePanelOverlay('references-left')
+  if (panelVisible['references-right']) hidePanelOverlay('references-right')
+}
+
+const leftPanelGate = createHoverGate((open) => {
+  const side: PanelSide = activeTopView === 'references' ? 'references-left' : 'left'
+  if (open) void showPanelOverlay(side)
+  else hidePanelOverlay(side)
+})
+const rightPanelGate = createHoverGate((open) => {
+  // Тот же activeTopView-переключатель, что и у leftPanelGate (см. её
+  // докстринг) — теперь и правая колонка "Референсов" (ReferenceItemsPanel)
+  // умеет настоящий float, критично по требованию пользователя ("делай
+  // float"), не push-only, как раньше.
+  const side: PanelSide = activeTopView === 'references' ? 'references-right' : 'right'
+  if (open) void showPanelOverlay(side)
+  else hidePanelOverlay(side)
+})
+const topPanelGate = createHoverGate((open) => {
+  if (open) void showPanelOverlay('top')
+  else hidePanelOverlay('top')
+})
+
 const recentSites = new RecentSitesStore((list) => mainWindow?.webContents.send('recent-sites:updated', list))
+const projectsStore = new ProjectsStore((snapshot) => mainWindow?.webContents.send('projects:updated', snapshot))
+const referenceItemsStore = new ReferenceItemsStore((items) => mainWindow?.webContents.send('reference-items:updated', items))
+const standaloneReferenceSitesStore = new StandaloneReferenceSitesStore((sites) =>
+  mainWindow?.webContents.send('standalone-references:updated', sites)
+)
+/** QueueItem.id → уже созданный ReferenceItem.id, ТОЛЬКО для элементов,
+ *  закоммиченных без миниатюры (офскрин-снимок ещё не успел, см.
+ *  inspector.ts onItemThumbnailReady докстринг) — когда снимок всё-таки
+ *  готов, patch'им сохранённый элемент задним числом и убираем запись. */
+const pendingReferenceThumbnails = new Map<string, string>()
+// Сессия сбора референс-элементов (по запросу пользователя) — держим ТУТ, а
+// не в ElementPicker: тому нужен только голый siteKey для маршрутизации
+// confirmQueueAdd (см. setReferenceMode), а title/projectId/url — это UI-
+// метаданные для баннера/BottomPanel, ElementPicker про проекты знать не должен.
+let referenceSession: ReferenceSessionState | null = null
+function broadcastReferenceSession(): void {
+  mainWindow?.webContents.send('reference:session-state', referenceSession)
+  overlayController?.send('picker', 'reference:session-state', referenceSession)
+  // 'panel-references-right' (плавающая правая колонка "Референсов", см.
+  // rightPanelGate) рендерит ТОТ ЖЕ ReferenceItemsPanel, что и push-режим —
+  // ему нужен ровно этот же referenceSession как проп `session`, а не
+  // отдельное состояние: правая колонка и так видна ТОЛЬКО пока сессия
+  // сбора активна (см. ReferencesView.tsx `collecting`), synchronизировать
+  // больше нечего.
+  overlayController?.send('panel-references-right', 'reference:session-state', referenceSession)
+}
+
+// Виден ли ПРЯМО СЕЙЧАС встроенный референс-браузер (а не основной) — шире,
+// чем referenceSession !== null: "поиск сайта" (reference:browse-start,
+// см. её докстринг) тоже показывает референс-браузер, но ЕЩЁ не заводит
+// сессию сбора. Единственный источник правды для repositionPanelOverlay('top')
+// и для 'panel-top' overlay-рендерера (см. BrowserTopBarOverlayContent.tsx) —
+// какой из двух браузеров сейчас управлять/над чьим viewport'ом
+// позиционироваться в float-режиме. Живой баг, поймал пользователь:
+// "поверх" реально раздвигал вместо того, чтобы плавать — потому что раньше
+// этого переключателя не было вовсе, ReferenceBrowserPane.tsx умел только push.
+let referenceBrowserVisible = false
+function setReferenceBrowserVisible(visible: boolean): void {
+  if (referenceBrowserVisible === visible) return
+  referenceBrowserVisible = visible
+  overlayController?.send('panel-top', 'reference:browser-visible', visible)
+  if (panelVisible.top) repositionPanelOverlay('top')
+}
+
+// Та же формула автоимени, что QueueConfirmCard.tsx/LeftSidebar.tsx уже
+// используют для карточек очереди — третьей копии тут не избежать (main —
+// отдельный рантайм от renderer, общий модуль сюда не дотянуть без сборки
+// под оба таргета), но хотя бы не дублируется ВНУТРИ этого файла.
+function queueItemLabel(element: { tag: string; id: string | null; classes: string[] }): string {
+  if (element.id) return `${element.tag}#${element.id}`
+  if (element.classes[0]) return `${element.tag}.${element.classes[0]}`
+  return element.tag
+}
+
+function referenceItemInputFromQueueItem(
+  item: { id: string; result: SelectionResult; thumbnail?: string; tabId: string; backendNodeId: number; sourceUrl: string },
+  session: ReferenceSessionState
+): Omit<ReferenceItem, 'id' | 'createdAt' | 'sentToFigmaAt'> {
+  return {
+    siteKey: referenceSiteKey(session.projectId, session.siteUrl),
+    projectId: session.projectId,
+    siteUrl: session.siteUrl,
+    element: item.result.element,
+    thumbnail: item.thumbnail,
+    name: queueItemLabel(item.result.element),
+    tabId: item.tabId,
+    backendNodeId: item.backendNodeId,
+    sourceUrl: item.sourceUrl
+  }
+}
+
+/** Скриншот вкладки при добавлении сайта в проект как "референс" (по запросу
+ *  пользователя — карточка референса в галерее должна иметь превью). Только
+ *  для kind:'reference', не на каждый визит (см. projects:add-site ниже) —
+ *  та же логика "не дёргаем compositor сайта лишний раз", что и в
+ *  componentScanner.ts. Electron NativeImage.resize/toJPEG — тот же способ,
+ *  что captureElementPreviewOffscreen там же использует, без внешней sharp. */
+const THUMBNAIL_MAX_WIDTH = 480
+/** Общий resize/JPEG-энкод хвост — переиспользуется и для скриншота вкладки
+ *  (см. captureTabThumbnail ниже), и для картинки, выбранной пользователем на
+ *  диске для проекта (см. projects:pick-thumbnail) — оба дают Electron
+ *  `NativeImage`, дальше обработка идентична. */
+function resizeToThumbnail(image: Electron.NativeImage): string | undefined {
+  const { width, height } = image.getSize()
+  if (width <= 0 || height <= 0) return undefined
+  const scale = Math.min(1, THUMBNAIL_MAX_WIDTH / width)
+  const thumbnail =
+    scale < 1 ? image.resize({ width: Math.round(width * scale), height: Math.round(height * scale), quality: 'good' }) : image
+  return `data:image/jpeg;base64,${thumbnail.toJPEG(82).toString('base64')}`
+}
+async function captureTabThumbnail(wc: Electron.WebContents): Promise<string | undefined> {
+  try {
+    const image = await wc.capturePage()
+    if (image.isEmpty()) return undefined
+    return resizeToThumbnail(image)
+  } catch (err) {
+    log.debug('tab thumbnail capture failed', { message: (err as Error).message })
+    return undefined
+  }
+}
 
 function createWindow(): void {
   mainWindow = new BrowserWindow({
@@ -307,19 +766,28 @@ function createWindow(): void {
     // единственный способ узнать о "клике снаружи" popover'а Apply to
     // Selection, раз тот теперь рисуется в overlay-рендерере (см. ниже),
     // а не в этом же окне, где сработал бы обычный document click-outside.
-    () => overlayController?.send('overlay:collapse-popover', undefined)
+    // Тот же сигнал закрывает и generic popover overlay ('popover' слой) —
+    // клик в саму страницу браузера тоже "снаружи" для него.
+    () => {
+      overlayController?.send('picker', 'overlay:collapse-popover', undefined)
+      closePopoverOverlay()
+    }
   )
   browserController.mount()
 
   elementPicker = new ElementPicker(
-    () => browserController?.getWebContents() ?? null,
+    // Референс-сессия временно переключает источник пика на встроенный
+    // референс-браузер (см. reference:session-start) — один ElementPicker,
+    // не два: CDP debugger никогда не кешируется между вызовами (см.
+    // captureAndConvert), так что подмена источника замыканием безопасна.
+    () => (referenceSession ? referenceBrowserController : browserController)?.getWebContents() ?? null,
     // Тоже overlayController.send — ApplyToSelectionContent живёт в overlay-
     // рендерере (отдельный webContents, см. overlay.ts), не в главном окне;
     // без этого он никогда не узнаёт, что элемент выбран (см. живой баг:
     // "Сначала выберите элемент" при уже выбранном в главном окне элементе).
     (result: SelectionResult) => {
       mainWindow?.webContents.send('inspector:selection', result)
-      overlayController?.send('inspector:selection', result)
+      overlayController?.send('picker', 'inspector:selection', result)
     },
     // Тоже в оба webContents — PickerFloatBar (активная подсветка кнопки,
     // Esc/повторный клик по кнопке для отмены) живёт в overlay-рендерере, не
@@ -329,17 +797,17 @@ function createWindow(): void {
     // вместо остановки (живой баг).
     (state: PickState) => {
       mainWindow?.webContents.send('inspector:pick-state', state)
-      overlayController?.send('inspector:pick-state', state)
+      overlayController?.send('picker', 'inspector:pick-state', state)
     },
     // Queue-режим (мульти-импорт) — попап "Добавить/Отменить" живёт в
     // overlay-рендерере, та же причина double-send, что и выше.
     (item: QueueItemSummary) => {
       mainWindow?.webContents.send('inspector:queue-pending', item)
-      overlayController?.send('inspector:queue-pending', item)
+      overlayController?.send('picker', 'inspector:queue-pending', item)
     },
     (items: QueueItemSummary[]) => {
       mainWindow?.webContents.send('inspector:queue-updated', items)
-      overlayController?.send('inspector:queue-updated', items)
+      overlayController?.send('picker', 'inspector:queue-updated', items)
     },
     // Esc со уже выбранным элементом (см. inspector.ts clearSelection) — та
     // же причина double-send, что и у onSelect выше: hasSelection живёт
@@ -347,19 +815,32 @@ function createWindow(): void {
     // рендерере (PickerFloatBar/OverlayRoot).
     () => {
       mainWindow?.webContents.send('inspector:selection-cleared')
-      overlayController?.send('inspector:selection-cleared', undefined)
+      overlayController?.send('picker', 'inspector:selection-cleared', undefined)
     },
-    () => browserController?.getActiveTabId() ?? null,
-    (tabId) => browserController?.getWebContentsForTab(tabId) ?? null,
-    () => browserController?.getViewportSize() ?? { width: 0, height: 0 }
+    () => (referenceSession ? referenceBrowserController : browserController)?.getActiveTabId() ?? null,
+    // Референс-элементы хранят tabId вкладки, где были собраны, и должны
+    // резолвиться при отправке в Figma ДАЖЕ ПОСЛЕ выхода из сессии (когда
+    // referenceSession уже null) — пробуем оба контроллера, а не только
+    // "текущий" по режиму (tabId уникален внутри каждого контроллера, id
+    // из разных наборов не пересекаются).
+    (tabId) => browserController?.getWebContentsForTab(tabId) ?? referenceBrowserController?.getWebContentsForTab(tabId) ?? null,
+    () => (referenceSession ? referenceBrowserController : browserController)?.getViewportSize() ?? { width: 0, height: 0 },
+    async () => (await getCurrentSettings()).captureViewport,
+    async () => (await getCurrentSettings()).captureFullBlockThumbnail,
     // getEffectiveTheme, getViewScreenBounds // 8-й/9-й аргумент для кастомного тултипа, см. inspector.ts
+    (queueItemId, thumbnail) => {
+      const referenceItemId = pendingReferenceThumbnails.get(queueItemId)
+      if (!referenceItemId) return
+      pendingReferenceThumbnails.delete(queueItemId)
+      void referenceItemsStore.updateThumbnail(referenceItemId, thumbnail)
+    }
   )
 
   // Overlay монтируется ПОСЛЕ browser-пейна — addChildView упорядочен по
   // времени добавления, поздние дети рисуются НАД более ранними (см. overlay.ts).
   const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
   overlayController = new OverlayController()
-  overlayController.mount(mainWindow, devUrl)
+  void overlayController.mount('picker', mainWindow, devUrl)
   // Якорь тулбара — browserViewportBounds, а те координаты уже РЕЛЯТИВНЫ
   // окну (renderer шлёт getBoundingClientRect() своего же div'а, см.
   // BrowserViewport.tsx) — чистое перемещение окна (move, без изменения
@@ -436,11 +917,15 @@ async function startBridge(): Promise<void> {
   log.info(`bridge listening on 127.0.0.1:${port}`)
 }
 
+/** Тот же merge, что и `settings:get` ниже — переиспользуется ElementPicker
+ *  (getCaptureViewport) через модульную функцию, а не завязан на IPC. */
+async function getCurrentSettings(): Promise<AppSettings> {
+  const saved = await readJson<Partial<AppSettings>>(settingsPath())
+  return { ...DEFAULT_SETTINGS, ...(saved ?? {}) }
+}
+
 function registerIpc(): void {
-  ipcMain.handle('settings:get', async (): Promise<AppSettings> => {
-    const saved = await readJson<Partial<AppSettings>>(settingsPath())
-    return { ...DEFAULT_SETTINGS, ...(saved ?? {}) }
-  })
+  ipcMain.handle('settings:get', (): Promise<AppSettings> => getCurrentSettings())
 
   ipcMain.handle('settings:save', async (_e, settings: AppSettings): Promise<void> => {
     await writeJson(settingsPath(), settings)
@@ -453,9 +938,46 @@ function registerIpc(): void {
 
   ipcMain.handle('app:get-version', (): string => app.getVersion())
 
+  // Автодополнение строки поиска на вкладке "Референсы" (по запросу
+  // пользователя — "гугловское автодополнение") — неофициальный, но давно
+  // стабильный suggest-эндпоинт Google (client=firefox отдаёт чистый JSON-
+  // массив без лишней chrome-специфичной метадаты типов подсказок). Из main,
+  // не renderer — тот же повод, что и остальные fetch-и в этом файле
+  // (избежать CORS/CSP страницы приложения, единая точка для таймаута/логов).
+  ipcMain.handle('search:suggest', async (_e, query: string): Promise<string[]> => {
+    const trimmed = query.trim()
+    if (!trimmed) return []
+    try {
+      const controller = new AbortController()
+      const timeout = setTimeout(() => controller.abort(), 3000)
+      const response = await fetch(
+        `https://suggestqueries.google.com/complete/search?client=firefox&q=${encodeURIComponent(trimmed)}`,
+        { signal: controller.signal }
+      )
+      clearTimeout(timeout)
+      if (!response.ok) return []
+      const data = (await response.json()) as [string, string[]]
+      return Array.isArray(data[1]) ? data[1] : []
+    } catch (err) {
+      log.debug('search suggest failed', { message: (err as Error).message })
+      return []
+    }
+  })
+
   ipcMain.handle('bridge:get-info', (): BridgeInfo => bridgeInfo)
 
   ipcMain.handle('browser:navigate', (_e, input: string): void => browserController?.navigate(input))
+  // Со стартовой страницы (см. preload/browserTab.ts, main/startPage.ts) —
+  // навигация ИМЕННО этой вкладки, откуда бы она ни была (главный браузер
+  // или референс-браузер, оба используют один и тот же урезанный preload).
+  // event.sender — webContents конкретной вкладки, которая прислала запрос,
+  // так что здесь не нужно (и невозможно дёшево) искать, какому из двух
+  // BrowserController она принадлежит — грузим URL прямо на нём.
+  ipcMain.on('browser-tab:navigate', (event, input: string): void => {
+    event.sender.loadURL(normalizeUrlInput(input)).catch((err: Error) => {
+      log.debug('browser-tab navigate rejected', { input, message: err.message })
+    })
+  })
   ipcMain.handle('browser:back', (): void => browserController?.back())
   ipcMain.handle('browser:forward', (): void => browserController?.forward())
   ipcMain.handle('browser:reload', (): void => browserController?.reload())
@@ -464,11 +986,18 @@ function registerIpc(): void {
     browserController?.setBounds(bounds)
     browserViewportBounds = bounds
     repositionToolbarOverlay()
+    if (panelVisible.left) repositionPanelOverlay('left')
+    if (panelVisible.right) repositionPanelOverlay('right')
+    if (panelVisible.top) repositionPanelOverlay('top')
   })
   ipcMain.handle('browser:set-hidden', (_e, hidden: boolean): void => browserController?.setHidden(hidden))
   ipcMain.handle('overlay:set-suppressed', (_e, suppressed: boolean): void => {
     overlaySuppressed = suppressed
     repositionToolbarOverlay()
+    // Тот же сигнал, что переключает вид "Референсы"/модалки — плавающие
+    // панели/верхняя панель браузера привязаны к browser-viewport, который
+    // сейчас тоже прячется, оставлять их висеть было бы бессмысленно.
+    if (suppressed) closeAllPanelOverlays()
   })
 
   // Пикер держит CDP debugger-сессию на КОНКРЕТНОМ webContents активной
@@ -489,6 +1018,43 @@ function registerIpc(): void {
   })
   ipcMain.handle('browser:get-tabs', (): TabsSnapshot => browserController?.getTabsSnapshot() ?? { tabs: [], activeTabId: null })
 
+  // Встроенный референс-браузер (см. referenceBrowserController докстринг
+  // выше) — параллельный набор каналов, зеркалирующий browser:* один в один,
+  // просто на второй, независимый BrowserController. Не монтируется здесь
+  // заранее — до первого reference:session-start контроллера нет, эти
+  // хендлеры тогда просто no-op (?. везде).
+  ipcMain.handle('reference-browser:navigate', (_e, input: string): void => referenceBrowserController?.navigate(input))
+  ipcMain.handle('reference-browser:back', (): void => referenceBrowserController?.back())
+  ipcMain.handle('reference-browser:forward', (): void => referenceBrowserController?.forward())
+  ipcMain.handle('reference-browser:reload', (): void => referenceBrowserController?.reload())
+  ipcMain.handle('reference-browser:stop', (): void => referenceBrowserController?.stop())
+  ipcMain.handle('reference-browser:set-bounds', (_e, bounds: ViewBounds): void => {
+    referenceBrowserController?.setBounds(bounds)
+    referenceBrowserViewportBounds = bounds
+    repositionToolbarOverlay()
+    // Тот же repositionPanelOverlay('top'), что и browser:set-bounds — та
+    // теперь тоже смотрит на referenceSession и позиционируется по ЭТИМ
+    // bounds, пока сессия активна (см. repositionPanelOverlay докстринг).
+    if (panelVisible.top) repositionPanelOverlay('top')
+  })
+  ipcMain.handle('reference-browser:set-hidden', (_e, hidden: boolean): void => referenceBrowserController?.setHidden(hidden))
+  ipcMain.handle('reference-browser:new-tab', (_e, url?: string): void => {
+    elementPicker?.stopIfActive()
+    referenceBrowserController?.newTab(url)
+  })
+  ipcMain.handle('reference-browser:close-tab', (_e, id: string): void => {
+    elementPicker?.stopIfActive()
+    referenceBrowserController?.closeTab(id)
+  })
+  ipcMain.handle('reference-browser:switch-tab', (_e, id: string): void => {
+    elementPicker?.stopIfActive()
+    referenceBrowserController?.switchTab(id)
+  })
+  ipcMain.handle(
+    'reference-browser:get-tabs',
+    (): TabsSnapshot => referenceBrowserController?.getTabsSnapshot() ?? { tabs: [], activeTabId: null }
+  )
+
   // Тулбар теперь ВСЕГДА показан (не открывается/закрывается по запросу) —
   // единственное, что реально меняется динамически, это его высота (раскрыт
   // ли внутри него Apply to Selection popover, см. OverlayRoot.tsx).
@@ -498,6 +1064,80 @@ function registerIpc(): void {
     repositionToolbarOverlay()
   })
 
+  // Generic popover overlay ('popover' слой, см. overlay.ts докстринг) —
+  // первая реализация обобщённого механизма (по запросу пользователя, вместо
+  // usePopoverVisibility-подхода с прятаньем браузера под КАЖДЫЙ попап,
+  // который может визуально пересечь browser-viewport). Любой новый попап —
+  // ещё один `kind`, обрабатываемый в PopoverOverlayRoot.tsx, эта проводка
+  // (open/close/report-size/reposition) переиспользуется как есть.
+  ipcMain.handle('overlay:popover-open', async (_e, params: PopoverOpenParams): Promise<void> => {
+    popoverAnchor = params.anchor
+    const devUrl = isDev ? process.env['ELECTRON_RENDERER_URL'] : undefined
+    if (mainWindow && !overlayController?.isMounted('popover')) {
+      // Первое открытие за всё время работы приложения — ЖДЁМ реальной
+      // загрузки страницы слоя перед send() ниже, иначе сообщение улетает в
+      // пустоту (рендерер ещё не навесил свой IPC-listener), живой баг,
+      // поймал пользователь: попап не показывал содержимое при первом клике.
+      await overlayController?.mount('popover', mainWindow, devUrl)
+    }
+    overlayController?.send('popover', 'popover:show', { kind: params.kind, props: params.props })
+    repositionPopoverOverlay()
+  })
+  ipcMain.handle('overlay:popover-close', (): void => {
+    closePopoverOverlay()
+  })
+  ipcMain.handle('overlay:popover-report-size', (_e, size: OverlaySize): void => {
+    popoverSize = size
+    repositionPopoverOverlay()
+  })
+  // Действие внутри попапа/панели, которое должно обработать главное окно
+  // (напр. "Новый проект" → CreateProjectModal, см. AddToProjectButton.tsx;
+  // "закрепить панель" → App.tsx Workspace leftPinned/rightPinned state) —
+  // в целом просто ретрансляция overlay-рендерер → главное окно, но у
+  // 'pin-panel' есть побочный эффект здесь же: если панель закрепляют
+  // (payload.pinned), её float-слой (если сейчас плавает) больше не нужен
+  // независимо от текущего наведения — форсим закрытие сразу (см.
+  // createHoverGate.forceClose), а не ждём, пока main-окно перерендерится и
+  // само решит скрыть overlay отдельным вызовом.
+  ipcMain.handle('overlay:popover-action', (_e, action: { type: string; payload?: unknown }): void => {
+    if (action.type === 'pin-panel') {
+      const payload = action.payload as { side: PanelSide; pinned: boolean }
+      if (payload.pinned) {
+        const gate =
+          payload.side === 'left' || payload.side === 'references-left'
+            ? leftPanelGate
+            : payload.side === 'right' || payload.side === 'references-right'
+              ? rightPanelGate
+              : topPanelGate
+        gate.forceClose()
+      }
+    }
+    mainWindow?.webContents.send('overlay:popover-action', action)
+  })
+
+  // Float-режим distraction-free (см. createHoverGate докстринг выше) — два
+  // независимых источника наведения (тонкая полоска в главном окне и сама
+  // плавающая панель в overlay-слое) шлют сюда enter/leave, панель открыта,
+  // пока хотя бы один держит её.
+  ipcMain.handle('overlay:panel-hover', (_e, params: { side: PanelSide; entering: boolean }): void => {
+    const gate =
+      params.side === 'left' || params.side === 'references-left'
+        ? leftPanelGate
+        : params.side === 'right' || params.side === 'references-right'
+          ? rightPanelGate
+          : topPanelGate
+    if (params.entering) gate.enter()
+    else gate.leave()
+  })
+
+  // Активная вкладка верхнего уровня (см. App.tsx Shell activeView эффект) —
+  // нужна ТОЛЬКО leftPanelGate, чтобы знать, какой overlay-слой открывать
+  // при наведении на левый край в float-режиме (см. activeTopView докстринг
+  // выше).
+  ipcMain.handle('app:set-active-view', (_e, view: 'browser' | 'references'): void => {
+    activeTopView = view
+  })
+
   ipcMain.handle('inspector:start-pick', () => elementPicker?.start())
   ipcMain.handle('inspector:stop-pick', () => elementPicker?.stop())
   // Правая панель могла быть закрыта в момент клика пикером (пропустила
@@ -505,11 +1145,223 @@ function registerIpc(): void {
   // сделанный выбор через этот запрос вместо того, чтобы показывать пустое
   // состояние, пока пользователь не кликнет заново.
   ipcMain.handle('inspector:get-last-selection', (): SelectionResult | null => elementPicker?.getLastSelection() ?? null)
+  // Клик по узлу Element tree в InspectorPanel — переключает выделение на
+  // этот DOM-элемент, по запросу пользователя ("в дереве можно было
+  // переключаться на объект, а не просто смотреть"), см. inspector.ts
+  // selectBySourceSelector.
+  ipcMain.handle(
+    'inspector:select-tree-node',
+    async (_e, sourceSelector: string): Promise<boolean> => (await elementPicker?.selectBySourceSelector(sourceSelector)) ?? false
+  )
 
   // Queue-режим (мульти-импорт) — см. inspector.ts ElementPicker класс-докстринг.
   ipcMain.handle('inspector:set-queue-mode', (_e, active: boolean): void => elementPicker?.setQueueMode(active))
-  ipcMain.handle('inspector:queue-confirm-add', (): void => elementPicker?.confirmQueueAdd())
+  // Диверсия в референс-стор (по запросу пользователя — сбор референс-
+  // элементов переиспользует queue-режим целиком, см. main/inspector.ts
+  // referenceSiteKey докстринг): если сейчас активна референс-сессия и
+  // настройка "спрашивать имя" ВЫКЛЮЧЕНА (дефолт), коммитим сразу с
+  // автоименем — подтверждённый элемент никогда не попадает в обычную
+  // очередь/LeftSidebar. Если настройка включена, эта ручка не вызывается
+  // вовсе — OverlayRoot.tsx вместо неё открывает попап имени (см.
+  // reference:items-create-from-pending ниже), сама решает по уже
+  // загруженным на своей стороне settings, звать какой из двух путей.
+  ipcMain.handle('inspector:queue-confirm-add', async (): Promise<void> => {
+    const item = elementPicker?.confirmQueueAdd()
+    if (!item || !referenceSession) return
+    const siteKey = referenceSiteKey(referenceSession.projectId, referenceSession.siteUrl)
+    if (elementPicker?.getReferenceSiteKey() !== siteKey) return
+    elementPicker.removeQueueItem(item.id)
+    const created = await referenceItemsStore.create(referenceItemInputFromQueueItem(item, referenceSession))
+    // Офскрин-миниатюра часто ещё не готова в этот момент (см.
+    // inspector.ts onItemThumbnailReady докстринг) — регистрируем
+    // корреляцию, чтобы patch'нуть её сюда, когда снимок доедет.
+    if (!created.thumbnail) pendingReferenceThumbnails.set(item.id, created.id)
+  })
   ipcMain.handle('inspector:queue-confirm-cancel', (): void => elementPicker?.confirmQueueCancel())
+
+  // "Найти сайт" из строки поиска на стартовом экране "Референсов" (по
+  // запросу пользователя) — раньше ЛЮБОЙ ввод в этой строке (включая
+  // произвольный текстовый запрос, ушедший в google-поиск через
+  // normalizeUrlInput) немедленно становился standalone-референсом и
+  // запускал пикер — живой баг: гугл-поиск сохранялся как "сайт". Теперь
+  // это отдельный, более лёгкий режим: просто монтирует/показывает
+  // встроенный референс-браузер и переходит по адресу, НЕ трогая
+  // referenceSession/standaloneReferenceSitesStore/elementPicker вообще —
+  // пока пользователь не найдёт нужную страницу и не нажмёт "Начать сбор"
+  // (обычный reference:session-start ниже, но уже с URL страницы, на
+  // которой пользователь фактически остановился, а не с исходным запросом).
+  // Начальное значение для 'panel-top' overlay-рендерера при монтировании
+  // (тот монтируется лениво по первому наведению — см. showPanelOverlay —
+  // референс-браузер к этому моменту вполне может уже быть виден). Живые
+  // изменения дальше идут event'ом (см. setReferenceBrowserVisible).
+  ipcMain.handle('reference:get-browser-visible', (): boolean => referenceBrowserVisible)
+  // Начальное значение для 'panel-references-right' overlay-рендерера при
+  // монтировании (тот монтируется лениво по первому наведению — см.
+  // showPanelOverlay — сессия сбора к этому моменту вполне может уже быть
+  // активна). Живые изменения дальше идут event'ом (см. broadcastReferenceSession).
+  ipcMain.handle('reference:get-session-state', (): ReferenceSessionState | null => referenceSession)
+
+  ipcMain.handle('reference:browse-start', (_e, url: string): void => {
+    const browser = mountReferenceBrowser()
+    browser?.setHidden(false)
+    setReferenceBrowserVisible(true)
+    if (browser && !browser.getActiveTabId()) browser.newTab(url)
+    else browser?.navigate(url)
+  })
+
+  // Плавающая левая панель "Референсов" (см. PanelOverlayRoot.tsx
+  // side:'references-left') живёт в ДРУГОМ рендерере — клик по сайту/
+  // проекту там не может напрямую вызвать selectSite()/onOpenSite()
+  // ReferencesView.tsx (тот React state — в главном окне). Просто
+  // ретрансляция главному окну, тем же generic bounce-back паттерном, что
+  // уже AddToProjectButton/pin-panel используют.
+  ipcMain.handle('references:overlay-select-site', (_e, projectId: string | null, url: string): void => {
+    mainWindow?.webContents.send('references:overlay-select-site', projectId, url)
+  })
+  ipcMain.handle('references:overlay-open-site', (_e, url: string): void => {
+    mainWindow?.webContents.send('references:overlay-open-site', url)
+  })
+
+  // Сессия сбора референс-элементов (по запросу пользователя, см.
+  // shared/types.ts ReferenceItem/ReferenceSessionState докстринг) —
+  // переиспользует queue-режим целиком, см. inspector.ts referenceSiteKey.
+  ipcMain.handle('reference:session-start', async (_e, projectId: string | null, siteUrl: string): Promise<void> => {
+    let siteTitle = siteUrl
+    if (projectId) {
+      const project = projectsStore.getAll().projects.find((p) => p.id === projectId)
+      const site = project?.sites.find((s) => s.url === siteUrl)
+      siteTitle = site?.title || project?.name || siteUrl
+    } else if (isSearchQueryUrl(siteUrl)) {
+      // Свободнотекстовый гугл-поиск (по запросу пользователя — "любой поиск
+      // не по домену... не должен попадать в недавние нигде") — не должно
+      // случаться штатно (commitBrowsing берёт url уже открытой вкладки
+      // browse-режима), но если пользователь нажал "Начать сбор" прямо на
+      // странице результатов поиска, не успев перейти на реальный сайт — не
+      // создаём запись в standalone-сторе, сессия просто использует "сырой"
+      // siteUrl как ключ (referenceSiteKey), без персистентной истории.
+      siteTitle = siteUrl
+    } else {
+      // Без проекта (по запросу пользователя — "начать с сайта, оформить как
+      // референс потом") — запись в standalone-сторе создаётся здесь же, если
+      // это первый заход на этот url (см. StandaloneReferenceSitesStore.upsert
+      // докстринг про идемпотентность); title поначалу пуст (это же самый
+      // первый визит), уточнится позже вместе с favicon тем же путём, что и
+      // обычные вкладки (см. BrowserController onTabsChange в mountReferenceBrowser).
+      const site = await standaloneReferenceSitesStore.upsert({ url: siteUrl, title: '', faviconUrl: null })
+      siteTitle = site.title || siteUrl
+    }
+    referenceSession = { projectId, siteUrl, siteTitle }
+    // Встроенный референс-браузер (по коррекции пользователя — НЕ переход на
+    // вкладку "Браузер", отдельный вьюпорт прямо на странице референс-сайта,
+    // см. mountReferenceBrowser) — монтируется при первом обращении, дальше
+    // просто переиспользуется между сессиями, как и главный браузер живёт
+    // всю сессию приложения.
+    const browser = mountReferenceBrowser()
+    // Явно снимаем hidden (см. reference:session-end — единственное место,
+    // которое его ставит) — на случай, если предыдущая сессия закрылась
+    // именно так; без этого newTab/navigate ниже физически ничего не
+    // покажут (BrowserController.setBounds no-op, пока hidden === true, см.
+    // ReferenceBrowserPane.tsx докстринг про живой баг).
+    browser?.setHidden(false)
+    setReferenceBrowserVisible(true)
+    // Первое открытие — сразу создаём вкладку с РЕАЛЬНЫМ url (не грузим
+    // стартовую страницу только чтобы тут же её перебить, см.
+    // mountReferenceBrowser докстринг); повторное открытие (контроллер и
+    // вкладка уже есть) — просто навигация в существующей вкладке.
+    if (browser && !browser.getActiveTabId()) browser.newTab(siteUrl)
+    else browser?.navigate(siteUrl)
+    elementPicker?.setReferenceMode(referenceSiteKey(projectId, siteUrl))
+    elementPicker?.setQueueMode(true)
+    broadcastReferenceSession()
+    // Пикер больше НЕ стартует автоматически при открытии сессии (по
+    // запросу пользователя — "надо что бы я его включал с тулбара сам") —
+    // пользователь включает его вручную кнопкой на PickerFloatBar, как в
+    // обычном браузере.
+  })
+  ipcMain.handle('reference:session-end', async (): Promise<void> => {
+    referenceSession = null
+    elementPicker?.setReferenceMode(null)
+    elementPicker?.setQueueMode(false)
+    await elementPicker?.stop()
+    // Единственное место, которое прячет референс-браузер (см.
+    // reference:session-start докстринг выше и ReferenceBrowserPane.tsx —
+    // раньше это делал renderer через unmount-эффект, живой баг под
+    // StrictMode: hidden оставался true навсегда, все будущие bounds
+    // молча игнорировались).
+    referenceBrowserController?.setHidden(true)
+    setReferenceBrowserVisible(false)
+    broadcastReferenceSession()
+    // Без этого тулбар пикера остался бы висеть над уже скрытым референс-
+    // браузером до следующего случайного repositionToolbarOverlay() откуда-то
+    // ещё — repositionToolbarOverlay() сам решит, показывать ли его дальше
+    // (зависит от overlaySuppressed, см. докстринг функции).
+    repositionToolbarOverlay()
+  })
+  ipcMain.handle('reference:items-get', (_e, siteKey: string): ReferenceItem[] => referenceItemsStore.getForSite(siteKey))
+  ipcMain.handle(
+    'reference:items-update-meta',
+    async (_e, id: string, patch: { name?: string; description?: string }): Promise<void> => {
+      await referenceItemsStore.updateMeta(id, patch)
+    }
+  )
+  ipcMain.handle('reference:items-remove', async (_e, id: string): Promise<void> => {
+    await referenceItemsStore.remove(id)
+  })
+
+  // Референс-сайты без проекта (по запросу пользователя), см.
+  // main/standaloneReferenceSites.ts докстринг.
+  ipcMain.handle('standalone-references:get', (): StandaloneReferenceSite[] => standaloneReferenceSitesStore.getAll())
+  ipcMain.handle('standalone-references:remove', async (_e, url: string): Promise<void> => {
+    await standaloneReferenceSitesStore.remove(url)
+    await referenceItemsStore.removeForSite(referenceSiteKey(null, url))
+  })
+  ipcMain.handle('standalone-references:attach-to-project', async (_e, url: string, projectId: string): Promise<void> => {
+    const site = standaloneReferenceSitesStore.getAll().find((s) => s.url === url)
+    if (!site) return
+    await projectsStore.addSite(projectId, { url: site.url, title: site.title, faviconUrl: site.faviconUrl }, 'reference')
+    if (site.thumbnail) await projectsStore.setThumbnail(projectId, url, site.thumbnail)
+    await standaloneReferenceSitesStore.remove(url)
+    // Переносим уже собранные референс-элементы на новый siteKey — тот же
+    // приём, что projects:move-site-to-project уже использует при смене
+    // проекта у обычного ProjectSite (см. main/index.ts).
+    const oldKey = referenceSiteKey(null, url)
+    const newKey = referenceSiteKey(projectId, url)
+    const items = referenceItemsStore.getForSite(oldKey)
+    for (const item of items) {
+      await referenceItemsStore.remove(item.id)
+      await referenceItemsStore.create({
+        siteKey: newKey,
+        projectId,
+        siteUrl: item.siteUrl,
+        element: item.element,
+        thumbnail: item.thumbnail,
+        name: item.name,
+        description: item.description,
+        tabId: item.tabId,
+        backendNodeId: item.backendNodeId,
+        sourceUrl: item.sourceUrl
+      })
+    }
+  })
+  // Попап "имя/описание" (настройка referenceNamePromptOnAdd) — открывается и
+  // управляется целиком в OverlayRoot.tsx/ReferenceNamePopoverContent.tsx (там
+  // уже есть pendingQueueItem как onInspectorQueuePending); эта ручка делает
+  // то же самое, что и авто-путь в inspector:queue-confirm-add выше, только
+  // с введёнными name/description вместо автоимени.
+  ipcMain.handle(
+    'reference:items-create-from-pending',
+    async (_e, name: string, description?: string): Promise<void> => {
+      const item = elementPicker?.confirmQueueAdd()
+      if (!item || !referenceSession) return
+      elementPicker?.removeQueueItem(item.id)
+      const created = await referenceItemsStore.create({
+        ...referenceItemInputFromQueueItem(item, referenceSession),
+        name,
+        description
+      })
+      if (!created.thumbnail) pendingReferenceThumbnails.set(item.id, created.id)
+    }
+  )
   ipcMain.handle('inspector:queue-remove', (_e, id: string): void => elementPicker?.removeQueueItem(id))
   ipcMain.handle('inspector:queue-clear', (): void => elementPicker?.clearQueue())
 
@@ -544,6 +1396,120 @@ function registerIpc(): void {
   ipcMain.handle('recent-sites:get', (): RecentSite[] => recentSites.getAll())
   ipcMain.handle('recent-sites:remove', async (_e, url: string): Promise<void> => {
     await recentSites.remove(url)
+  })
+  ipcMain.handle('recent-sites:toggle-pin', async (_e, url: string): Promise<void> => {
+    await recentSites.togglePin(url)
+  })
+
+  // Проекты в сайдбаре (по запросу пользователя — "объединять сайты в
+  // проекты, как чаты в Claude Desktop"), см. main/projects.ts ProjectsStore.
+  ipcMain.handle('projects:get', (): ProjectsSnapshot => projectsStore.getAll())
+  ipcMain.handle('projects:create', async (_e, input: CreateProjectInput): Promise<Project> => projectsStore.createProject(input))
+  ipcMain.handle('projects:rename', async (_e, id: string, name: string): Promise<void> => {
+    await projectsStore.renameProject(id, name)
+  })
+  ipcMain.handle(
+    'projects:update',
+    async (
+      _e,
+      id: string,
+      patch: { name?: string; description?: string; icon?: string | null; thumbnail?: string | null }
+    ): Promise<void> => {
+      await projectsStore.updateProject(id, patch)
+    }
+  )
+  // Диалог выбора картинки для проекта (по запросу пользователя — "своя
+  // картинка" в попапе редактирования, см. CreateProjectModal.tsx) —
+  // resizeToThumbnail переиспользует тот же resize/JPEG-энкод хвост, что уже
+  // captureTabThumbnail использует для скриншота вкладки (см. THUMBNAIL_MAX_WIDTH
+  // выше), просто источник NativeImage другой (файл, а не capturePage()).
+  ipcMain.handle('projects:pick-thumbnail', async (): Promise<string | null> => {
+    if (!mainWindow) return null
+    const result = await dialog.showOpenDialog(mainWindow, {
+      properties: ['openFile'],
+      filters: [{ name: 'Изображения', extensions: ['png', 'jpg', 'jpeg', 'webp'] }]
+    })
+    if (result.canceled || !result.filePaths[0]) return null
+    const image = nativeImage.createFromPath(result.filePaths[0])
+    if (image.isEmpty()) return null
+    return resizeToThumbnail(image) ?? null
+  })
+  ipcMain.handle('projects:delete', async (_e, id: string): Promise<void> => {
+    await projectsStore.deleteProject(id)
+  })
+  ipcMain.handle('projects:reorder', async (_e, orderedIds: string[]): Promise<void> => {
+    await projectsStore.reorderProjects(orderedIds)
+  })
+  ipcMain.handle(
+    'projects:add-site',
+    async (
+      _e,
+      projectId: string,
+      site: { url: string; title: string; faviconUrl: string | null },
+      kind: 'site' | 'reference'
+    ): Promise<void> => {
+      await projectsStore.addSite(projectId, site, kind)
+      if (kind !== 'reference') return
+      // Скриншот снимается только для референсов и только с активной
+      // вкладки — "добавить как референс" всегда идёт с текущей открытой
+      // страницы (см. AddToProjectButton.tsx), не с произвольного url.
+      const tabId = browserController?.getActiveTabId()
+      const wc = tabId ? browserController?.getWebContentsForTab(tabId) : null
+      if (!wc) return
+      const thumbnail = await captureTabThumbnail(wc)
+      if (thumbnail) await projectsStore.setThumbnail(projectId, site.url, thumbnail)
+    }
+  )
+  ipcMain.handle('projects:remove-site', async (_e, projectId: string, url: string): Promise<void> => {
+    await projectsStore.removeSite(projectId, url)
+    // Осиротевшие референс-элементы (см. ReferenceItemsStore) иначе остаются
+    // мёртвым грузом в reference-items.json — сайт удалён, обратно к нему не
+    // попасть.
+    await referenceItemsStore.removeForSite(referenceSiteKey(projectId, url))
+  })
+  ipcMain.handle(
+    'projects:move-site-kind',
+    async (_e, projectId: string, url: string, toKind: 'site' | 'reference'): Promise<void> => {
+      await projectsStore.moveSite(projectId, url, toKind)
+    }
+  )
+  ipcMain.handle(
+    'projects:move-site-to-project',
+    async (_e, fromProjectId: string, toProjectId: string, url: string): Promise<void> => {
+      await projectsStore.moveSiteToProject(fromProjectId, toProjectId, url)
+      // siteKey включает projectId — перенос в другой проект меняет ключ,
+      // старые референс-элементы иначе стали бы недостижимы (адресованы по
+      // старому siteKey, которого больше никто не запрашивает).
+      const oldKey = referenceSiteKey(fromProjectId, url)
+      const items = referenceItemsStore.getForSite(oldKey)
+      for (const item of items) {
+        await referenceItemsStore.remove(item.id)
+        await referenceItemsStore.create({
+          siteKey: referenceSiteKey(toProjectId, url),
+          projectId: toProjectId,
+          siteUrl: item.siteUrl,
+          element: item.element,
+          thumbnail: item.thumbnail,
+          name: item.name,
+          description: item.description,
+          tabId: item.tabId,
+          backendNodeId: item.backendNodeId,
+          sourceUrl: item.sourceUrl
+        })
+      }
+    }
+  )
+  ipcMain.handle(
+    'projects:reorder-sites',
+    async (_e, projectId: string, kind: 'site' | 'reference', orderedUrls: string[]): Promise<void> => {
+      await projectsStore.reorderSites(projectId, kind, orderedUrls)
+    }
+  )
+
+  // Отмена импорта (по запросу пользователя, кнопка на плашке прогресса) —
+  // см. importCancelHandles/withCancel докстринг выше.
+  ipcMain.handle('import:cancel', (_e, id: string): void => {
+    importCancelHandles.get(id)?.abort()
   })
 
   ipcMain.handle(
@@ -584,7 +1550,7 @@ function registerIpc(): void {
       })
       try {
         progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
-        const response = await bridgeServer.request(message)
+        const response = await withCancel(bridgeServer.request(message), progress.signal)
         if (response.kind === 'error') {
           const error = (response as ErrorMessage).payload.message
           progress.finish(false, error)
@@ -659,7 +1625,7 @@ function registerIpc(): void {
         // дольше 10с. Живой баг, поймал пользователь: "Bridge request
         // import-node timed out" и часть страницы не успела импортироваться
         // — desktop переставал ждать раньше, чем Figma заканчивала.
-        const response = await bridgeServer.request(message, FULL_PAGE_IMPORT_TIMEOUT_MS)
+        const response = await withCancel(bridgeServer.request(message, FULL_PAGE_IMPORT_TIMEOUT_MS), progress.signal)
         if (response.kind === 'error') {
           const error = (response as ErrorMessage).payload.message
           progress.finish(false, error)
@@ -716,7 +1682,7 @@ function registerIpc(): void {
       })
       try {
         progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
-        const response = await bridgeServer.request(message)
+        const response = await withCancel(bridgeServer.request(message), progress.signal)
         if (response.kind === 'error') {
           const error = (response as ErrorMessage).payload.message
           progress.finish(false, error)
@@ -787,7 +1753,7 @@ function registerIpc(): void {
           placementOffset: { x, y: 0 }
         })
         try {
-          const response = await bridgeServer.request(message)
+          const response = await withCancel(bridgeServer.request(message), progress.signal)
           if (response.kind === 'error') failed++
           else imported++
         } catch {
@@ -811,6 +1777,112 @@ function registerIpc(): void {
     }
   )
 
+  // Отправка референс-элементов в Figma (по запросу пользователя — "по одной
+  // либо все разом") — параллельный обработчик, не обобщение
+  // inspector:import-queue выше: та ручка жёстко завязана на
+  // ElementPicker.queue, а референс-элементы из неё сознательно ИЗЪЯТЫ (см.
+  // диверсию в inspector:queue-confirm-add). Переиспользует ту же форму
+  // ImportNodeMessage, линейное размещение через QUEUE_IMPORT_GAP и
+  // createImportProgress — копируется тот же ~20-строчный цикл, а не
+  // переизобретается. Авторасстановку сеткой сознательно не делаем — по
+  // решению пользователя, отдельная будущая задача.
+  async function sendReferenceItems(
+    items: ReferenceItem[],
+    useMatchedTextStyles: boolean,
+    useMatchedColorStyles: boolean,
+    colorMatchSource: ColorMatchSource,
+    label: string
+  ): Promise<QueueImportResult> {
+    if (!bridgeServer || bridgeServer.connectionCount === 0) {
+      return { ok: false, imported: 0, failed: 0, error: 'Figma plugin не подключён — см. Bridge в toolbar' }
+    }
+    if (items.length === 0) return { ok: false, imported: 0, failed: 0, error: 'Нечего отправлять' }
+    const progress = createImportProgress(label, items.length)
+    const startedAt = performance.now()
+    const prepared = await elementPicker!.prepareReferenceDocuments(
+      items.map((i) => ({ id: i.id, tabId: i.tabId, backendNodeId: i.backendNodeId, sourceUrl: i.sourceUrl })),
+      browserController?.getViewportSize() ?? { width: 0, height: 0 },
+      (completed, total) => {
+        progress.update('preparing', 0.05 + (completed / Math.max(1, total)) * 0.45, `Подготовка ${completed} из ${total}`, completed)
+      }
+    )
+    const preparedAt = performance.now()
+
+    let imported = 0
+    let failed = 0
+    let x = 0
+    let sentIndex = 0
+    for (const result of prepared) {
+      if ('error' in result) {
+        failed++
+        continue
+      }
+      sentIndex++
+      progress.update(
+        'sending',
+        0.5 + (sentIndex / Math.max(1, prepared.length)) * 0.5,
+        `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание ${sentIndex} в Figma`,
+        sentIndex
+      )
+      const message = createMessage<ImportNodeMessage>('import-node', {
+        document: result.document,
+        as: 'frame',
+        useMatchedTextStyles,
+        useMatchedColorStyles,
+        colorMatchSource,
+        placementOffset: { x, y: 0 }
+      })
+      try {
+        const response = await withCancel(bridgeServer.request(message), progress.signal)
+        if (response.kind === 'error') failed++
+        else {
+          imported++
+          await referenceItemsStore.markSent(result.id)
+        }
+      } catch {
+        failed++
+      }
+      x += result.document.root.size.width + QUEUE_IMPORT_GAP
+    }
+
+    progress.finish(
+      failed === 0,
+      failed === 0
+        ? `Импортировано: ${imported} за ${((performance.now() - startedAt) / 1000).toFixed(1)} с`
+        : `Импортировано: ${imported}, ошибок: ${failed}`
+    )
+    return { ok: failed === 0, imported, failed }
+  }
+
+  ipcMain.handle(
+    'reference:items-send',
+    async (
+      _e,
+      id: string,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource
+    ): Promise<ImportResult> => {
+      const found = referenceItemsStore.findById(id)
+      if (!found) return { ok: false, error: 'Референс-элемент не найден' }
+      const result = await sendReferenceItems([found], useMatchedTextStyles, useMatchedColorStyles, colorMatchSource, 'Отправка референса')
+      return result.ok ? { ok: true } : { ok: false, error: result.error ?? 'Не удалось отправить' }
+    }
+  )
+  ipcMain.handle(
+    'reference:items-send-all',
+    async (
+      _e,
+      siteKey: string,
+      useMatchedTextStyles: boolean,
+      useMatchedColorStyles: boolean,
+      colorMatchSource: ColorMatchSource
+    ): Promise<QueueImportResult> => {
+      const items = referenceItemsStore.getForSite(siteKey).filter((i) => !i.sentToFigmaAt)
+      return sendReferenceItems(items, useMatchedTextStyles, useMatchedColorStyles, colorMatchSource, 'Отправка референсов')
+    }
+  )
+
   ipcMain.handle('inspector:apply-styles', async (_e, targets: ApplyStylesTargets): Promise<ApplyStylesResult> => {
     const document = elementPicker?.buildDocument(
       browserController?.getState().url ?? '',
@@ -825,7 +1897,7 @@ function registerIpc(): void {
     const message = createMessage<ApplyStylesMessage>('apply-styles', { document, targets })
     try {
       progress.update('sending', 0.55, 'Обновление выделения в Figma…')
-      const response = await bridgeServer.request(message)
+      const response = await withCancel(bridgeServer.request(message), progress.signal)
       if (response.kind === 'error') {
         const error = (response as ErrorMessage).payload.message
         progress.finish(false, error)
@@ -881,7 +1953,7 @@ function registerIpc(): void {
     })
     try {
       progress.update('sending', 0.55, 'Отправка ассета в Figma…')
-      const response = await bridgeServer.request(message)
+      const response = await withCancel(bridgeServer.request(message), progress.signal)
       if (response.kind === 'error') {
         const error = (response as ErrorMessage).payload.message
         progress.finish(false, error)
@@ -993,7 +2065,7 @@ function registerIpc(): void {
         alsoCreateInstance: settings.alsoCreateInstance
       })
       progress.update('sending', 0.62, `DOM готов за ${((preparedAt - startedAt) / 1000).toFixed(1)} с · создание в Figma…`)
-      const response = await bridgeServer.request(message)
+      const response = await withCancel(bridgeServer.request(message), progress.signal)
       if (response.kind === 'error') {
         const error = (response as ErrorMessage).payload.message
         progress.finish(false, error)
@@ -1013,6 +2085,9 @@ app.whenReady().then(async () => {
   registerIpc()
   registerAutoUpdater()
   await recentSites.load()
+  await projectsStore.load()
+  await referenceItemsStore.load()
+  await standaloneReferenceSitesStore.load()
   try {
     // Провал старта bridge (порт занят даже во ВСЁМ fallback-диапазоне —
     // см. PORT_FALLBACK_RANGE, зафиксировано живьём: за долгую сессию с

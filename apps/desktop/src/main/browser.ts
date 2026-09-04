@@ -1,9 +1,17 @@
+import { join } from 'path'
 import { WebContentsView, type BrowserWindow, type Rectangle } from 'electron'
 import { nanoid } from 'nanoid'
 import { createConsoleLogger } from '@web-to-figma/shared'
 import { attachEditContextMenu } from './contextMenu'
 import { START_PAGE_URL } from './startPage'
 import type { BrowserState, TabsSnapshot } from '../shared/types'
+
+// Урезанный preload (см. preload/browserTab.ts) — сам себя включает ТОЛЬКО
+// на нашей стартовой странице (проверка по location.href внутри), на любом
+// другом сайте молча ничего не добавляет в window; нужен, чтобы дать
+// гугловское автодополнение статичной data:-странице (main/startPage.ts),
+// у которой иначе вообще нет доступа к IPC (по запросу пользователя).
+const BROWSER_TAB_PRELOAD = join(__dirname, '../preload/browserTab.js')
 
 const log = createConsoleLogger('browser')
 
@@ -109,7 +117,8 @@ export class BrowserController {
       webPreferences: {
         contextIsolation: true,
         sandbox: true,
-        nodeIntegration: false
+        nodeIntegration: false,
+        preload: BROWSER_TAB_PRELOAD
       }
     })
     // index 0 — всегда САМЫЙ НИЖНИЙ слой в contentView (z-order = порядок
@@ -355,4 +364,12 @@ export function normalizeUrlInput(input: string): string {
   const looksLikeDomain = !trimmed.includes(' ') && /^[^\s]+\.[a-z]{2,}([/:?#].*)?$/i.test(trimmed)
   if (looksLikeDomain) return `https://${trimmed}`
   return `https://www.google.com/search?q=${encodeURIComponent(trimmed)}`
+}
+
+/** Свободнотекстовый гугл-поиск (см. normalizeUrlInput выше — голый ввод,
+ *  не домен) — по запросу пользователя такие визиты НЕ считаются "сайтом" и
+ *  никогда не должны попадать в историю (RecentSitesStore/
+ *  StandaloneReferenceSitesStore), ни в основном браузере, ни в референсах. */
+export function isSearchQueryUrl(url: string): boolean {
+  return url.startsWith('https://www.google.com/search?q=')
 }

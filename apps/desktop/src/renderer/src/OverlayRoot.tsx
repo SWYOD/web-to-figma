@@ -1,9 +1,20 @@
 import { useEffect, useRef, useState } from 'react'
+import { AlertCircle, CheckCircle2, Loader2, X } from 'lucide-react'
 import { isValidThemeDef, ThemeProvider } from '@web-to-figma/ui'
-import type { AppSettings, QueueItemSummary } from '../../shared/types'
+import type { AppSettings, ImportProgressEvent, QueueItemSummary, ReferenceSessionState } from '../../shared/types'
 import { ApplyToSelectionContent } from './components/ApplyToSelectionContent'
 import { PickerFloatBar } from './components/PickerFloatBar'
 import { QueueConfirmCard } from './components/QueueConfirmCard'
+
+// Та же формула автоимени, что и в main/index.ts (третья копия — renderer
+// не может импортировать модуль main-процесса) — см. QueueConfirmCard.tsx,
+// используется тут только для подписи попапа имени, сама карточка считает
+// себе label независимо.
+function queueItemLabel(element: QueueItemSummary['element']): string {
+  if (element.id) return `${element.tag}#${element.id}`
+  if (element.classes[0]) return `${element.tag}.${element.classes[0]}`
+  return element.tag
+}
 
 /**
  * Смонтирован вместо `App` во ВТОРОМ renderer-процессе (`?overlay=1`, см.
@@ -24,7 +35,14 @@ export function OverlayRoot(): JSX.Element | null {
   const [queueMode, setQueueMode] = useState(false)
   const [queuePending, setQueuePending] = useState<QueueItemSummary | null>(null)
   const [queueCount, setQueueCount] = useState(0)
+  const [importProgress, setImportProgress] = useState<ImportProgressEvent | null>(null)
+  const progressHideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
   const stackRef = useRef<HTMLDivElement>(null)
+  // Сессия сбора референс-элементов (по запросу пользователя) — банер тут же
+  // виден в любом режиме (см. import-progress докстринг рядом) плюс
+  // определяет, куда уходит подтверждение пика (см. handleQueueAdd ниже).
+  const [referenceSession, setReferenceSession] = useState<ReferenceSessionState | null>(null)
+  const queueConfirmRef = useRef<HTMLDivElement>(null)
 
   useEffect(() => {
     window.api.getSettings().then((s) => setSettings({ ...s, customThemes: s.customThemes.filter(isValidThemeDef) }))
@@ -50,16 +68,49 @@ export function OverlayRoot(): JSX.Element | null {
       // Cancel ниже, это дополнительная подстраховка на случай гонки.
       setQueuePending(null)
     })
+    // Импорт в Figma — see main/index.ts createImportProgress: тот же
+    // 'import:progress', что уходит в главное окно, теперь дублируется и
+    // сюда, в постоянно видимый overlay (см. докстринг файла) — по жалобе
+    // пользователя, в fullscreen тулбар главного окна скрыт, и старая плашка
+    // прогресса под ним была не видна вообще.
+    const offImportProgress = window.api.onImportProgress((event) => {
+      if (progressHideTimer.current) clearTimeout(progressHideTimer.current)
+      setImportProgress(event)
+      if (event.state !== 'running') {
+        progressHideTimer.current = setTimeout(() => setImportProgress(null), 2200)
+      }
+    })
+    const offReferenceSession = window.api.onReferenceSessionState(setReferenceSession)
     return () => {
       offSelection()
       offSelectionCleared()
       offCollapse()
       offQueuePending()
       offQueueUpdated()
+      offImportProgress()
+      offReferenceSession()
     }
   }, [])
 
   const handleQueueAdd = (): void => {
+    // Настройка referenceNamePromptOnAdd (по запросу пользователя) — во
+    // время активной референс-сессии открывает попап имя/описание ВМЕСТО
+    // мгновенного автокоммита; попап сам вызывает
+    // reference:items-create-from-pending при сохранении, а не
+    // inspector:queue-confirm-add (см. ReferenceNamePopoverContent.tsx).
+    if (referenceSession && settings?.referenceNamePromptOnAdd && queuePending) {
+      const anchor = queueConfirmRef.current?.getBoundingClientRect()
+      const label = queueItemLabel(queuePending.element)
+      setQueuePending(null)
+      if (anchor) {
+        window.api.overlayOpenPopover({
+          anchor: { x: anchor.x, y: anchor.y, width: anchor.width, height: anchor.height },
+          kind: 'reference-name',
+          props: { label }
+        })
+      }
+      return
+    }
     setQueuePending(null)
     window.api.inspectorQueueConfirmAdd()
   }
@@ -133,8 +184,47 @@ export function OverlayRoot(): JSX.Element | null {
     >
       <div className="overlay-root">
         <div ref={stackRef} className="overlay-toolbar-stack">
+          {importProgress && (
+            <div className={`overlay-import-progress ${importProgress.state}`} role="status" aria-live="polite">
+              <span className="overlay-import-progress-icon">
+                {importProgress.state === 'running' && <Loader2 size={14} className="spin" />}
+                {importProgress.state === 'success' && <CheckCircle2 size={14} />}
+                {importProgress.state === 'error' && <AlertCircle size={14} />}
+              </span>
+              <div className="overlay-import-progress-text">
+                <span className="overlay-import-progress-label">{importProgress.label}</span>
+                {/* detail — реальный статус шага ("Чтение DOM…", "Готово за
+                    2.1 с", текст ошибки), раньше был виден только в title-
+                    тултипе при наведении — по жалобе пользователя ("не
+                    показывает статусы"), теперь всегда на виду второй
+                    строкой. */}
+                {importProgress.detail && <span className="overlay-import-progress-detail">{importProgress.detail}</span>}
+              </div>
+              {importProgress.state === 'running' && (
+                <div className="overlay-import-progress-track">
+                  <div className="overlay-import-progress-fill" style={{ width: `${Math.round(importProgress.progress * 100)}%` }} />
+                </div>
+              )}
+              {importProgress.state === 'running' && (
+                <button
+                  className="overlay-import-progress-cancel"
+                  title="Отменить импорт"
+                  onClick={() => window.api.importCancel(importProgress.id)}
+                >
+                  <X size={11} />
+                </button>
+              )}
+            </div>
+          )}
           {queuePending ? (
-            <QueueConfirmCard item={queuePending} onAdd={handleQueueAdd} onCancel={handleQueueCancel} />
+            <div ref={queueConfirmRef}>
+              <QueueConfirmCard
+                item={queuePending}
+                onAdd={handleQueueAdd}
+                onCancel={handleQueueCancel}
+                confirmLabel={referenceSession ? 'Добавить в референсы?' : undefined}
+              />
+            </div>
           ) : (
             applyOpen && <ApplyToSelectionContent />
           )}

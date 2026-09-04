@@ -29,6 +29,12 @@ interface Props {
   onScan: () => void
   maximized: boolean
   onMaximizedChange: (maximized: boolean) => void
+  /** Distraction-free (см. BrowserPane.tsx) — держит панель раскрытой, пока
+   *  курсор над ней. Пробрасываются на КОРНЕВОЙ div (а не через обёртку) —
+   *  onResizerPointerDown ниже вычисляет maxHeight через
+   *  panelRef.current.parentElement, обёртка сбила бы это на свой размер. */
+  onMouseEnter?: () => void
+  onMouseLeave?: () => void
 }
 
 /**
@@ -39,7 +45,17 @@ interface Props {
  * (не размонтируется вместе с переключением вкладок ЭТОЙ панели) — здесь
  * только высота/collapsed/maximized и текущая внутренняя вкладка.
  */
-export function BottomPanel({ tabs, scans, componentScans, scanningTabId, onScan, maximized, onMaximizedChange }: Props): JSX.Element {
+export function BottomPanel({
+  tabs,
+  scans,
+  componentScans,
+  scanningTabId,
+  onScan,
+  maximized,
+  onMaximizedChange,
+  onMouseEnter,
+  onMouseLeave
+}: Props): JSX.Element {
   const [collapsed, setCollapsed] = useState(true)
   const [bodyHeight, setBodyHeight] = useState(DEFAULT_HEIGHT)
   const [panelTab, setPanelTab] = useState<PanelTab>('assets')
@@ -83,7 +99,12 @@ export function BottomPanel({ tabs, scans, componentScans, scanningTabId, onScan
   }
 
   return (
-    <div ref={panelRef} className={`bottom-panel${maximized ? ' maximized' : ''}`}>
+    <div
+      ref={panelRef}
+      className={`bottom-panel${maximized ? ' maximized' : ''}`}
+      onMouseEnter={onMouseEnter}
+      onMouseLeave={onMouseLeave}
+    >
       {!collapsed && !maximized && (
         <div
           className="bottom-panel-resizer"

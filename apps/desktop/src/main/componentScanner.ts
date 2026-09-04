@@ -112,25 +112,31 @@ export async function scanPageComponents(wc: WebContents): Promise<ComponentScan
 
 /** Снимает элемент из уже загруженного скрытого renderer. Элемент сначала
  * прокручивается в viewport, чтобы не использовать нестабильный
- * Page.captureScreenshot(captureBeyondViewport). */
+ * Page.captureScreenshot(captureBeyondViewport). `fullElement` (по запросу
+ * пользователя, см. AppSettings.captureFullBlockThumbnail) — не обрезает
+ * область по innerWidth/innerHeight; вызывающая сторона обязана заранее
+ * убедиться, что offscreen-окно уже достаточно высокое (см.
+ * captureElementPreviewOffscreen), иначе это ничего не даёт — здесь просто
+ * снимается clip, реально помещающийся в текущий viewport окна. */
 async function captureOffscreenElementBySelector(
   wc: WebContents,
   selector: string,
-  padding = 20
+  padding = 20,
+  fullElement = false
 ): Promise<string | null> {
   try {
     const clip = (await wc.executeJavaScript(
       `(async () => {
         const el = document.querySelector(${JSON.stringify(selector)})
         if (!el) return null
-        el.scrollIntoView({ block: 'center', inline: 'center', behavior: 'instant' })
+        el.scrollIntoView({ block: ${fullElement ? "'start'" : "'center'"}, inline: 'center', behavior: 'instant' })
         await new Promise((resolve) => requestAnimationFrame(() => requestAnimationFrame(resolve)))
         const r = el.getBoundingClientRect()
         const p = ${padding}
         const x = Math.max(0, r.x - p)
         const y = Math.max(0, r.y - p)
-        const right = Math.min(innerWidth, r.right + p)
-        const bottom = Math.min(innerHeight, r.bottom + p)
+        const right = ${fullElement} ? r.right + p : Math.min(innerWidth, r.right + p)
+        const bottom = ${fullElement} ? r.bottom + p : Math.min(innerHeight, r.bottom + p)
         return { x, y, width: right - x, height: bottom - y }
       })()`,
       true
@@ -164,17 +170,35 @@ export async function captureComponentPreview(wc: WebContents, selector: string,
   return captureOffscreenElementBySelector(wc, selector, padding)
 }
 
+// Потолок для высоты офскрин-окна при fullElement-захвате (см.
+// captureElementPreviewOffscreen ниже) — страховка от случайно выбранного
+// блока размером во всю страницу (напр. <body>), который иначе заставил бы
+// снимать и ресайзить окно на десятки тысяч пикселей.
+const FULL_ELEMENT_MAX_HEIGHT = 8000
+
 /**
  * Миниатюра произвольного выбранного элемента в отдельном невидимом renderer.
  * Важное отличие от wc.capturePage/Page.captureScreenshot на sourceWc:
  * compositor активной страницы вообще не участвует, поэтому нет моргания.
+ *
+ * `fullElement` (по запросу пользователя, см. AppSettings.captureFullBlockThumbnail
+ * докстринг) — без него миниатюра длинного блока (выше окна встроенного
+ * браузера) обрезалась по границе viewport'а, как будто "не полностью
+ * захватывает". Т.к. окно тут всё равно офскрин/невидимое пользователю, его
+ * можно спокойно РАСТЯНУТЬ по высоте под реальный размер элемента ПЕРЕД
+ * финальным снимком — это не такой "живой дёрг", как временный override
+ * viewport'а на видимой странице (см. inspector.ts withDesktopViewport
+ * докстринг), тут смотреть некому. Ширину НЕ трогаем — не хотим менять
+ * responsive-раскладку/переносы строк относительно того, что видел
+ * пользователь, только даём вертикали больше места.
  */
 export async function captureElementPreviewOffscreen(
   sourceWc: WebContents,
   sourceUrl: string,
   selector: string,
   viewport: { width: number; height: number },
-  hint: { tag: string; id: string | null; classes: string[]; width: number; height: number }
+  hint: { tag: string; id: string | null; classes: string[]; width: number; height: number },
+  fullElement = false
 ): Promise<string | null> {
   if (!sourceUrl || !selector || sourceWc.isDestroyed()) return null
   const worker = new BrowserWindow({
@@ -202,13 +226,18 @@ export async function captureElementPreviewOffscreen(
         timeout = setTimeout(() => reject(new Error('offscreen queue preview load timeout')), OFFSCREEN_LOAD_TIMEOUT_MS)
       })
     ])
-    await new Promise((resolve) => setTimeout(resolve, 120))
+    await new Promise((resolve) => setTimeout(resolve, 250))
     // Абсолютный :nth-child selector может протухнуть между двумя загрузками
     // динамической страницы. Сначала проверяем его, затем ранжируем элементы
     // того же тега по id/classes/размерам и помечаем найденный временным attr.
+    // Тяжёлые сайты (баннер cookie-согласия, ленивая отрисовка блоков — живой
+    // баг на rostec.ru) не всегда успевают дать элементам реальный layout за
+    // один цикл, из-за чего getBoundingClientRect() всех кандидатов
+    // возвращает 0x0 и locate молча проваливается — несколько попыток с
+    // растущей паузой (по жалобе пользователя "миниатюры не всегда
+    // появляются" — одного повтора оказалось недостаточно на практике).
     const marker = `w2f-${Date.now()}-${Math.random().toString(36).slice(2)}`
-    const located = (await worker.webContents.executeJavaScript(
-      `(() => {
+    const locateScript = (): string => `(() => {
         const expected = ${JSON.stringify(hint)}
         let direct = null
         try { direct = document.querySelector(${JSON.stringify(selector)}) } catch {}
@@ -231,14 +260,38 @@ export async function captureElementPreviewOffscreen(
         if (!best || bestScore < 7) return null
         best.setAttribute('data-w2f-queue-preview', ${JSON.stringify(marker)})
         return { selector: '[data-w2f-queue-preview="' + ${JSON.stringify(marker)} + '"]', score: bestScore }
-      })()`,
-      true
-    )) as { selector: string; score: number } | null
+      })()`
+    let located: { selector: string; score: number } | null = null
+    for (const waitMs of [0, 500, 1200, 2200]) {
+      if (waitMs > 0) await new Promise((resolve) => setTimeout(resolve, waitMs))
+      located = (await worker.webContents.executeJavaScript(locateScript(), true)) as {
+        selector: string
+        score: number
+      } | null
+      if (located) break
+    }
     if (!located) {
       log.warn('offscreen queue preview element not found', { sourceUrl, selector, tag: hint.tag, classes: hint.classes })
       return null
     }
-    const thumbnail = await captureOffscreenElementBySelector(worker.webContents, located.selector, 20)
+    if (fullElement) {
+      const naturalHeight = (await worker.webContents.executeJavaScript(
+        `document.querySelector(${JSON.stringify(located.selector)})?.getBoundingClientRect().height ?? 0`,
+        true
+      )) as number
+      const neededHeight = Math.min(FULL_ELEMENT_MAX_HEIGHT, Math.ceil(naturalHeight + 40))
+      const [contentWidth, contentHeight] = worker.getContentSize()
+      const currentWidth = contentWidth ?? Math.round(viewport.width || 1280)
+      const currentHeight = contentHeight ?? Math.round(viewport.height || 720)
+      if (neededHeight > currentHeight) {
+        worker.setContentSize(currentWidth, neededHeight)
+        // Даём странице пересчитать layout под новую высоту viewport'а
+        // (lazy-load/intersection observer у части сайтов реагируют на
+        // размер viewport'а, не только на скролл) перед финальным снимком.
+        await new Promise((resolve) => setTimeout(resolve, 150))
+      }
+    }
+    const thumbnail = await captureOffscreenElementBySelector(worker.webContents, located.selector, 20, fullElement)
     if (!thumbnail) {
       log.warn('offscreen queue preview capture is empty', { sourceUrl, selector, locatedScore: located.score })
       return null

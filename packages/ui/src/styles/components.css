@@ -5,6 +5,7 @@
 */
 
 .app {
+  position: relative;
   display: flex;
   flex-direction: column;
   height: 100%;
@@ -122,6 +123,16 @@
 }
 .resizer:hover::after {
   background: var(--accent);
+}
+/* Distraction-free: панель раскрыта наведением на край, не перетаскиванием
+   ширины (см. App.tsx Workspace) — тот же .resizer оставлен ТОЛЬКО ради
+   визуального зазора между раскрытой панелью и browser-pane (без него они
+   касались вплотную, живой баг, поймал пользователь), но без интерактива. */
+.resizer.static {
+  cursor: default;
+}
+.resizer.static:hover::after {
+  background: var(--border);
 }
 
 /* ── Panel ───────────────────────────────────────────── */
@@ -263,10 +274,12 @@
 .popover-anchor {
   position: relative;
 }
+/* position:fixed + top/left/right/bottom заданы инлайн-стилем в Popover.tsx
+   (координаты якоря через getBoundingClientRect(), т.к. попап рендерится
+   порталом в document.body — не обрезается overflow предков, см. Popover.tsx
+   докстринг про живой баг с обрезанием в .recent-scroll). */
 .popover {
-  position: absolute;
-  top: calc(100% + 6px);
-  right: 0;
+  position: fixed;
   min-width: 260px;
   max-height: calc(100vh - 24px);
   overflow-y: auto;
@@ -278,7 +291,7 @@
   border: 1px solid var(--border-strong);
   border-radius: 12px;
   box-shadow: var(--shadow);
-  z-index: 30;
+  z-index: 1000;
 }
 .popover-section {
   display: flex;
@@ -373,27 +386,6 @@
   outline: none;
   border-color: var(--accent);
   box-shadow: 0 0 0 3px var(--accent-soft);
-}
-
-/* ── Popover placement variant (settings-style, opens up + full width) ──
-   Портировано из .settings-popup Skill-tree — для попапа у кнопки, пришпиленной
-   к НИЗУ узкой колонки (сайдбар), которому некуда раскрываться вниз/вправо
-   (см. docs/design-system.md §7, Popover.tsx placement prop). */
-.popover.popover-up-stretch {
-  top: auto;
-  bottom: calc(100% + 6px);
-  left: 0;
-  right: 0;
-  min-width: 0;
-}
-
-/* ── Popover placement variant (opens up, natural width) ────────────────
-   Для кнопок в нижнем floating-баре над браузером (PickerFloatBar) —
-   раскрываться вниз некуда, но якорь — не колонка на всю ширину, поэтому
-   'up-stretch' не подходит (растянул бы попап на всю ширину бара). */
-.popover.popover-up {
-  top: auto;
-  bottom: calc(100% + 6px);
 }
 
 /* ── Settings anchor/toggle/popup (сайдбар — кнопка "Настройки") ────────

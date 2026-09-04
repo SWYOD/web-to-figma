@@ -129,7 +129,25 @@ export function BrowserPane({ distractionFree, onToggleDistractionFree, fullscre
   const navReveal = useEdgeReveal()
   const bottomReveal = useEdgeReveal()
   const navVisible = topPinned || !distractionFree || navReveal.revealed
-  const bottomVisible = !distractionFree || bottomReveal.revealed
+  // Пин нижней панели (по запросу пользователя, "в полноэкранном режиме нет
+  // pin") — та же семантика, что и topPinned, но полностью локальный React
+  // state: в отличие от top/left/right, BottomPanel НИКОГДА не рисуется в
+  // отдельном overlay-слое (см. рендер ниже — она просто раздвигает/схлопывает
+  // высоту нативного вьюпорта bounds'ами, а не всплывает НАД ним), так что
+  // нет отдельного процесса-рендерера, с которым нужно было бы синхронизировать
+  // pinned через IPC bounce-back.
+  const [bottomPinned, setBottomPinned] = useState(false)
+  const bottomVisible = bottomPinned || !distractionFree || bottomReveal.revealed
+  // Раскрыта ИМЕННО наведением (не пином, не обычным push-режимом) — только в
+  // этом состоянии клик по шапке должен сворачивать её обратно (см.
+  // BottomPanel.tsx onHeaderClick), иначе случайный клик по шапке в обычном
+  // режиме неожиданно бы что-то делал.
+  const bottomRevealedByHover = distractionFree && !bottomPinned && bottomReveal.revealed
+  const bottomPinAction = distractionFree && (
+    <IconButton active={bottomPinned} onClick={() => setBottomPinned((v) => !v)} title={bottomPinned ? 'Открепить панель' : 'Закрепить панель'}>
+      <Pin size={14} fill={bottomPinned ? 'currentColor' : 'none'} />
+    </IconButton>
+  )
   const topPinAction = distractionFree && (
     <IconButton active={topPinned} onClick={onToggleTopPinned} title={topPinned ? 'Открепить панель' : 'Закрепить панель'}>
       <Pin size={14} fill={topPinned ? 'currentColor' : 'none'} />
@@ -329,6 +347,9 @@ export function BrowserPane({ distractionFree, onToggleDistractionFree, fullscre
           onMaximizedChange={setBottomMaximized}
           onMouseEnter={bottomReveal.onMouseEnter}
           onMouseLeave={bottomReveal.onMouseLeave}
+          pinAction={bottomPinAction}
+          revealedByHover={bottomRevealedByHover}
+          onCollapseReveal={bottomReveal.forceClose}
         />
       ) : (
         <div

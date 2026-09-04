@@ -1,3 +1,4 @@
+import { useEffect, useRef } from 'react'
 import type { ReactNode } from 'react'
 import { Globe, Loader2, Maximize2, Minimize2, Plus, X } from 'lucide-react'
 import { IconButton } from '@web-to-figma/ui'
@@ -41,9 +42,22 @@ export function BrowserTabBar({
   pinAction,
   hideFullscreenToggle
 }: BrowserTabBarProps): JSX.Element {
+  // .browser-tab-list скроллится (overflow-x:auto), когда даже сжатые до
+  // min-width вкладки не помещаются (см. styles.css) — без этого активная
+  // вкладка (обычно последняя/только что созданная) могла остаться ЧАСТИЧНО
+  // за пределами видимой прокрученной области: DOM-бокс существует целиком,
+  // но зрительно обрезан границей overflow, из-за чего иконка выглядит
+  // "раздутой"/нецентрированной (живой баг, поймал пользователь). Обычные
+  // браузеры всегда доскролливают активную вкладку в видимую область — тот
+  // же scrollIntoView здесь.
+  const listRef = useRef<HTMLDivElement>(null)
+  useEffect(() => {
+    listRef.current?.querySelector('.browser-tab.active')?.scrollIntoView({ inline: 'nearest', block: 'nearest' })
+  }, [activeTabId, tabs.length])
+
   return (
     <div className="browser-tab-bar">
-      <div className="browser-tab-list">
+      <div className="browser-tab-list" ref={listRef}>
         {tabs.map((tab) => {
           const title = isStartPage(tab.url) ? 'Новая вкладка' : tab.title || tab.url || 'Загрузка…'
           return (

@@ -133,6 +133,14 @@
 }
 
 /* ── Browser tab bar (вкладки) ───────────────────────────────────────── */
+/* min-width:0 (не auto, дефолт флекс-айтема) — иначе .browser-tab-bar не
+   может СЖАТЬСЯ уже своей шириной внутри родительской колонки, и много
+   вкладок (каждая с min-width, см. .browser-tab ниже) раздвигают весь
+   воркспейс вправо за край окна вместо того, чтобы сжаться/уйти в скролл
+   (живой баг, поймал пользователь — "если много вкладок открыть, он
+   начинает раздвигать интерфейс"). Тот же компонент/CSS используют и
+   основной браузер, и встроенный референс-браузер (см. BrowserTabBar.tsx
+   hideFullscreenToggle), фикс общий для обоих. */
 .browser-tab-bar {
   flex: 0 0 auto;
   display: flex;
@@ -141,12 +149,12 @@
   padding: 6px 8px 0;
   background: var(--surface-2);
   border-bottom: 1px solid var(--border);
-  overflow-x: auto;
+  min-width: 0;
 }
-/* margin-left:auto вместо justify-content:space-between на .browser-tab-bar —
-   тот overflow-x:auto (много вкладок скроллится), а эти действия должны
-   оставаться пришпилены у правого края, а не укатываться вместе со списком
-   вкладок. */
+/* margin-left:auto вместо justify-content:space-between — .browser-tab-list
+   (не сам .browser-tab-bar) уходит в overflow-x:auto, когда вкладки сжались
+   до минимума и всё ещё не помещаются, а эти действия должны оставаться
+   пришпилены у правого края, а не укатываться вместе со списком вкладок. */
 .browser-tab-bar-actions {
   flex: 0 0 auto;
   display: flex;
@@ -154,18 +162,39 @@
   margin: 0 0 4px auto;
   padding-left: 6px;
 }
+/* scrollbar-width:none/::-webkit-scrollbar{display:none} — реальные браузеры
+   не показывают видимый скроллбар в полосе вкладок (просто молча клипуют/
+   скроллят колёсиком), а глобальный тонкий скроллбар (*::-webkit-scrollbar,
+   см. base.css) тут выглядел серой полосой, приклеенной под иконками —
+   живой баг, поймал пользователь ("раздувает элемент"). Прокрутка колёсиком/
+   трекпадом остаётся рабочей, просто без видимого трека. */
 .browser-tab-list {
   display: flex;
   align-items: flex-end;
   gap: 2px;
   min-width: 0;
+  flex: 1 1 auto;
+  overflow-x: auto;
+  scrollbar-width: none;
 }
+.browser-tab-list::-webkit-scrollbar {
+  display: none;
+}
+/* flex: 1 1 180px + min/max-width (не фиксированный width) — как в обычных
+   браузерах: вкладки сначала СЖИМАЮТСЯ пропорционально вместе (до
+   min-width), и только когда даже это не помещается, .browser-tab-list
+   выше уходит в горизонтальный скролл. min-width — 56px, не больше (по
+   запросу пользователя, "лучше без прокрутки, как в Вивальди") — заголовок
+   у .browser-tab-title сам пропадает при недостатке места (overflow:hidden,
+   min-width:0), так что на этом полу вкладка схлопывается до одной иконки
+   (+крестик закрытия), и скролл практически никогда не требуется. */
 .browser-tab {
   display: flex;
   align-items: center;
   gap: 6px;
-  min-width: 0;
-  width: 180px;
+  flex: 1 1 180px;
+  min-width: 56px;
+  max-width: 180px;
   padding: 7px 8px;
   border-radius: 8px 8px 0 0;
   color: var(--text-dim);

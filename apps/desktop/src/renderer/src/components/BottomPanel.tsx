@@ -1,4 +1,4 @@
-import { useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent } from 'react'
+import { useRef, useState, type MouseEvent as ReactMouseEvent, type PointerEvent as ReactPointerEvent, type ReactNode } from 'react'
 import { ChevronDown, ChevronUp, Maximize2, Minimize2, RefreshCw } from 'lucide-react'
 import { clamp, IconButton } from '@web-to-figma/ui'
 import type { TabState } from '../../../shared/types'
@@ -35,6 +35,16 @@ interface Props {
    *  panelRef.current.parentElement, обёртка сбила бы это на свой размер. */
   onMouseEnter?: () => void
   onMouseLeave?: () => void
+  /** Пин панели в fullscreen-режиме (см. BrowserPane.tsx bottomPinAction) —
+   *  тот же паттерн, что pinAction у LeftSidebar/InspectorPanel/BrowserTabBar. */
+  pinAction?: ReactNode
+  /** Панель сейчас на экране ТОЛЬКО из-за наведения в fullscreen-режиме (не
+   *  запиненная, не обычный push-режим) — в этом состоянии клик по шапке
+   *  должен сворачивать её обратно (по запросу пользователя, "сворачивать
+   *  кликом на верхнюю часть"), а не открывать внутренний collapsed (см.
+   *  onHeaderClick ниже). */
+  revealedByHover?: boolean
+  onCollapseReveal?: () => void
 }
 
 /**
@@ -54,7 +64,10 @@ export function BottomPanel({
   maximized,
   onMaximizedChange,
   onMouseEnter,
-  onMouseLeave
+  onMouseLeave,
+  pinAction,
+  revealedByHover,
+  onCollapseReveal
 }: Props): JSX.Element {
   const [collapsed, setCollapsed] = useState(true)
   const [bodyHeight, setBodyHeight] = useState(DEFAULT_HEIGHT)
@@ -74,6 +87,10 @@ export function BottomPanel({
   // случайный клик по заголовку при работе с вкладками/сканом сворачивал бы
   // панель неожиданно.
   const onHeaderClick = (): void => {
+    if (revealedByHover) {
+      onCollapseReveal?.()
+      return
+    }
     if (collapsed) setCollapsed(false)
   }
   const stopAnd =
@@ -130,6 +147,7 @@ export function BottomPanel({
           ))}
         </div>
         <div className="bottom-panel-header-actions">
+          {pinAction && <span onClick={(e) => e.stopPropagation()}>{pinAction}</span>}
           <IconButton size="xs" title="Сканировать текущую страницу" onClick={stopAnd(onScan)} disabled={isScanning}>
             <RefreshCw size={13} className={isScanning ? 'spin' : ''} />
           </IconButton>

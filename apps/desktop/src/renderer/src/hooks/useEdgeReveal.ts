@@ -23,6 +23,7 @@ export function useEdgeReveal(): {
   revealed: boolean
   onMouseEnter: () => void
   onMouseLeave: () => void
+  forceClose: () => void
 } {
   const [revealed, setRevealed] = useState(false)
   const hideTimer = useRef<ReturnType<typeof setTimeout> | null>(null)
@@ -40,5 +41,16 @@ export function useEdgeReveal(): {
     hideTimer.current = setTimeout(() => setRevealed(false), HIDE_DELAY_MS)
   }, [])
 
-  return { revealed, onMouseEnter, onMouseLeave }
+  // Явное закрытие БЕЗ задержки (по запросу пользователя — "сворачивать
+  // кликом на верхнюю часть") — клик, в отличие от ухода курсора, это явное
+  // намерение свернуть, анти-flicker задержка тут не нужна и только мешала бы.
+  const forceClose = useCallback(() => {
+    if (hideTimer.current) {
+      clearTimeout(hideTimer.current)
+      hideTimer.current = null
+    }
+    setRevealed(false)
+  }, [])
+
+  return { revealed, onMouseEnter, onMouseLeave, forceClose }
 }
